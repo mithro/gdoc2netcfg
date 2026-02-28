@@ -260,6 +260,59 @@ class TestAltNames:
         assert "alias.example.com" not in output
 
 
+class TestDhcpIpv6Capability:
+    """DHCP bindings skip IPv6 for IPv6-incapable hosts."""
+
+    def test_dhcp_excludes_ipv6_when_incapable(self):
+        """IPv6-incapable hosts should have DHCP without IPv6 addresses."""
+        host = _host_with_iface("au-plug-1", "7c:2c:67:d9:ba:24", "10.1.10.51",
+                                dhcp_name="au-plug-1")
+        host.ipv6_capable = False
+        inv = _make_inventory(
+            hosts=[host],
+            ip_to_hostname={"10.1.10.51": "au-plug-1"},
+            ip_to_macs={"10.1.10.51": [(MACAddress.parse("7c:2c:67:d9:ba:24"), "au-plug-1")]},
+        )
+        result = generate_dnsmasq_internal(inv)
+        conf = result["au-plug-1.conf"]
+        # DHCP should NOT have [ipv6] brackets
+        assert "dhcp-host=7c:2c:67:d9:ba:24,10.1.10.51,au-plug-1" in conf
+        assert "[2404:" not in conf.split("host-record")[0]  # Before host-record section
+
+    def test_dhcp_includes_ipv6_when_capable(self):
+        """IPv6-capable hosts should have DHCP with IPv6 addresses as normal."""
+        host = _host_with_iface("desktop", "aa:bb:cc:dd:ee:ff", "10.1.10.100",
+                                dhcp_name="desktop")
+        # ipv6_capable defaults to True
+        inv = _make_inventory(
+            hosts=[host],
+            ip_to_hostname={"10.1.10.100": "desktop"},
+            ip_to_macs={"10.1.10.100": [(MACAddress.parse("aa:bb:cc:dd:ee:ff"), "desktop")]},
+        )
+        result = generate_dnsmasq_internal(inv)
+        conf = result["desktop.conf"]
+        assert "[2404:e80:a137:110::100]" in conf
+
+    def test_host_record_keeps_ipv6_when_incapable(self):
+        """host-record entries must keep AAAA records even for incapable hosts.
+
+        IPv6 clients need the AAAA record to resolve the address that
+        TAYGA will intercept for NAT64 translation.
+        """
+        host = _host_with_iface("au-plug-1", "7c:2c:67:d9:ba:24", "10.1.10.51",
+                                dhcp_name="au-plug-1")
+        host.ipv6_capable = False
+        inv = _make_inventory(
+            hosts=[host],
+            ip_to_hostname={"10.1.10.51": "au-plug-1"},
+            ip_to_macs={"10.1.10.51": [(MACAddress.parse("7c:2c:67:d9:ba:24"), "au-plug-1")]},
+        )
+        result = generate_dnsmasq_internal(inv)
+        conf = result["au-plug-1.conf"]
+        # host-record MUST still contain IPv6 (for TAYGA NAT64)
+        assert "host-record=au-plug-1.welland.mithis.com,10.1.10.51,2404:e80:a137:110::51" in conf
+
+
 def _shared_ip_host(hostname, ip, macs, dhcp_name="test"):
     """Create a host with multiple NICs sharing the same IP."""
     ipv4 = IPv4Address(ip)

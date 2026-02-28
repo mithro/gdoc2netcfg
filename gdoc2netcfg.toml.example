@@ -51,6 +51,25 @@ disabled_prefixes = [
 # VLANs and network_subdomains are now derived from the
 # VLAN Allocations spreadsheet sheet, not configured here.
 
+# ── IPv6 capability detection ────────────────────────────────────
+[ipv6_capability]
+# Devices matching any of these Hardware column patterns are
+# considered IPv6-incapable. Their IPv6 addresses will be served
+# by TAYGA NAT64 on the gateway instead of the device itself.
+incapable_hardware_patterns = [
+    "Athom.*",
+    "RF_R2",
+    "MINI$",
+    "ESP32-CAM",
+    "Sonoff.*",
+    "RFBridge.*",
+    "Stampher.*",
+    "NSPanel.*",
+    "GD-DC5",
+]
+# Additional MAC OUI prefixes beyond built-in Espressif/ITEAD set
+# incapable_ouis = []
+
 # ── Site-specific: each site customizes this list. Monarto runs
 # ── ["dnsmasq_internal", "dnsmasq_external", "nginx"]. ─────
 [generators]
@@ -84,6 +103,11 @@ show_unknown_macs = "false"
 
 [generators.known_hosts]
 output = "known_hosts"
+
+[generators.tayga]
+output_dir = "tayga"
+tun_device = "nat64"
+ipv4_addr = "100.64.1.1"
 
 # ── Home Assistant: the API + the one MQTT broker everything uses ─
 [homeassistant]

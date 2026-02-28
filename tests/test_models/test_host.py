@@ -119,6 +119,14 @@ class TestHost:
         )
         assert host.extra['Driver'] == 'switch'
 
+    def test_ipv6_capable_defaults_to_true(self):
+        host = Host(machine_name='test', hostname='test')
+        assert host.ipv6_capable is True
+
+    def test_ipv6_capable_can_be_set_false(self):
+        host = Host(machine_name='test', hostname='test', ipv6_capable=False)
+        assert host.ipv6_capable is False
+
 
 class TestVirtualInterface:
     def test_single_nic_produces_one_vi(self):

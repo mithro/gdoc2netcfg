@@ -332,6 +332,7 @@ class Host:
     nsdp_data: NSDPData | None = None
     switch_data: SwitchData | None = None
     tasmota_data: TasmotaData | None = None
+    ipv6_capable: bool = True
 
     @property
     def interface_by_name(self) -> dict[str | None, NetworkInterface]:

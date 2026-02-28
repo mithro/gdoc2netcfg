@@ -50,7 +50,7 @@ class TestParseCSV:
         csv_text = (FIXTURES / "sample_iot.csv").read_text()
         records = parse_csv(csv_text, "IoT")
 
-        assert len(records) == 2
+        assert len(records) == 3
 
         r0 = records[0]
         assert r0.machine == "thermostat"

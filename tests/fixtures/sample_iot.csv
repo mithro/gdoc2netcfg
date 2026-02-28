@@ -1,3 +1,4 @@
 Machine,MAC Address,IP,Interface,Hardware
 thermostat,aa:00:11:22:33:44,10.1.90.10,,ESP32
 camera-front,bb:00:11:22:33:44,10.1.90.20,,Reolink
+au-plug-1,7c:2c:67:d9:ba:24,10.1.90.51,,Athom Plug V3

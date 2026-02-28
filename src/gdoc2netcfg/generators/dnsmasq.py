@@ -57,7 +57,9 @@ def _host_dhcp_config(host: Host, inventory: NetworkInventory) -> list[str]:
         ip = str(vi.ipv4)
         dhcp_name = common_suffix(*set(vi.dhcp_names)).strip("-")
 
-        ipv6_strs = _ipv6_for_ip(ip, inventory)
+        # Skip IPv6 in DHCP for hosts that don't support it —
+        # their IPv6 addresses are handled by TAYGA NAT64 on the gateway
+        ipv6_strs = _ipv6_for_ip(ip, inventory) if host.ipv6_capable else []
         mac_str = ",".join(str(mac) for mac in vi.macs)
 
         if ipv6_strs:

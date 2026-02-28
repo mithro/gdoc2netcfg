@@ -59,3 +59,30 @@ class TestLoadConfig:
         )
         config = load_config(config_file)
         assert config.site.site_octet == 0
+
+
+def test_ipv6_capability_config_defaults():
+    """IPv6 capability config has sensible defaults when section is missing."""
+    from gdoc2netcfg.config import IPv6CapabilityConfig
+    config = IPv6CapabilityConfig()
+    assert config.incapable_hardware_patterns == []
+    assert config.incapable_ouis == []
+
+
+def test_ipv6_capability_config_from_toml(tmp_path):
+    """IPv6 capability config is parsed from [ipv6_capability] section."""
+    from gdoc2netcfg.config import load_config
+    toml_file = tmp_path / "gdoc2netcfg.toml"
+    toml_file.write_text('''
+[site]
+name = "test"
+domain = "test.example.com"
+site_octet = 1
+
+[ipv6_capability]
+incapable_hardware_patterns = ["Athom.*", "RF_R2"]
+incapable_ouis = ["aa:bb:cc"]
+''')
+    config = load_config(toml_file)
+    assert config.ipv6_capability.incapable_hardware_patterns == ["Athom.*", "RF_R2"]
+    assert config.ipv6_capability.incapable_ouis == ["aa:bb:cc"]

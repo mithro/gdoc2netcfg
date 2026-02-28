@@ -68,6 +68,18 @@ class HomeAssistantConfig:
 
 
 @dataclass
+class IPv6CapabilityConfig:
+    """Configuration for IPv6 capability detection.
+
+    Controls which devices are detected as IPv6-incapable based on
+    hardware column regex patterns and MAC OUI prefixes.
+    """
+
+    incapable_hardware_patterns: list[str] = field(default_factory=list)
+    incapable_ouis: list[str] = field(default_factory=list)
+
+
+@dataclass
 class PipelineConfig:
     """Full pipeline configuration loaded from gdoc2netcfg.toml.
 
@@ -81,6 +93,7 @@ class PipelineConfig:
     generators: dict[str, GeneratorConfig] = field(default_factory=dict)
     tasmota: TasmotaConfig = field(default_factory=TasmotaConfig)
     homeassistant: HomeAssistantConfig = field(default_factory=HomeAssistantConfig)
+    ipv6_capability: IPv6CapabilityConfig = field(default_factory=IPv6CapabilityConfig)
 
 
 def _build_site(data: dict) -> Site:
@@ -167,6 +180,17 @@ def _build_homeassistant(data: dict) -> HomeAssistantConfig:
     )
 
 
+def _build_ipv6_capability(data: dict) -> IPv6CapabilityConfig:
+    """Build IPv6 capability config from parsed TOML data."""
+    section = data.get("ipv6_capability", {})
+    if not section:
+        return IPv6CapabilityConfig()
+    return IPv6CapabilityConfig(
+        incapable_hardware_patterns=list(section.get("incapable_hardware_patterns", [])),
+        incapable_ouis=list(section.get("incapable_ouis", [])),
+    )
+
+
 def load_config(config_path: Path | str | None = None) -> PipelineConfig:
     """Load pipeline configuration from a TOML file.
 
@@ -190,4 +214,5 @@ def load_config(config_path: Path | str | None = None) -> PipelineConfig:
         generators=_build_generators(data),
         tasmota=_build_tasmota(data),
         homeassistant=_build_homeassistant(data),
+        ipv6_capability=_build_ipv6_capability(data),
     )

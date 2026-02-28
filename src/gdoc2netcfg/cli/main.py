@@ -143,6 +143,19 @@ def _build_pipeline(config):
     # Build hosts (applies all derivations)
     hosts = build_hosts(all_records, config.site)
 
+    # Detect IPv6 capability from MAC OUI and hardware patterns
+    from gdoc2netcfg.derivations.ipv6_capability import detect_ipv6_capability
+
+    ipv6_cap = config.ipv6_capability
+    extra_ouis = set(ipv6_cap.incapable_ouis) if ipv6_cap.incapable_ouis else None
+    hardware_patterns = ipv6_cap.incapable_hardware_patterns or None
+    for host in hosts:
+        host.ipv6_capable = detect_ipv6_capability(
+            host,
+            hardware_patterns=hardware_patterns,
+            extra_ouis=extra_ouis,
+        )
+
     # Build inventory (aggregate derivations)
     inventory = build_inventory(hosts, config.site)
 

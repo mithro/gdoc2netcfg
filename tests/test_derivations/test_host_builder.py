@@ -123,6 +123,43 @@ class TestBuildHosts:
         assert str(hosts[0].default_ipv4) == "10.1.10.50"
 
 
+class TestIPv6CapabilityDetection:
+    def test_build_hosts_espressif_device_not_ipv6_capable(self):
+        """Hosts with Espressif MAC OUIs should have ipv6_capable=False."""
+        from gdoc2netcfg.derivations.ipv6_capability import detect_ipv6_capability
+
+        records = [_make_record(
+            machine="au-plug-1",
+            mac="7C:2C:67:D9:BA:24",  # Espressif OUI
+            ip="10.1.90.51",
+            sheet_name="IoT",
+        )]
+        hosts = build_hosts(records, SITE)
+        assert len(hosts) == 1
+        host = hosts[0]
+
+        # Before detection, defaults to True
+        assert host.ipv6_capable is True
+
+        # After detection, Espressif OUI → False
+        host.ipv6_capable = detect_ipv6_capability(host)
+        assert host.ipv6_capable is False
+
+    def test_build_hosts_regular_device_ipv6_capable(self):
+        """Hosts with non-Espressif MACs should remain ipv6_capable=True."""
+        from gdoc2netcfg.derivations.ipv6_capability import detect_ipv6_capability
+
+        records = [_make_record(
+            machine="desktop",
+            mac="aa:bb:cc:dd:ee:ff",
+            ip="10.1.10.100",
+        )]
+        hosts = build_hosts(records, SITE)
+        host = hosts[0]
+        host.ipv6_capable = detect_ipv6_capability(host)
+        assert host.ipv6_capable is True
+
+
 class TestBuildInventory:
     def test_ip_to_hostname_mapping(self):
         records = [_make_record(ip="10.1.10.100")]

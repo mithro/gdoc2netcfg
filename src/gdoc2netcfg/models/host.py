@@ -339,6 +339,7 @@ class Host:
     nsdp_data: NSDPData | None = None
     switch_data: SwitchData | None = None
     tasmota_data: TasmotaData | None = None
+    ipv6_capable: bool = True
 
     @property
     def first_ipv4(self) -> IPv4Address | None:

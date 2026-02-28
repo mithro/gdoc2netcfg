@@ -456,6 +456,7 @@ def _get_generator(name: str):
         "nginx": ("gdoc2netcfg.generators.nginx", "generate_nginx"),
         "topology": ("gdoc2netcfg.generators.topology", "generate_topology"),
         "known_hosts": ("gdoc2netcfg.generators.known_hosts", "generate_known_hosts"),
+        "tayga": ("gdoc2netcfg.generators.tayga", "generate_tayga"),
     }
     if name not in generators:
         return None
@@ -557,6 +558,11 @@ def cmd_generate(args: argparse.Namespace) -> int:
                 kwargs["show_unknown_macs"] = (
                     gen_config.params["show_unknown_macs"].lower() == "true"
                 )
+        elif name == "tayga" and gen_config:
+            if gen_config.params.get("tun_device"):
+                kwargs["tun_device"] = gen_config.params["tun_device"]
+            if gen_config.params.get("ipv4_addr"):
+                kwargs["ipv4_addr"] = gen_config.params["ipv4_addr"]
 
         output = gen_func(inventory, **kwargs)
 

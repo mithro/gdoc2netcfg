@@ -35,10 +35,17 @@ _KEY_TYPE_TO_SSHFP_ALGO: dict[str, int] = {
 }
 
 
+class SSHKeyscanError(Exception):
+    """Error during SSH host key scanning."""
+
+
 def _keyscan_pubkeys(ip: str, hostname: str) -> list[str]:
     """Run ssh-keyscan and return public key lines with hostname substituted.
 
     Returns lines like "hostname ssh-ed25519 AAAA..."
+
+    Raises SSHKeyscanError if ssh-keyscan fails, times out, or returns
+    no keys despite a successful exit.
     """
     try:
         result = subprocess.run(
@@ -47,15 +54,39 @@ def _keyscan_pubkeys(ip: str, hostname: str) -> list[str]:
             text=True,
             timeout=10,
         )
-        lines = []
-        for line in result.stdout.splitlines():
-            if line.startswith("#") or not line.strip():
-                continue
-            lines.append(line.replace(ip, hostname, 1))
-        lines.sort()
-        return lines
-    except subprocess.TimeoutExpired:
-        return []
+    except subprocess.TimeoutExpired as e:
+        raise SSHKeyscanError(
+            f"ssh-keyscan {ip} timed out after 10 seconds"
+        ) from e
+
+    if result.returncode != 0:
+        raise SSHKeyscanError(
+            f"ssh-keyscan {ip} exited with code {result.returncode}"
+            f" (stderr: {result.stderr.strip()!r})"
+        )
+
+    lines = []
+    for line in result.stdout.splitlines():
+        if line.startswith("#") or not line.strip():
+            continue
+        parts = line.split(None, 2)
+        if len(parts) != 3:
+            raise SSHKeyscanError(
+                f"Malformed ssh-keyscan output line for {ip}: {line!r}"
+            )
+        # Replace the IP field with hostname; use split/rejoin rather
+        # than str.replace to avoid matching the IP inside the key blob.
+        lines.append(f"{hostname} {parts[1]} {parts[2]}")
+
+    if not lines:
+        raise SSHKeyscanError(
+            f"ssh-keyscan {ip} exited successfully but returned no key"
+            f" lines (stdout had {len(result.stdout)} bytes,"
+            f" stderr: {result.stderr.strip()!r})"
+        )
+
+    lines.sort()
+    return lines
 
 
 def derive_sshfp_from_host_keys(keys: list[str]) -> list[str]:
@@ -127,6 +158,10 @@ def scan_ssh_host_keys(
 ) -> dict[str, list[str]]:
     """Scan reachable hosts for SSH public keys.
 
+    For hosts with multiple IPs, scans each IP independently and verifies
+    all IPs return identical keys. Different keys from different IPs
+    indicates a serious misconfiguration and raises an error.
+
     Args:
         hosts: Host objects with IPs to scan.
         cache_path: Path to ssh_host_keys.json cache file.
@@ -138,6 +173,11 @@ def scan_ssh_host_keys(
 
     Returns:
         Mapping of hostname → list of SSH public key lines.
+
+    Raises:
+        SSHKeyscanError: If any host with an open SSH port fails to
+            return keys, or if different IPs for the same host return
+            different keys.
     """
     import sys
 
@@ -149,13 +189,20 @@ def scan_ssh_host_keys(
         if age < max_age:
             if verbose:
                 print(
-                    f"ssh_host_keys.json last updated {age:.0f}s ago, using cache.",
+                    f"ssh_host_keys.json last updated {age:.0f}s ago,"
+                    f" using cache.",
                     file=sys.stderr,
                 )
             return host_keys
 
-    sorted_hosts = sorted(hosts, key=lambda h: h.hostname.split(".")[::-1])
-    name_width = max((len(h.hostname) for h in sorted_hosts), default=0)
+    sorted_hosts = sorted(
+        hosts, key=lambda h: h.hostname.split(".")[::-1],
+    )
+    name_width = max(
+        (len(h.hostname) for h in sorted_hosts), default=0,
+    )
+
+    errors: list[str] = []
 
     for host in sorted_hosts:
         # Skip hosts not in reachability data or not reachable
@@ -166,12 +213,15 @@ def scan_ssh_host_keys(
 
         if verbose:
             print(
-                f"  {host.hostname:>{name_width}s} up({','.join(active_ips)}) ",
+                f"  {host.hostname:>{name_width}s}"
+                f" up({','.join(active_ips)}) ",
                 end="", flush=True, file=sys.stderr,
             )
 
         # Check SSH availability on all reachable IPs
-        ssh_ips = [ip for ip in active_ips if check_port_open(ip, 22)]
+        ssh_ips = [
+            ip for ip in active_ips if check_port_open(ip, 22)
+        ]
 
         if not ssh_ips:
             if verbose:
@@ -179,16 +229,53 @@ def scan_ssh_host_keys(
             continue
 
         if verbose:
-            print(f"with-ssh({','.join(ssh_ips)})", file=sys.stderr)
+            print(
+                f"with-ssh({','.join(ssh_ips)})", file=sys.stderr,
+            )
 
-        # Keyscan all IPs with SSH and merge keys (deduplicated)
-        all_keys: set[str] = set()
+        # Scan each IP independently so we can verify consistency
+        per_ip_keys: dict[str, list[str]] = {}
         for ssh_ip in ssh_ips:
-            keys = _keyscan_pubkeys(ssh_ip, host.hostname)
-            all_keys.update(keys)
+            try:
+                per_ip_keys[ssh_ip] = _keyscan_pubkeys(
+                    ssh_ip, host.hostname,
+                )
+            except SSHKeyscanError as e:
+                errors.append(f"{host.hostname} ({ssh_ip}): {e}")
+                continue
 
-        if all_keys:
-            host_keys[host.hostname] = sorted(all_keys)
+        if not per_ip_keys:
+            # All IPs failed — errors already collected above
+            continue
+
+        # Verify all IPs returned identical keys
+        key_sets = {
+            ip: frozenset(keys)
+            for ip, keys in per_ip_keys.items()
+        }
+        unique_sets = set(key_sets.values())
+        if len(unique_sets) > 1:
+            detail_lines = []
+            for ip, keys in sorted(per_ip_keys.items()):
+                detail_lines.append(f"  {ip}:")
+                for k in keys:
+                    detail_lines.append(f"    {k}")
+            errors.append(
+                f"{host.hostname}: different SSH keys from different"
+                f" IPs:\n" + "\n".join(detail_lines)
+            )
+            continue
+
+        # All IPs agree — use the canonical sorted list
+        host_keys[host.hostname] = sorted(
+            next(iter(per_ip_keys.values())),
+        )
+
+    if errors:
+        raise SSHKeyscanError(
+            f"{len(errors)} SSH host key scan error(s):\n"
+            + "\n".join(f"  - {e}" for e in errors)
+        )
 
     save_ssh_host_keys_cache(cache_path, host_keys)
     return host_keys

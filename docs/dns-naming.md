@@ -262,8 +262,8 @@ SSHFP records (type 44) are emitted for:
 2. Each named interface FQDN
 3. Each interface's IPv4 PTR name (using the IPv4 transform)
 
-Only populated when the host has `sshfp_records` from the SSHFP supplement
-(`ssh-keyscan` results cached in `.cache/sshfp.json`).
+Only populated when the host has `sshfp_records` derived from SSH host keys
+(`ssh-keyscan` results cached in `.cache/ssh_host_keys.json`).
 
 
 ## Post-generation FCrDNS validation

@@ -270,4 +270,4 @@ The command reads from the local CSV cache (`gdoc2netcfg fetch` must have been r
 
 ### Other
 
-The SSHFP cache lives at `.cache/sshfp.json`.
+The SSH host key cache lives at `.cache/ssh_host_keys.json`. SSHFP records are derived from these keys at runtime.

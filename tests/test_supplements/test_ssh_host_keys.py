@@ -338,6 +338,20 @@ class TestScanSSHHostKeys:
         assert result == {}
         mock_keyscan.assert_not_called()
 
+    @patch("gdoc2netcfg.supplements.sshfp._keyscan_pubkeys")
+    def test_scan_skips_host_absent_from_reachability(
+        self, mock_keyscan, tmp_path,
+    ):
+        """Host not in reachability dict at all is skipped."""
+        host = _make_host("server", "10.1.10.1")
+        cache_path = tmp_path / "ssh_host_keys.json"
+        result = scan_ssh_host_keys(
+            [host], cache_path, force=True, reachability={},
+        )
+
+        assert result == {}
+        mock_keyscan.assert_not_called()
+
     @patch("gdoc2netcfg.supplements.sshfp.check_port_open")
     @patch("gdoc2netcfg.supplements.sshfp._keyscan_pubkeys")
     def test_scan_skips_no_ssh(self, mock_keyscan, mock_port, tmp_path):
@@ -533,6 +547,8 @@ class TestScanSSHHostKeys:
                 [host], cache_path, force=True,
                 reachability=reachability,
             )
+
+        assert not cache_path.exists()  # No partial results written
 
     @patch("gdoc2netcfg.supplements.sshfp.check_port_open")
     @patch("gdoc2netcfg.supplements.sshfp._keyscan_pubkeys")

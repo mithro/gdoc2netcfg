@@ -46,7 +46,10 @@ def generate_known_hosts(inventory: NetworkInventory) -> str:
                     seen.add(ip_str)
 
         if not host_ids:
-            continue
+            raise ValueError(
+                f"Host {host.hostname!r} has SSH host keys but no"
+                f" DNS names or IP addresses"
+            )
 
         host_list = ",".join(host_ids)
 

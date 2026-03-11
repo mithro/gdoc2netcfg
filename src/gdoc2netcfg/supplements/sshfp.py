@@ -248,6 +248,11 @@ def scan_ssh_host_keys(
             # All IPs failed — errors already collected above
             continue
 
+        if len(per_ip_keys) < len(ssh_ips):
+            # Some IPs succeeded but others failed — don't store
+            # partial results. The errors are already collected.
+            continue
+
         # Verify all IPs returned identical keys
         key_sets = {
             ip: frozenset(keys)

@@ -58,6 +58,24 @@ class TestGenerateKnownHostsEmpty:
         assert output == ""
 
 
+class TestGenerateKnownHostsErrors:
+    def test_keys_but_no_identifiers_raises(self):
+        """Host with SSH keys but no DNS names or IPs is an error."""
+        import pytest
+
+        host = Host(
+            machine_name="ghost",
+            hostname="ghost",
+            interfaces=[],
+            ssh_host_keys=[f"ghost ssh-rsa {_RSA_B64}"],
+            dns_names=[],
+        )
+        inv = NetworkInventory(site=SITE, hosts=[host])
+
+        with pytest.raises(ValueError, match="no DNS names or IP"):
+            generate_known_hosts(inv)
+
+
 class TestGenerateKnownHostsSingleHost:
     def test_single_host_single_key(self):
         keys = [f"server ssh-rsa {_RSA_B64}"]

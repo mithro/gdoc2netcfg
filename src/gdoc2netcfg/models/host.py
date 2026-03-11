@@ -315,7 +315,8 @@ class Host:
         hostname: Computed hostname (may include suffix like '.iot')
         sheet_type: Which spreadsheet sheet this came from ('Network', 'IoT', etc.)
         interfaces: All network interfaces for this host
-        sshfp_records: SSH fingerprint records (populated by supplement)
+        sshfp_records: SSH fingerprint records (derived from ssh_host_keys)
+        ssh_host_keys: Raw SSH public key lines ("hostname key-type base64-key")
         extra: Additional spreadsheet columns preserved for generators
     """
 
@@ -324,6 +325,7 @@ class Host:
     sheet_type: str = "Network"
     interfaces: list[NetworkInterface] = field(default_factory=list)
     sshfp_records: list[str] = field(default_factory=list)
+    ssh_host_keys: list[str] = field(default_factory=list)
     extra: dict[str, str] = field(default_factory=dict)
     alt_names: list[str] = field(default_factory=list)
     dns_names: list[DNSName] = field(default_factory=list)

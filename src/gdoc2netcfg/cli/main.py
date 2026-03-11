@@ -7,6 +7,7 @@ Subcommands:
     info           Show pipeline configuration.
     reachability   Ping all hosts and report which are up/down.
     sshfp          Scan hosts for SSH fingerprints.
+    known-hosts    Scan hosts for SSH host keys (for known_hosts generation).
     ssl-certs      Scan hosts for SSL/TLS certificates.
     snmp-host      Scan hosts for SNMP system info and interfaces.
     bmc-firmware   Scan BMCs for firmware info.
@@ -119,7 +120,10 @@ def _build_pipeline(config):
         refine_bmc_hardware_type,
     )
     from gdoc2netcfg.supplements.snmp import enrich_hosts_with_snmp, load_snmp_cache
-    from gdoc2netcfg.supplements.sshfp import enrich_hosts_with_sshfp, load_sshfp_cache
+    from gdoc2netcfg.supplements.sshfp import (
+        enrich_hosts_with_ssh_host_keys,
+        load_ssh_host_keys_cache,
+    )
     from gdoc2netcfg.supplements.ssl_certs import enrich_hosts_with_ssl_certs, load_ssl_cert_cache
 
     # Fetch or load CSVs
@@ -146,10 +150,10 @@ def _build_pipeline(config):
     # Build inventory (aggregate derivations)
     inventory = build_inventory(hosts, config.site)
 
-    # Load SSHFP cache and enrich (don't scan — that's a separate subcommand)
-    sshfp_cache = Path(config.cache.directory) / "sshfp.json"
-    sshfp_data = load_sshfp_cache(sshfp_cache)
-    enrich_hosts_with_sshfp(hosts, sshfp_data)
+    # Load SSH host keys cache and enrich (sets both ssh_host_keys and sshfp_records)
+    ssh_keys_cache = Path(config.cache.directory) / "ssh_host_keys.json"
+    ssh_keys_data = load_ssh_host_keys_cache(ssh_keys_cache)
+    enrich_hosts_with_ssh_host_keys(hosts, ssh_keys_data)
 
     # Load SSL cert cache and enrich (don't scan — that's a separate subcommand)
     ssl_cache = Path(config.cache.directory) / "ssl_certs.json"
@@ -243,6 +247,7 @@ def _get_generator(name: str):
         "letsencrypt": ("gdoc2netcfg.generators.letsencrypt", "generate_letsencrypt"),
         "nginx": ("gdoc2netcfg.generators.nginx", "generate_nginx"),
         "topology": ("gdoc2netcfg.generators.topology", "generate_topology"),
+        "known_hosts": ("gdoc2netcfg.generators.known_hosts", "generate_known_hosts"),
     }
     if name not in generators:
         return None
@@ -543,15 +548,19 @@ def cmd_reachability(args: argparse.Namespace) -> int:
 # Subcommand: sshfp
 # ---------------------------------------------------------------------------
 
-def cmd_sshfp(args: argparse.Namespace) -> int:
-    """Scan hosts for SSH fingerprints."""
-    config = _load_config(args)
+def _scan_ssh_host_keys_pipeline(
+    config: PipelineConfig, force: bool,
+) -> tuple[list[Host], dict[str, list[str]]]:
+    """Shared pipeline for sshfp and known-hosts commands.
 
+    Builds hosts, runs reachability, scans SSH host keys, and enriches.
+    Returns (hosts, host_keys_data).
+    """
     from gdoc2netcfg.derivations.host_builder import build_hosts
     from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.sshfp import (
-        enrich_hosts_with_sshfp,
-        scan_sshfp,
+        enrich_hosts_with_ssh_host_keys,
+        scan_ssh_host_keys,
     )
 
     # We need a minimal pipeline to get hosts with IPs
@@ -566,23 +575,44 @@ def cmd_sshfp(args: argparse.Namespace) -> int:
 
     hosts = build_hosts(all_records, config.site)
 
-    reachability = _load_or_run_reachability(config, hosts, force=args.force)
+    reachability = _load_or_run_reachability(config, hosts, force=force)
     _print_reachability_summary(reachability, hosts)
 
-    cache_path = Path(config.cache.directory) / "sshfp.json"
-    sshfp_data = scan_sshfp(
+    cache_path = Path(config.cache.directory) / "ssh_host_keys.json"
+    host_keys_data = scan_ssh_host_keys(
         hosts,
         cache_path=cache_path,
-        force=args.force,
+        force=force,
         verbose=True,
         reachability=reachability,
     )
 
-    enrich_hosts_with_sshfp(hosts, sshfp_data)
+    enrich_hosts_with_ssh_host_keys(hosts, host_keys_data)
+
+    return hosts, host_keys_data
+
+
+def cmd_sshfp(args: argparse.Namespace) -> int:
+    """Scan hosts for SSH fingerprints."""
+    config = _load_config(args)
+    hosts, _ = _scan_ssh_host_keys_pipeline(config, force=args.force)
 
     # Report
     hosts_with_fp = sum(1 for h in hosts if h.sshfp_records)
     print(f"\nSSHFP records for {hosts_with_fp}/{len(hosts)} hosts.")
+
+    return 0
+
+
+def cmd_known_hosts(args: argparse.Namespace) -> int:
+    """Scan hosts for SSH host keys (for known_hosts generation)."""
+    config = _load_config(args)
+    hosts, _ = _scan_ssh_host_keys_pipeline(config, force=args.force)
+
+    # Report
+    hosts_with_keys = sum(1 for h in hosts if h.ssh_host_keys)
+    total_keys = sum(len(h.ssh_host_keys) for h in hosts)
+    print(f"\nSSH host keys: {total_keys} keys for {hosts_with_keys}/{len(hosts)} hosts.")
 
     return 0
 
@@ -1752,6 +1782,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Force re-scan even if cache is fresh",
     )
 
+    # known-hosts
+    known_hosts_parser = subparsers.add_parser(
+        "known-hosts", help="Scan hosts for SSH host keys",
+    )
+    known_hosts_parser.add_argument(
+        "--force", action="store_true",
+        help="Force re-scan even if cache is fresh",
+    )
+
     # ssl-certs
     ssl_parser = subparsers.add_parser("ssl-certs", help="Scan hosts for SSL/TLS certificates")
     ssl_parser.add_argument(
@@ -1934,6 +1973,7 @@ def main(argv: list[str] | None = None) -> int:
         "info": cmd_info,
         "reachability": cmd_reachability,
         "sshfp": cmd_sshfp,
+        "known-hosts": cmd_known_hosts,
         "ssl-certs": cmd_ssl_certs,
         "snmp-host": cmd_snmp_host,
         "bmc-firmware": cmd_bmc_firmware,

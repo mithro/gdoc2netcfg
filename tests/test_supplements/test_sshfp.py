@@ -1,16 +1,24 @@
 """Tests for the SSHFP supplement."""
 
+import base64
 from unittest.mock import patch
 
 from gdoc2netcfg.models.addressing import IPv4Address, MACAddress
 from gdoc2netcfg.models.host import Host, NetworkInterface
 from gdoc2netcfg.supplements.reachability import HostReachability
 from gdoc2netcfg.supplements.sshfp import (
+    derive_sshfp_from_host_keys,
     enrich_hosts_with_sshfp,
     load_sshfp_cache,
     save_sshfp_cache,
     scan_sshfp,
 )
+
+# A minimal valid base64 key blob for testing. The actual key type doesn't
+# matter for testing the scan pipeline — we just need it to be valid base64
+# so derive_sshfp_from_host_keys can decode and hash it.
+_TEST_KEY_BLOB = base64.b64encode(b"test-ssh-rsa-key-blob").decode()
+_TEST_ED25519_BLOB = base64.b64encode(b"test-ed25519-key-blob").decode()
 
 
 def _make_host(hostname, ip):
@@ -25,6 +33,11 @@ def _make_host(hostname, ip):
             )
         ],
     )
+
+
+def _expected_sshfp(hostname, key_type, b64_key):
+    """Compute expected SSHFP records for a given key line."""
+    return derive_sshfp_from_host_keys([f"{hostname} {key_type} {b64_key}"])
 
 
 class TestSSHFPCache:
@@ -78,11 +91,18 @@ class TestEnrichHostsWithSSHFP:
 
 
 class TestScanSSHFP:
+    """Tests for scan_sshfp (legacy compatibility wrapper).
+
+    scan_sshfp delegates to scan_ssh_host_keys internally, so we mock
+    _keyscan_pubkeys (the new internal function) and verify the derived
+    SSHFP records are returned.
+    """
+
     @patch("gdoc2netcfg.supplements.sshfp.check_port_open")
-    @patch("gdoc2netcfg.supplements.sshfp._keyscan")
+    @patch("gdoc2netcfg.supplements.sshfp._keyscan_pubkeys")
     def test_scan_finds_sshfp(self, mock_keyscan, mock_port, tmp_path):
         mock_port.return_value = True
-        mock_keyscan.return_value = ["server IN SSHFP 1 2 abc123"]
+        mock_keyscan.return_value = [f"server ssh-rsa {_TEST_KEY_BLOB}"]
         reachability = {
             "server": HostReachability(
                 hostname="server", active_ips=("10.1.10.1",),
@@ -95,10 +115,11 @@ class TestScanSSHFP:
         )
 
         assert "server" in result
-        assert result["server"] == ["server IN SSHFP 1 2 abc123"]
+        expected = _expected_sshfp("server", "ssh-rsa", _TEST_KEY_BLOB)
+        assert result["server"] == expected
         mock_keyscan.assert_called_once()
 
-    @patch("gdoc2netcfg.supplements.sshfp._keyscan")
+    @patch("gdoc2netcfg.supplements.sshfp._keyscan_pubkeys")
     def test_scan_skips_unreachable(self, mock_keyscan, tmp_path):
         reachability = {
             "server": HostReachability(hostname="server", active_ips=()),
@@ -113,7 +134,7 @@ class TestScanSSHFP:
         mock_keyscan.assert_not_called()
 
     @patch("gdoc2netcfg.supplements.sshfp.check_port_open")
-    @patch("gdoc2netcfg.supplements.sshfp._keyscan")
+    @patch("gdoc2netcfg.supplements.sshfp._keyscan_pubkeys")
     def test_scan_skips_no_ssh(self, mock_keyscan, mock_port, tmp_path):
         mock_port.return_value = False
         reachability = {
@@ -130,7 +151,7 @@ class TestScanSSHFP:
         assert result == {}
         mock_keyscan.assert_not_called()
 
-    @patch("gdoc2netcfg.supplements.sshfp._keyscan")
+    @patch("gdoc2netcfg.supplements.sshfp._keyscan_pubkeys")
     def test_scan_skips_without_reachability(self, mock_keyscan, tmp_path):
         """Without reachability data, hosts are skipped."""
         host = _make_host("server", "10.1.10.1")
@@ -140,23 +161,31 @@ class TestScanSSHFP:
         assert result == {}
         mock_keyscan.assert_not_called()
 
-    @patch("gdoc2netcfg.supplements.sshfp._keyscan")
+    @patch("gdoc2netcfg.supplements.sshfp._keyscan_pubkeys")
     def test_scan_uses_cache_when_fresh(self, mock_keyscan, tmp_path):
-        cache_path = tmp_path / "sshfp.json"
-        existing = {"server": ["server IN SSHFP 1 2 abc123"]}
-        save_sshfp_cache(cache_path, existing)
+        # scan_sshfp delegates to scan_ssh_host_keys which uses
+        # ssh_host_keys.json — seed that cache file
+        from gdoc2netcfg.supplements.sshfp import save_ssh_host_keys_cache
+
+        cache_path = tmp_path / "ssh_host_keys.json"
+        existing_keys = {"server": [f"server ssh-rsa {_TEST_KEY_BLOB}"]}
+        save_ssh_host_keys_cache(cache_path, existing_keys)
 
         host = _make_host("server", "10.1.10.1")
-        result = scan_sshfp([host], cache_path, force=False, max_age=9999)
+        # scan_sshfp passes sshfp.json path, but internally constructs
+        # ssh_host_keys.json in the same directory
+        sshfp_cache_path = tmp_path / "sshfp.json"
+        result = scan_sshfp([host], sshfp_cache_path, force=False, max_age=9999)
 
-        assert result == existing
+        expected = _expected_sshfp("server", "ssh-rsa", _TEST_KEY_BLOB)
+        assert result == {"server": expected}
         mock_keyscan.assert_not_called()
 
     @patch("gdoc2netcfg.supplements.sshfp.check_port_open")
-    @patch("gdoc2netcfg.supplements.sshfp._keyscan")
+    @patch("gdoc2netcfg.supplements.sshfp._keyscan_pubkeys")
     def test_scan_saves_cache(self, mock_keyscan, mock_port, tmp_path):
         mock_port.return_value = True
-        mock_keyscan.return_value = ["server IN SSHFP 4 2 def456"]
+        mock_keyscan.return_value = [f"server ssh-ed25519 {_TEST_ED25519_BLOB}"]
         reachability = {
             "server": HostReachability(
                 hostname="server", active_ips=("10.1.10.1",),
@@ -168,18 +197,20 @@ class TestScanSSHFP:
             [host], cache_path, force=True, reachability=reachability,
         )
 
-        assert cache_path.exists()
+        # scan_sshfp delegates to scan_ssh_host_keys which saves ssh_host_keys.json
+        ssh_keys_cache = tmp_path / "ssh_host_keys.json"
+        assert ssh_keys_cache.exists()
         import json
-        loaded = json.loads(cache_path.read_text())
+        loaded = json.loads(ssh_keys_cache.read_text())
         assert "server" in loaded
 
     @patch("gdoc2netcfg.supplements.sshfp.check_port_open")
-    @patch("gdoc2netcfg.supplements.sshfp._keyscan")
+    @patch("gdoc2netcfg.supplements.sshfp._keyscan_pubkeys")
     def test_scan_all_reachable_ips(self, mock_keyscan, mock_port, tmp_path):
         """SSH should be checked on all reachable IPs, not just the first."""
         # Port 22 open on both v4 and v6
         mock_port.return_value = True
-        mock_keyscan.return_value = ["server IN SSHFP 1 2 abc123"]
+        mock_keyscan.return_value = [f"server ssh-rsa {_TEST_KEY_BLOB}"]
         reachability = {
             "server": HostReachability(
                 hostname="server",
@@ -201,12 +232,12 @@ class TestScanSSHFP:
         assert mock_keyscan.call_count == 2
 
     @patch("gdoc2netcfg.supplements.sshfp.check_port_open")
-    @patch("gdoc2netcfg.supplements.sshfp._keyscan")
+    @patch("gdoc2netcfg.supplements.sshfp._keyscan_pubkeys")
     def test_scan_only_ips_with_ssh(self, mock_keyscan, mock_port, tmp_path):
         """Only IPs with port 22 open should be keyscanned."""
         # Port 22 open only on v4
         mock_port.side_effect = lambda ip, port: ip == "10.1.10.1"
-        mock_keyscan.return_value = ["server IN SSHFP 1 2 abc123"]
+        mock_keyscan.return_value = [f"server ssh-rsa {_TEST_KEY_BLOB}"]
         reachability = {
             "server": HostReachability(
                 hostname="server",

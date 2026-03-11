@@ -54,7 +54,7 @@ def _keyscan_pubkeys(ip: str, hostname: str) -> list[str]:
             lines.append(line.replace(ip, hostname, 1))
         lines.sort()
         return lines
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired:
         return []
 
 
@@ -122,7 +122,8 @@ def scan_ssh_host_keys(
     force: bool = False,
     max_age: float = 300,
     verbose: bool = False,
-    reachability: dict[str, HostReachability] | None = None,
+    *,
+    reachability: dict[str, HostReachability],
 ) -> dict[str, list[str]]:
     """Scan reachable hosts for SSH public keys.
 
@@ -158,7 +159,7 @@ def scan_ssh_host_keys(
 
     for host in sorted_hosts:
         # Skip hosts not in reachability data or not reachable
-        host_reach = reachability.get(host.hostname) if reachability else None
+        host_reach = reachability.get(host.hostname)
         if host_reach is None or not host_reach.is_up:
             continue
         active_ips = list(host_reach.active_ips)

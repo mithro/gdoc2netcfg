@@ -215,8 +215,10 @@ class TestScanSSHHostKeys:
         save_ssh_host_keys_cache(cache_path, existing)
 
         host = _make_host("server", "10.1.10.1")
+        # reachability is required but won't be used — cache is fresh
         result = scan_ssh_host_keys(
             [host], cache_path, force=False, max_age=9999,
+            reachability={},
         )
 
         assert result == existing

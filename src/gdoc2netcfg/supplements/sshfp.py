@@ -39,29 +39,44 @@ class SSHKeyscanError(Exception):
     """Error during SSH host key scanning."""
 
 
-def _keyscan_pubkeys(ip: str, hostname: str) -> list[str]:
-    """Run ssh-keyscan and return public key lines with hostname substituted.
+# ssh-keyscan binaries to try, in order. The standard ssh-keyscan may
+# fail on hosts with old SSH daemons (e.g. dropbear_2013.60) because
+# it can't negotiate a key exchange algorithm. insecure-ssh-keyscan is
+# a build that supports legacy algorithms for these hosts.
+_KEYSCAN_BINARIES = ["ssh-keyscan", "/usr/local/bin/insecure-ssh-keyscan"]
 
-    Returns lines like "hostname ssh-ed25519 AAAA..."
 
-    Raises SSHKeyscanError if ssh-keyscan fails, times out, or returns
-    no keys despite a successful exit.
+def _run_keyscan(binary: str, ip: str) -> subprocess.CompletedProcess[str]:
+    """Run a single ssh-keyscan binary and return the result.
+
+    Raises SSHKeyscanError on timeout.
     """
     try:
-        result = subprocess.run(
-            ["ssh-keyscan", ip],
+        return subprocess.run(
+            [binary, ip],
             capture_output=True,
             text=True,
             timeout=10,
         )
     except subprocess.TimeoutExpired as e:
         raise SSHKeyscanError(
-            f"ssh-keyscan {ip} timed out after 10 seconds"
+            f"{binary} {ip} timed out after 10 seconds"
         ) from e
 
+
+def _parse_keyscan_output(
+    result: subprocess.CompletedProcess[str],
+    ip: str,
+    hostname: str,
+    binary: str,
+) -> list[str]:
+    """Parse ssh-keyscan output into hostname-substituted key lines.
+
+    Raises SSHKeyscanError if the output is malformed or empty.
+    """
     if result.returncode != 0:
         raise SSHKeyscanError(
-            f"ssh-keyscan {ip} exited with code {result.returncode}"
+            f"{binary} {ip} exited with code {result.returncode}"
             f" (stderr: {result.stderr.strip()!r})"
         )
 
@@ -72,7 +87,7 @@ def _keyscan_pubkeys(ip: str, hostname: str) -> list[str]:
         parts = line.split(None, 2)
         if len(parts) != 3:
             raise SSHKeyscanError(
-                f"Malformed ssh-keyscan output line for {ip}: {line!r}"
+                f"Malformed {binary} output line for {ip}: {line!r}"
             )
         # Replace the IP field with hostname; use split/rejoin rather
         # than str.replace to avoid matching the IP inside the key blob.
@@ -80,13 +95,39 @@ def _keyscan_pubkeys(ip: str, hostname: str) -> list[str]:
 
     if not lines:
         raise SSHKeyscanError(
-            f"ssh-keyscan {ip} exited successfully but returned no key"
+            f"{binary} {ip} exited successfully but returned no key"
             f" lines (stdout had {len(result.stdout)} bytes,"
             f" stderr: {result.stderr.strip()!r})"
         )
 
     lines.sort()
     return lines
+
+
+def _keyscan_pubkeys(ip: str, hostname: str) -> list[str]:
+    """Run ssh-keyscan and return public key lines with hostname substituted.
+
+    Returns lines like "hostname ssh-ed25519 AAAA..."
+
+    Tries each binary in _KEYSCAN_BINARIES in order. If a binary fails
+    (non-zero exit, no keys), the next binary is tried. If all binaries
+    fail, raises SSHKeyscanError with details from each attempt.
+    """
+    attempts: list[str] = []
+
+    for binary in _KEYSCAN_BINARIES:
+        try:
+            result = _run_keyscan(binary, ip)
+            return _parse_keyscan_output(result, ip, hostname, binary)
+        except SSHKeyscanError as e:
+            attempts.append(f"{binary}: {e}")
+        except FileNotFoundError:
+            attempts.append(f"{binary}: not found")
+
+    raise SSHKeyscanError(
+        f"All ssh-keyscan binaries failed for {ip}:\n"
+        + "\n".join(f"  - {a}" for a in attempts)
+    )
 
 
 def derive_sshfp_from_host_keys(keys: list[str]) -> list[str]:

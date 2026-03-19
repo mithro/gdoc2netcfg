@@ -22,7 +22,7 @@ run: $(VENV)/.stamp ## Run gdoc2netcfg (use ARGS= for subcommands)
 	$(VENV_BIN)/gdoc2netcfg $(ARGS)
 
 .PHONY: generate
-generate: $(VENV)/.stamp ## Generate configs into out/ (use ARGS= for specific generators)
+generate: $(VENV)/.stamp fetch ## Generate configs into out/ (use ARGS= for specific generators)
 	rm -rf $(OUTPUT_DIR)
 	$(VENV_BIN)/gdoc2netcfg generate --output-dir $(OUTPUT_DIR) $(ARGS)
 

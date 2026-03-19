@@ -39,28 +39,37 @@ class SSHKeyscanError(Exception):
     """Error during SSH host key scanning."""
 
 
-# ssh-keyscan binaries to try, in order. The standard ssh-keyscan may
-# fail on hosts with old SSH daemons (e.g. dropbear_2013.60) because
-# it can't negotiate a key exchange algorithm. insecure-ssh-keyscan is
-# a build that supports legacy algorithms for these hosts.
-_KEYSCAN_BINARIES = ["ssh-keyscan", "/usr/local/bin/insecure-ssh-keyscan"]
+# ssh-keyscan commands to try, in order: (command_args, subprocess_timeout).
+# The standard ssh-keyscan tries all modern key types.
+# The fallback uses legacy kex algorithms (patched OpenSSH 9.8p1), requests
+# only rsa/dsa key types that old daemons support, and allows extra time
+# (-T 20) for slow BMCs doing group14 DH math.
+_KEYSCAN_COMMANDS: list[tuple[list[str], int]] = [
+    (["ssh-keyscan"], 10),
+    (
+        ["/usr/local/bin/insecure-ssh-keyscan", "-T", "20", "-t", "rsa,dsa"],
+        30,  # subprocess timeout must exceed ssh-keyscan's -T 20
+    ),
+]
 
 
-def _run_keyscan(binary: str, ip: str) -> subprocess.CompletedProcess[str]:
-    """Run a single ssh-keyscan binary and return the result.
+def _run_keyscan(
+    cmd_args: list[str], ip: str, timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    """Run a single ssh-keyscan command and return the result.
 
     Raises SSHKeyscanError on timeout.
     """
     try:
         return subprocess.run(
-            [binary, ip],
+            [*cmd_args, ip],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired as e:
         raise SSHKeyscanError(
-            f"{binary} {ip} timed out after 10 seconds"
+            f"{cmd_args[0]} {ip} timed out after {timeout} seconds"
         ) from e
 
 
@@ -72,14 +81,12 @@ def _parse_keyscan_output(
 ) -> list[str]:
     """Parse ssh-keyscan output into hostname-substituted key lines.
 
-    Raises SSHKeyscanError if the output is malformed or empty.
-    """
-    if result.returncode != 0:
-        raise SSHKeyscanError(
-            f"{binary} {ip} exited with code {result.returncode}"
-            f" (stderr: {result.stderr.strip()!r})"
-        )
+    Raises SSHKeyscanError if the output is empty or malformed.
 
+    Non-zero exit codes are accepted when valid key lines are present in
+    stdout, because ssh-keyscan exits non-zero when *some* key types fail
+    to negotiate (expected for legacy servers that only support rsa/dsa).
+    """
     lines = []
     for line in result.stdout.splitlines():
         if line.startswith("#") or not line.strip():
@@ -94,6 +101,11 @@ def _parse_keyscan_output(
         lines.append(f"{hostname} {parts[1]} {parts[2]}")
 
     if not lines:
+        if result.returncode != 0:
+            raise SSHKeyscanError(
+                f"{binary} {ip} exited with code {result.returncode}"
+                f" (stderr: {result.stderr.strip()!r})"
+            )
         raise SSHKeyscanError(
             f"{binary} {ip} exited successfully but returned no key"
             f" lines (stdout had {len(result.stdout)} bytes,"
@@ -109,20 +121,20 @@ def _keyscan_pubkeys(ip: str, hostname: str) -> list[str]:
 
     Returns lines like "hostname ssh-ed25519 AAAA..."
 
-    Tries each binary in _KEYSCAN_BINARIES in order. If a binary fails
-    (non-zero exit, no keys), the next binary is tried. If all binaries
-    fail, raises SSHKeyscanError with details from each attempt.
+    Tries each command in _KEYSCAN_COMMANDS in order. If a command fails
+    (no keys, timeout, binary not found), the next is tried. If all
+    commands fail, raises SSHKeyscanError with details from each attempt.
     """
     attempts: list[str] = []
 
-    for binary in _KEYSCAN_BINARIES:
+    for cmd_args, timeout in _KEYSCAN_COMMANDS:
         try:
-            result = _run_keyscan(binary, ip)
-            return _parse_keyscan_output(result, ip, hostname, binary)
+            result = _run_keyscan(cmd_args, ip, timeout)
+            return _parse_keyscan_output(result, ip, hostname, cmd_args[0])
         except SSHKeyscanError as e:
-            attempts.append(f"{binary}: {e}")
+            attempts.append(f"{cmd_args[0]}: {e}")
         except FileNotFoundError:
-            attempts.append(f"{binary}: not found")
+            attempts.append(f"{cmd_args[0]}: not found")
 
     raise SSHKeyscanError(
         f"All ssh-keyscan binaries failed for {ip}:\n"

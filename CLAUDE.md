@@ -17,10 +17,12 @@ uv run gdoc2netcfg generate letsencrypt       # Generate certbot cert scripts
 uv run gdoc2netcfg generate nagios            # Generate Nagios monitoring config
 uv run gdoc2netcfg generate nginx             # Generate nginx reverse proxy configs
 uv run gdoc2netcfg generate topology          # Generate Graphviz DOT topology diagram
+uv run gdoc2netcfg generate known_hosts        # Generate SSH known_hosts file
 uv run gdoc2netcfg validate             # Run constraint validation
 uv run gdoc2netcfg info                 # Show pipeline configuration
 uv run gdoc2netcfg reachability         # Ping all hosts and report up/down
 uv run gdoc2netcfg sshfp --force        # Scan SSH fingerprints
+uv run gdoc2netcfg known-hosts --force  # Scan SSH host keys (for known_hosts)
 uv run gdoc2netcfg ssl-certs --force    # Scan SSL/TLS certificates
 uv run gdoc2netcfg snmp-host --force    # Scan hosts for SNMP system info
 uv run gdoc2netcfg snmp-switch --force  # Scan switches for bridge/topology via SNMP
@@ -268,4 +270,4 @@ The command reads from the local CSV cache (`gdoc2netcfg fetch` must have been r
 
 ### Other
 
-The SSHFP cache lives at `.cache/sshfp.json`.
+The SSH host key cache lives at `.cache/ssh_host_keys.json`. SSHFP records are derived from these keys at runtime.

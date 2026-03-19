@@ -68,6 +68,9 @@ output = "nagios-switches.cfg"
 output = "topology.dot"
 show_unknown_macs = "false"
 
+[generators.known_hosts]
+output = "known_hosts"
+
 # ── Optional: Tasmota IoT device management ──────────────────
 [tasmota]
 mqtt_host = "ha.welland.mithis.com"

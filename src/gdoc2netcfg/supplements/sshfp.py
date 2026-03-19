@@ -48,7 +48,10 @@ _KEYSCAN_COMMANDS: list[tuple[list[str], int]] = [
     (["ssh-keyscan"], 10),
     (
         ["/usr/local/bin/insecure-ssh-keyscan", "-T", "20", "-t", "rsa,dsa"],
-        30,  # subprocess timeout must exceed ssh-keyscan's -T 20
+        # subprocess timeout must exceed ssh-keyscan's -T 20 per key type.
+        # With -t rsa,dsa that's potentially 2 × 20s on a slow BMC, plus
+        # recovery time from the primary ssh-keyscan's failed connections.
+        60,
     ),
 ]
 

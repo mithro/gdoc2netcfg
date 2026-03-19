@@ -163,7 +163,7 @@ class TestOrphanPtrDetected:
         files = {
             "orphan.conf": (
                 "host-record=real.welland.mithis.com,10.1.10.1\n"
-                "ptr-record=/ghost.welland.mithis.com/10.1.10.1\n"
+                "ptr-record=1.10.1.10.in-addr.arpa,ghost.welland.mithis.com\n"
             ),
         }
         result = validate_dnsmasq_output(files)
@@ -191,8 +191,8 @@ class TestOrphanPtrDetected:
         files = {
             "multi.conf": (
                 "host-record=real.welland.mithis.com,10.1.10.1\n"
-                "ptr-record=/ghost1.welland.mithis.com/10.1.10.1\n"
-                "ptr-record=/ghost2.welland.mithis.com/10.1.10.2\n"
+                "ptr-record=1.10.1.10.in-addr.arpa,ghost1.welland.mithis.com\n"
+                "ptr-record=2.10.1.10.in-addr.arpa,ghost2.welland.mithis.com\n"
             ),
         }
         result = validate_dnsmasq_output(files)
@@ -207,7 +207,7 @@ class TestOrphanPtrDetected:
         files = {
             "ok.conf": (
                 "host-record=server.welland.mithis.com,10.1.10.1\n"
-                "ptr-record=/server.welland.mithis.com/10.1.10.1\n"
+                "ptr-record=1.10.1.10.in-addr.arpa,server.welland.mithis.com\n"
             ),
         }
         result = validate_dnsmasq_output(files)
@@ -220,7 +220,7 @@ class TestOrphanPtrDetected:
                 "host-record=server.welland.mithis.com,10.1.10.1\n"
             ),
             "reverse.conf": (
-                "ptr-record=/server.welland.mithis.com/10.1.10.1\n"
+                "ptr-record=1.10.1.10.in-addr.arpa,server.welland.mithis.com\n"
             ),
         }
         result = validate_dnsmasq_output(files)
@@ -230,7 +230,7 @@ class TestOrphanPtrDetected:
         """Violation record_id should be the filename containing the PTR."""
         files = {
             "badhost.conf": (
-                "ptr-record=/missing.welland.mithis.com/10.1.10.1\n"
+                "ptr-record=1.10.1.10.in-addr.arpa,missing.welland.mithis.com\n"
             ),
         }
         result = validate_dnsmasq_output(files)
@@ -259,7 +259,7 @@ class TestEmptyAndEdgeCases:
                 "\n"
                 "host-record=server.welland.mithis.com,10.1.10.1\n"
                 "# Another comment\n"
-                "ptr-record=/server.welland.mithis.com/10.1.10.1\n"
+                "ptr-record=1.10.1.10.in-addr.arpa,server.welland.mithis.com\n"
             ),
         }
         result = validate_dnsmasq_output(files)

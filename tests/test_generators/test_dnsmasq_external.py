@@ -165,8 +165,10 @@ class TestDnsmasqExternalGenerator:
 
         # PTR-based SSHFP should use the public IP (reversed)
         assert "1.113.0.203.in-addr.arpa" in output
-        # Should NOT leak internal IPs
-        assert "1.10.1.10.in-addr.arpa" not in output
+        # SSHFP PTR entries should use public IP, not internal
+        sshfp_lines = [line for line in output.split("\n") if "dns-rr=" in line and "44," in line]
+        for line in sshfp_lines:
+            assert "1.10.1.10.in-addr.arpa" not in line
 
     def test_sshfp_skipped_when_no_records(self):
         host = _host_with_iface("server", "aa:bb:cc:dd:ee:ff", "10.1.10.1")

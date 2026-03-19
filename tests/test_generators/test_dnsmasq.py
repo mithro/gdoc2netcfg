@@ -90,7 +90,7 @@ class TestDnsmasqGenerator:
         inv = _inventory_with_host("desktop", "aa:bb:cc:dd:ee:ff", "10.1.10.1", dhcp_name="desktop")
         result = generate_dnsmasq_internal(inv)
         output = result["desktop.conf"]
-        assert "ptr-record=/ipv4.desktop.int.welland.mithis.com/10.1.10.1" in output
+        assert "ptr-record=1.10.1.10.in-addr.arpa,ipv4.desktop.int.welland.mithis.com" in output
 
     def test_generates_ipv6_ptr_records(self):
         inv = _inventory_with_host("desktop", "aa:bb:cc:dd:ee:ff", "10.1.10.1", dhcp_name="desktop")
@@ -314,7 +314,8 @@ class TestSharedIP:
         result = generate_dnsmasq_internal(inv)
         output = result["roku.conf"]
         ipv4_ptrs = [line for line in output.split("\n")
-                     if line.startswith("ptr-record=/") and "in-addr.arpa" not in line]
+                     if line.startswith("ptr-record=") and "in-addr.arpa" in line
+                     and "ip6.arpa" not in line]
         assert len(ipv4_ptrs) == 1
 
     def test_shared_ip_sshfp_ptr_appears_once(self):
@@ -349,10 +350,11 @@ class TestMostSpecificFQDN:
         inv = _inventory_with_host("desktop", "aa:bb:cc:dd:ee:ff", "10.1.10.1")
         result = generate_dnsmasq_internal(inv)
         output = result["desktop.conf"]
-        assert "ptr-record=/ipv4.desktop.int.welland.mithis.com/10.1.10.1" in output
+        assert "ptr-record=1.10.1.10.in-addr.arpa,ipv4.desktop.int.welland.mithis.com" in output
         assert "ipv6.desktop.int.welland.mithis.com" in output
         # Verify they're different names
-        ipv4_ptrs = [line for line in output.split("\n") if line.startswith("ptr-record=/")]
+        ipv4_ptrs = [line for line in output.split("\n")
+                     if line.startswith("ptr-record=") and "in-addr.arpa" in line]
         ipv6_ptrs = [line for line in output.split("\n")
                      if line.startswith("ptr-record=") and "ip6.arpa" in line]
         assert len(ipv4_ptrs) == 1
@@ -368,7 +370,7 @@ class TestMostSpecificFQDN:
         result = generate_dnsmasq_internal(inv)
         output = result["router.conf"]
         # No subdomain, so most specific for IPv4 is ipv4.router.welland.mithis.com
-        assert "ptr-record=/ipv4.router.welland.mithis.com/10.1.99.1" in output
+        assert "ptr-record=1.99.1.10.in-addr.arpa,ipv4.router.welland.mithis.com" in output
 
     def test_no_interface_name_uses_hostname(self):
         """Unnamed interface uses hostname-based names (not interface-prefixed)."""
@@ -376,7 +378,8 @@ class TestMostSpecificFQDN:
         result = generate_dnsmasq_internal(inv)
         output = result["desktop.conf"]
         # Should NOT have an interface prefix like eth0.desktop
-        ipv4_ptrs = [line for line in output.split("\n") if line.startswith("ptr-record=/")]
+        ipv4_ptrs = [line for line in output.split("\n")
+                     if line.startswith("ptr-record=") and "in-addr.arpa" in line]
         assert len(ipv4_ptrs) == 1
         assert "ipv4.desktop.int.welland.mithis.com" in ipv4_ptrs[0]
 
@@ -391,9 +394,10 @@ class TestMostSpecificFQDN:
         output = result["desktop.conf"]
         # PTR should use the regular most-specific name, not the alt name
         assert "a.b.c.d.desktop.welland.mithis.com" not in [
-            line.split("/")[1] for line in output.split("\n") if line.startswith("ptr-record=/")
+            line.split(",", 1)[1] for line in output.split("\n")
+            if line.startswith("ptr-record=") and "in-addr.arpa" in line
         ]
-        assert "ptr-record=/ipv4.desktop.int.welland.mithis.com/10.1.10.1" in output
+        assert "ptr-record=1.10.1.10.in-addr.arpa,ipv4.desktop.int.welland.mithis.com" in output
 
     def test_named_interface_gets_interface_prefixed_ptr(self):
         """Named interface produces PTR with interface name in most-specific FQDN."""
@@ -404,7 +408,9 @@ class TestMostSpecificFQDN:
         output = result["desktop.conf"]
         # With named interface + subdomain + dual-stack:
         # most-specific is ipv4.eth0.desktop.int.welland.mithis.com
-        assert "ptr-record=/ipv4.eth0.desktop.int.welland.mithis.com/10.1.10.1" in output
+        expected = "ptr-record=1.10.1.10.in-addr.arpa,"
+        expected += "ipv4.eth0.desktop.int.welland.mithis.com"
+        assert expected in output
 
     def test_ipv4_only_gets_subdomain_name_not_ipv4_prefix(self):
         """IPv4-only host gets ipv4. prefix, which becomes most-specific PTR name."""
@@ -474,9 +480,9 @@ class TestMultiInterfacePTR:
         result = generate_dnsmasq_internal(inv)
         output = result["server.conf"]
         # Default IP (unnamed iface) gets hostname-based name
-        assert "ptr-record=/ipv4.server.int.welland.mithis.com/10.1.10.1" in output
+        assert "ptr-record=1.10.1.10.in-addr.arpa,ipv4.server.int.welland.mithis.com" in output
         # Named interface IP gets interface-prefixed name
-        assert "ptr-record=/ipv4.eth0.server.int.welland.mithis.com/10.1.10.2" in output
+        assert "ptr-record=2.10.1.10.in-addr.arpa,ipv4.eth0.server.int.welland.mithis.com" in output
 
     def test_hostname_host_record_one_pair_per_line(self):
         """Multi-interface hostname host-record emits one (IPv4, IPv6) pair per line.

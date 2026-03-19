@@ -224,7 +224,8 @@ def host_ptr_config(host: Host, inventory: NetworkInventory) -> list[str]:
         # IPv4 PTR — most-specific FQDN for this IPv4
         fqdn = _most_specific_fqdn(host, ip, domain, is_ipv6=False)
         if fqdn:
-            output.append(f"ptr-record=/{fqdn}/{ip}")
+            arpa = _ipv4_to_ptr(ip)
+            output.append(f"ptr-record={arpa},{fqdn}")
 
         # IPv6 PTRs — most-specific FQDN for each IPv6
         for ipv6_addr in vi.ipv6_addresses:
@@ -248,6 +249,15 @@ def _ipv6_for_ip(ip: str, inventory: NetworkInventory) -> list[str]:
         return []
     addrs = ipv4_to_ipv6_list(ipv4, inventory.site.active_ipv6_prefixes)
     return [str(a) for a in addrs]
+
+
+def _ipv4_to_ptr(ipv4_str: str) -> str:
+    """Convert IPv4 address string to in-addr.arpa PTR format.
+
+    >>> _ipv4_to_ptr('10.1.10.1')
+    '1.10.1.10.in-addr.arpa'
+    """
+    return ".".join(reversed(ipv4_str.split("."))) + ".in-addr.arpa"
 
 
 def _ipv6_to_ptr(ipv6_str: str) -> str:
@@ -331,20 +341,12 @@ def validate_dnsmasq_output(files: dict[str, str]) -> ValidationResult:
 
             after_eq = line[len("ptr-record="):]
 
-            if after_eq.startswith("/"):
-                # IPv4 format: ptr-record=/FQDN/IP
-                parts = after_eq.strip("/").split("/")
-                if len(parts) >= 2:
-                    ptr_name = parts[0]
-                else:
-                    continue
+            # Format: ptr-record=ARPA,FQDN
+            parts = after_eq.split(",", 1)
+            if len(parts) == 2:
+                ptr_name = parts[1]
             else:
-                # IPv6 format: ptr-record=ARPA,FQDN
-                parts = after_eq.split(",", 1)
-                if len(parts) == 2:
-                    ptr_name = parts[1]
-                else:
-                    continue
+                continue
 
             if ptr_name not in host_record_names:
                 result.add(ConstraintViolation(

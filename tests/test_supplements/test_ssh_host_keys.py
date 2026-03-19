@@ -195,23 +195,38 @@ class TestKeyscanPubkeys:
         assert keys == [f"server ssh-ed25519 {_ED25519_B64}"]
 
     @patch("gdoc2netcfg.supplements.sshfp.subprocess.run")
-    def test_nonzero_exit_with_partial_stdout_raises(self, mock_run):
-        """Non-zero exit even with some stdout is an error."""
+    def test_nonzero_exit_with_valid_keys_succeeds(self, mock_run):
+        """Non-zero exit with valid key lines succeeds.
+
+        ssh-keyscan exits non-zero when some key types can't be negotiated
+        (e.g. ed25519/ecdsa against a server that only has RSA). The valid
+        keys in stdout should still be accepted.
+        """
         mock_run.return_value.returncode = 1
         mock_run.return_value.stdout = (
             f"10.1.10.1 ssh-rsa {_RSA_B64}\n"
         )
         mock_run.return_value.stderr = "partial failure"
 
-        with pytest.raises(SSHKeyscanError, match="exited with code 1"):
-            _keyscan_pubkeys("10.1.10.1", "server")
+        keys = _keyscan_pubkeys("10.1.10.1", "server")
+
+        assert keys == [f"server ssh-rsa {_RSA_B64}"]
+
+
+_FALLBACK_CMD = [
+    "/usr/local/bin/insecure-ssh-keyscan", "-T", "20", "-t", "rsa,dsa",
+]
+_TEST_KEYSCAN_COMMANDS = [
+    (["ssh-keyscan"], 10),
+    (_FALLBACK_CMD, 30),
+]
 
 
 class TestKeyscanFallback:
     """Tests for the fallback from ssh-keyscan to insecure-ssh-keyscan."""
 
-    @patch("gdoc2netcfg.supplements.sshfp._KEYSCAN_BINARIES",
-           ["ssh-keyscan", "/usr/local/bin/insecure-ssh-keyscan"])
+    @patch("gdoc2netcfg.supplements.sshfp._KEYSCAN_COMMANDS",
+           _TEST_KEYSCAN_COMMANDS)
     @patch("gdoc2netcfg.supplements.sshfp.subprocess.run")
     def test_first_fails_second_succeeds(self, mock_run):
         """When ssh-keyscan fails, fallback to insecure-ssh-keyscan."""
@@ -222,7 +237,7 @@ class TestKeyscanFallback:
             returncode=1, stdout="", stderr="kex: algorithm: (no match)",
         )
         success_result = sp.CompletedProcess(
-            args=["/usr/local/bin/insecure-ssh-keyscan", "10.1.10.1"],
+            args=[*_FALLBACK_CMD, "10.1.10.1"],
             returncode=0,
             stdout=f"10.1.10.1 ssh-rsa {_RSA_B64}\n",
             stderr="",
@@ -233,20 +248,22 @@ class TestKeyscanFallback:
 
         assert keys == [f"server ssh-rsa {_RSA_B64}"]
         assert mock_run.call_count == 2
-        assert mock_run.call_args_list[0][0][0] == ["ssh-keyscan", "10.1.10.1"]
+        assert mock_run.call_args_list[0][0][0] == [
+            "ssh-keyscan", "10.1.10.1",
+        ]
         assert mock_run.call_args_list[1][0][0] == [
-            "/usr/local/bin/insecure-ssh-keyscan", "10.1.10.1",
+            *_FALLBACK_CMD, "10.1.10.1",
         ]
 
-    @patch("gdoc2netcfg.supplements.sshfp._KEYSCAN_BINARIES",
-           ["ssh-keyscan", "/usr/local/bin/insecure-ssh-keyscan"])
+    @patch("gdoc2netcfg.supplements.sshfp._KEYSCAN_COMMANDS",
+           _TEST_KEYSCAN_COMMANDS)
     @patch("gdoc2netcfg.supplements.sshfp.subprocess.run")
     def test_first_not_found_second_succeeds(self, mock_run):
         """When ssh-keyscan binary is missing, fallback works."""
         import subprocess as sp
 
         success_result = sp.CompletedProcess(
-            args=["/usr/local/bin/insecure-ssh-keyscan", "10.1.10.1"],
+            args=[*_FALLBACK_CMD, "10.1.10.1"],
             returncode=0,
             stdout=f"10.1.10.1 ssh-ed25519 {_ED25519_B64}\n",
             stderr="",
@@ -260,8 +277,8 @@ class TestKeyscanFallback:
 
         assert keys == [f"server ssh-ed25519 {_ED25519_B64}"]
 
-    @patch("gdoc2netcfg.supplements.sshfp._KEYSCAN_BINARIES",
-           ["ssh-keyscan", "/usr/local/bin/insecure-ssh-keyscan"])
+    @patch("gdoc2netcfg.supplements.sshfp._KEYSCAN_COMMANDS",
+           _TEST_KEYSCAN_COMMANDS)
     @patch("gdoc2netcfg.supplements.sshfp.subprocess.run")
     def test_both_fail_raises_with_all_attempts(self, mock_run):
         """When all binaries fail, error includes details from each."""
@@ -272,12 +289,14 @@ class TestKeyscanFallback:
             returncode=1, stdout="", stderr="kex: no match",
         )
         fail2 = sp.CompletedProcess(
-            args=["/usr/local/bin/insecure-ssh-keyscan", "10.1.10.1"],
+            args=[*_FALLBACK_CMD, "10.1.10.1"],
             returncode=1, stdout="", stderr="libssl mismatch",
         )
         mock_run.side_effect = [fail1, fail2]
 
-        with pytest.raises(SSHKeyscanError, match="All ssh-keyscan binaries") as exc_info:
+        with pytest.raises(
+            SSHKeyscanError, match="All ssh-keyscan binaries",
+        ) as exc_info:
             _keyscan_pubkeys("10.1.10.1", "server")
 
         error_msg = str(exc_info.value)
@@ -286,15 +305,15 @@ class TestKeyscanFallback:
         assert "kex: no match" in error_msg
         assert "libssl mismatch" in error_msg
 
-    @patch("gdoc2netcfg.supplements.sshfp._KEYSCAN_BINARIES",
-           ["ssh-keyscan", "/usr/local/bin/insecure-ssh-keyscan"])
+    @patch("gdoc2netcfg.supplements.sshfp._KEYSCAN_COMMANDS",
+           _TEST_KEYSCAN_COMMANDS)
     @patch("gdoc2netcfg.supplements.sshfp.subprocess.run")
     def test_first_timeout_second_succeeds(self, mock_run):
         """When ssh-keyscan times out, fallback to insecure-ssh-keyscan."""
         import subprocess as sp
 
         success_result = sp.CompletedProcess(
-            args=["/usr/local/bin/insecure-ssh-keyscan", "10.1.10.1"],
+            args=[*_FALLBACK_CMD, "10.1.10.1"],
             returncode=0,
             stdout=f"10.1.10.1 ssh-rsa {_RSA_B64}\n",
             stderr="",
@@ -308,14 +327,16 @@ class TestKeyscanFallback:
 
         assert keys == [f"server ssh-rsa {_RSA_B64}"]
 
-    @patch("gdoc2netcfg.supplements.sshfp._KEYSCAN_BINARIES",
-           ["ssh-keyscan", "/usr/local/bin/insecure-ssh-keyscan"])
+    @patch("gdoc2netcfg.supplements.sshfp._KEYSCAN_COMMANDS",
+           _TEST_KEYSCAN_COMMANDS)
     @patch("gdoc2netcfg.supplements.sshfp.subprocess.run")
     def test_both_not_found_raises(self, mock_run):
         """When no ssh-keyscan binary exists, error says 'not found'."""
         mock_run.side_effect = FileNotFoundError("No such file")
 
-        with pytest.raises(SSHKeyscanError, match="All ssh-keyscan binaries") as exc_info:
+        with pytest.raises(
+            SSHKeyscanError, match="All ssh-keyscan binaries",
+        ) as exc_info:
             _keyscan_pubkeys("10.1.10.1", "server")
 
         error_msg = str(exc_info.value)

@@ -92,8 +92,14 @@ deploy-nginx: generate ## Generate and deploy nginx configs (run with sudo)
 	nginx -t
 	systemctl reload nginx
 
+SSH_KNOWN_HOSTS := /etc/ssh/ssh_known_hosts
+
+.PHONY: deploy-known-hosts
+deploy-known-hosts: generate ## Generate and deploy system-wide SSH known_hosts (run with sudo)
+	cp $(OUTPUT_DIR)/known_hosts $(SSH_KNOWN_HOSTS)
+
 .PHONY: deploy
-deploy: deploy-dnsmasq deploy-nginx ## Run all deploy steps (run with sudo)
+deploy: deploy-dnsmasq deploy-nginx deploy-known-hosts ## Run all deploy steps (run with sudo)
 
 .PHONY: install
 install: ## Install into /opt/gdoc2netcfg

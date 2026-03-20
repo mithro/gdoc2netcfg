@@ -67,7 +67,7 @@ def compute_desired_config(host: Host, tasmota_config: TasmotaConfig) -> dict[st
             desired["FriendlyName1"] = host.machine_name
 
     desired.update({
-        "Hostname": host.hostname,
+        "Hostname": host.machine_name,
         "Topic": host.machine_name,
         "MqttHost": tasmota_config.mqtt_host,
         "MqttPort": str(tasmota_config.mqtt_port),

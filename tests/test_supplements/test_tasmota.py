@@ -854,10 +854,11 @@ class TestComputeDesiredConfig:
         config = _make_tasmota_config()
         desired = compute_desired_config(host, config)
 
-        # FriendlyName = machine name (→ HA entity ID basis)
-        # DeviceName = machine name when no controls (→ HA device display name)
-        assert desired["FriendlyName1"] == "au-plug-10"
+        # Both DeviceName and FriendlyName = machine name.
+        # When fn[0] == dn, HA uses just the device name as entity ID:
+        # switch.{slugify(dn)} → switch.au_plug_10
         assert desired["DeviceName"] == "au-plug-10"
+        assert desired["FriendlyName1"] == "au-plug-10"
         assert desired["Hostname"] == "au-plug-10"
         assert desired["Topic"] == "au-plug-10"
         assert desired["MqttHost"] == "ha.welland.mithis.com"
@@ -865,44 +866,16 @@ class TestComputeDesiredConfig:
         assert desired["MqttUser"] == "tasmota"
         assert desired["MqttPassword"] == "secret123"
 
-    def test_friendly_name_always_machine_name(self):
-        """FriendlyName is always machine_name for predictable HA entity IDs."""
+    def test_names_always_machine_name(self):
+        """Both names are machine_name regardless of Controls column."""
         host = _make_host(hostname="au-plug-10", extra={"Controls": "desktop"})
         config = _make_tasmota_config()
         desired = compute_desired_config(host, config)
-        assert desired["FriendlyName1"] == "au-plug-10"
-
-    def test_device_name_with_controls(self):
-        """DeviceName uses human-readable description when controls exist."""
-        host = _make_host(extra={"Controls": "desktop, monitor"})
-        config = _make_tasmota_config()
-        desired = compute_desired_config(host, config)
-        assert desired["DeviceName"] == "Power for desktop, monitor"
-        assert desired["FriendlyName1"] == "au-plug-10"
-
-    def test_device_name_without_controls(self):
-        host = _make_host(extra={})
-        config = _make_tasmota_config()
-        desired = compute_desired_config(host, config)
         assert desired["DeviceName"] == "au-plug-10"
         assert desired["FriendlyName1"] == "au-plug-10"
 
-    def test_device_name_with_whitespace_controls(self):
-        host = _make_host(extra={"Controls": "  "})
-        config = _make_tasmota_config()
-        desired = compute_desired_config(host, config)
-        # Whitespace-only should fall back to machine_name
-        assert desired["DeviceName"] == "au-plug-10"
-
-    def test_device_name_with_newline_controls(self):
-        host = _make_host(extra={"Controls": "desktop\nmonitor\nserver"})
-        config = _make_tasmota_config()
-        desired = compute_desired_config(host, config)
-        assert desired["DeviceName"] == "Power for desktop, monitor, server"
-        assert desired["FriendlyName1"] == "au-plug-10"
-
-    def test_non_plug_still_sets_names(self):
-        """All devices get DeviceName and FriendlyName, not just plugs."""
+    def test_non_plug_sets_names(self):
+        """All devices get DeviceName and FriendlyName set."""
         host = _make_host(hostname="ir-ac-remote")
         config = _make_tasmota_config()
         desired = compute_desired_config(host, config)
@@ -1322,22 +1295,16 @@ class TestConfigureAllTasmotaDevices:
 class TestEntityIdForHost:
     def test_basic(self):
         host = _make_host(hostname="au-plug-10")
-        host.tasmota_data = _make_tasmota_data(mqtt_topic="au-plug-10")
-        assert _entity_id_for_host(host) == "switch.tasmota_au_plug_10"
+        assert _entity_id_for_host(host) == "switch.au_plug_10"
 
     def test_dashes_to_underscores(self):
         host = _make_host(hostname="au-plug-big-server")
-        host.tasmota_data = _make_tasmota_data(mqtt_topic="au-plug-big-server")
-        assert _entity_id_for_host(host) == "switch.tasmota_au_plug_big_server"
+        assert _entity_id_for_host(host) == "switch.au_plug_big_server"
 
-    def test_empty_topic_falls_back_to_machine_name(self):
-        host = _make_host(hostname="au-plug-10")
-        host.tasmota_data = _make_tasmota_data(mqtt_topic="")
-        assert _entity_id_for_host(host) == "switch.tasmota_au_plug_10"
-
-    def test_no_tasmota_data(self):
-        host = _make_host(hostname="au-plug-10")
-        assert _entity_id_for_host(host) == "switch.tasmota_au_plug_10"
+    def test_dots_to_underscores(self):
+        host = _make_host(hostname="ir-ac-remote.iot")
+        host.machine_name = "ir-ac-remote"
+        assert _entity_id_for_host(host) == "switch.ir_ac_remote"
 
 
 # ---------------------------------------------------------------------------

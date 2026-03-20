@@ -20,14 +20,16 @@ if TYPE_CHECKING:
 
 
 def _entity_id_for_host(host: Host) -> str:
-    """Derive the expected HA entity ID for a Tasmota host."""
-    topic = ""
-    if host.tasmota_data is not None:
-        topic = host.tasmota_data.mqtt_topic
-    if not topic:
-        topic = host.machine_name
-    # Tasmota auto-discovery creates entities with underscores
-    return f"switch.tasmota_{topic.replace('-', '_')}"
+    """Derive the expected HA entity ID for a Tasmota host.
+
+    When DeviceName == FriendlyName (which we enforce), the HA Tasmota
+    integration uses just the device name as the entity ID:
+    switch.{slugify(device_name)}.  Slugify lowercases and replaces
+    non-alphanumeric characters with underscores.
+    """
+    name = host.machine_name
+    # Replicate python-slugify behaviour for simple hostnames
+    return f"switch.{name.replace('-', '_').replace('.', '_').lower()}"
 
 
 def check_ha_status(

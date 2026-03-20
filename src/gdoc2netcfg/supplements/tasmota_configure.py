@@ -11,7 +11,6 @@ the supplement pattern where supplements are read-only.
 from __future__ import annotations
 
 import json
-import re
 import sys
 import urllib.error
 import urllib.parse
@@ -52,20 +51,13 @@ def compute_desired_config(host: Host, tasmota_config: TasmotaConfig) -> dict[st
     Returns:
         Mapping of Tasmota command name to desired value.
     """
-    controls_str = host.extra.get("Controls", "").strip()
-
     desired: dict[str, str] = {}
 
-    # FriendlyName → HA entity ID basis (must be the machine name for
-    # predictable entity IDs like switch.tasmota_au_plug_4).
-    # DeviceName → HA device display name (human-readable description).
-    # This matches the Zigbee pattern: stable IDs, descriptive labels.
+    # When fn[0] == dn, the HA Tasmota integration uses just the device
+    # name as the entity ID: switch.{slugify(dn)}. Setting both to the
+    # machine name gives predictable IDs like switch.au_plug_4.
+    desired["DeviceName"] = host.machine_name
     desired["FriendlyName1"] = host.machine_name
-    if controls_str:
-        controls = [c.strip() for c in re.split(r"[,\r\n]", controls_str) if c.strip()]
-        desired["DeviceName"] = "Power for " + ", ".join(controls)
-    else:
-        desired["DeviceName"] = host.machine_name
 
     desired.update({
         "Hostname": host.machine_name,

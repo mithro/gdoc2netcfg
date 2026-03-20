@@ -12,6 +12,7 @@ dependencies = [
     "cryptography",
     "jinja2",
     "pysnmp>=7.0",
+    "websockets>=13.0",
 ]
 
 [project.scripts]

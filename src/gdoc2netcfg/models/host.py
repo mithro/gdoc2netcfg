@@ -274,6 +274,7 @@ class TasmotaData:
         mqtt_port: MQTT broker port.
         mqtt_topic: MQTT topic for this device.
         mqtt_client: MQTT client ID.
+        mqtt_user: MQTT username for broker authentication.
         mac: Device MAC address as colon-separated hex.
         ip: Device IPv4 address.
         wifi_ssid: Connected WiFi SSID.
@@ -294,6 +295,7 @@ class TasmotaData:
     mqtt_client: str
     mac: str
     ip: str
+    mqtt_user: str = ""
     wifi_ssid: str = ""
     wifi_rssi: int = 0
     wifi_signal: int = 0

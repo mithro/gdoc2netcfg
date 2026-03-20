@@ -68,6 +68,7 @@ def _make_tasmota_data(**overrides):
         "mqtt_port": 1883,
         "mqtt_topic": "au-plug-10",
         "mqtt_client": "DVES_AABBCC",
+        "mqtt_user": "tasmota",
         "mac": "AA:BB:CC:DD:EE:10",
         "ip": "10.1.90.10",
         "wifi_ssid": "IoT-Net",
@@ -919,9 +920,13 @@ class TestGetCurrentValue:
         assert _get_current_value("MqttHost", td) == "broker"
         assert _get_current_value("MqttPort", td) == "1883"
 
-    def test_credential_fields_return_empty(self):
+    def test_mqtt_user_returns_value(self):
+        td = _make_tasmota_data(mqtt_user="myuser")
+        assert _get_current_value("MqttUser", td) == "myuser"
+
+    def test_mqtt_password_returns_empty(self):
+        """MqttPassword can't be read back from devices."""
         td = _make_tasmota_data()
-        assert _get_current_value("MqttUser", td) == ""
         assert _get_current_value("MqttPassword", td) == ""
 
     def test_unknown_field(self):
@@ -989,14 +994,15 @@ class TestComputeDrift:
             mqtt_topic="wrong",
             mqtt_host="wrong",
             mqtt_port=9999,
+            mqtt_user="wrong",
         )
         config = _make_tasmota_config()
         drifts = compute_drift(host, config)
-        # Should detect drift in DeviceName, FriendlyName1, Hostname, Topic, MqttHost, MqttPort
-        # (but NOT MqttUser/MqttPassword since those are skipped)
-        assert len(drifts) == 6
+        # Should detect drift in DeviceName, FriendlyName1, Hostname, Topic,
+        # MqttHost, MqttPort, MqttUser (but NOT MqttPassword — can't read back)
+        assert len(drifts) == 7
         fields = {d.field for d in drifts}
-        assert "MqttUser" not in fields
+        assert "MqttUser" in fields
         assert "MqttPassword" not in fields
 
     def test_no_tasmota_data_raises(self):
@@ -1146,7 +1152,7 @@ class TestConfigureTasmotaDevice:
             mock_send.assert_not_called()
 
     @patch("gdoc2netcfg.supplements.tasmota_configure._send_tasmota_command")
-    def test_apply_sends_drifted_plus_creds(self, mock_send):
+    def test_apply_sends_drifted_plus_password(self, mock_send):
         host = _make_host(hostname="au-plug-10")
         host.tasmota_data = _make_tasmota_data(
             device_name="wrong-name",
@@ -1155,6 +1161,7 @@ class TestConfigureTasmotaDevice:
             mqtt_topic="au-plug-10",
             mqtt_host="ha.welland.mithis.com",
             mqtt_port=1883,
+            mqtt_user="tasmota",
         )
         config = _make_tasmota_config()
         mock_send.return_value = {"DeviceName": "au-plug-10"}
@@ -1162,14 +1169,37 @@ class TestConfigureTasmotaDevice:
         result = configure_tasmota_device(host, config)
         assert result is True
 
-        # Should send DeviceName (drifted) + MqttUser + MqttPassword (always pushed)
+        # Should send DeviceName (drifted) + MqttPassword (always pushed, can't detect drift)
         sent_fields = [call.args[1].split(" ")[0] for call in mock_send.call_args_list]
         assert "DeviceName" in sent_fields
-        assert "MqttUser" in sent_fields
         assert "MqttPassword" in sent_fields
-        # Should NOT send unchanged fields
+        # MqttUser matches desired, so NOT pushed
+        assert "MqttUser" not in sent_fields
+        # Should NOT send other unchanged fields
         assert "Hostname" not in sent_fields
         assert "MqttHost" not in sent_fields
+
+    @patch("gdoc2netcfg.supplements.tasmota_configure._send_tasmota_command")
+    def test_apply_sends_mqtt_user_when_drifted(self, mock_send):
+        host = _make_host(hostname="au-plug-10")
+        host.tasmota_data = _make_tasmota_data(
+            device_name="au-plug-10",
+            friendly_name="au-plug-10",
+            hostname="au-plug-10",
+            mqtt_topic="au-plug-10",
+            mqtt_host="ha.welland.mithis.com",
+            mqtt_port=1883,
+            mqtt_user="wrong-user",
+        )
+        config = _make_tasmota_config()
+        mock_send.return_value = {}
+
+        result = configure_tasmota_device(host, config)
+        assert result is True
+
+        sent_fields = [call.args[1].split(" ")[0] for call in mock_send.call_args_list]
+        assert "MqttUser" in sent_fields
+        assert "MqttPassword" in sent_fields
 
     @patch("gdoc2netcfg.supplements.tasmota_configure._send_tasmota_command")
     def test_apply_failure(self, mock_send):

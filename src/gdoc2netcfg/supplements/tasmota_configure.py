@@ -90,8 +90,8 @@ def _get_current_value(field: str, tasmota_data) -> str:
         "Topic": "mqtt_topic",
         "MqttHost": "mqtt_host",
         "MqttPort": "mqtt_port",
-        "MqttUser": None,  # Not stored in status response
-        "MqttPassword": None,  # Not stored in status response
+        "MqttUser": "mqtt_user",
+        "MqttPassword": None,  # Can't be read back from device
     }
     attr = field_map.get(field)
     if attr is None:
@@ -117,8 +117,8 @@ def compute_drift(host: Host, tasmota_config: TasmotaConfig) -> list[ConfigDrift
 
     for field, desired_value in desired.items():
         current = _get_current_value(field, host.tasmota_data)
-        # Skip fields we can't read back (password, user)
-        if field in ("MqttUser", "MqttPassword"):
+        # Skip fields we can't read back from the device
+        if field == "MqttPassword":
             continue
         if current != desired_value:
             warning = ""
@@ -249,17 +249,16 @@ def configure_tasmota_device(
     if force:
         drifts_to_apply = drifts  # All drifts including warned ones
 
-    # Apply drifted fields + credentials (which we can't read back to detect drift)
+    # Apply drifted fields + MqttPassword (which can't be read back to detect drift)
     all_ok = True
     desired = compute_desired_config(host, tasmota_config)
     fields_to_push = {d.field: d.desired for d in drifts_to_apply}
-    for cred_field in ("MqttUser", "MqttPassword"):
-        if cred_field in desired:
-            fields_to_push[cred_field] = desired[cred_field]
+    if "MqttPassword" in desired:
+        fields_to_push["MqttPassword"] = desired["MqttPassword"]
 
     for field, value in fields_to_push.items():
         # Mask credentials in log output
-        if field in ("MqttPassword", "MqttUser"):
+        if field == "MqttPassword":
             log_display = f"{field} ****"
         else:
             log_display = f"{field} {value}"

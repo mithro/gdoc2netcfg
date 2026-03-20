@@ -1,8 +1,11 @@
 """Tasmota Home Assistant integration check.
 
 Queries the Home Assistant REST API to verify that Tasmota devices
-are properly registered and reporting state. Each Tasmota device
-should appear as switch.tasmota_{topic} in HA.
+are properly registered and reporting state.  Devices with relays
+appear as switch entities; relay-less devices (IR blasters, bridges)
+appear as sensor-only.  The check fetches all HA states in one bulk
+request and matches by the entity-name prefix derived from each
+device's machine_name.
 """
 
 from __future__ import annotations
@@ -11,7 +14,6 @@ import json
 import sys
 import urllib.error
 import urllib.request
-from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -19,17 +21,29 @@ if TYPE_CHECKING:
     from gdoc2netcfg.models.host import Host
 
 
-def _entity_id_for_host(host: Host) -> str:
-    """Derive the expected HA entity ID for a Tasmota host.
+def _slug_for_host(host: Host) -> str:
+    """Derive the HA entity slug prefix for a Tasmota host.
 
     When DeviceName == FriendlyName (which we enforce), the HA Tasmota
-    integration uses just the device name as the entity ID:
-    switch.{slugify(device_name)}.  Slugify lowercases and replaces
-    non-alphanumeric characters with underscores.
+    integration names entities as ``{domain}.{slug}_{sensor_type}``.
+    Slugify lowercases and replaces non-alphanumeric characters with
+    underscores.
     """
-    name = host.machine_name
-    # Replicate python-slugify behaviour for simple hostnames
-    return f"switch.{name.replace('-', '_').replace('.', '_').lower()}"
+    return host.machine_name.replace("-", "_").replace(".", "_").lower()
+
+
+def _fetch_all_states(ha_config: HomeAssistantConfig) -> list[dict]:
+    """Fetch all entity states from the Home Assistant REST API."""
+    url = f"{ha_config.url.rstrip('/')}/api/states"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {ha_config.token}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30.0) as resp:
+        return json.loads(resp.read())
 
 
 def check_ha_status(
@@ -40,98 +54,105 @@ def check_ha_status(
 ) -> dict[str, dict]:
     """Check Home Assistant for Tasmota device entities.
 
-    For each host with tasmota_data, queries the HA REST API for the
-    expected entity (switch.tasmota_{topic}). Uses ThreadPoolExecutor
-    for parallel requests. Reports existence, state, and last_changed.
+    Fetches all HA entity states in a single request, then matches
+    each Tasmota host by its entity-name prefix.  Devices with relay
+    entities (switches) report switch state; relay-less devices (IR
+    blasters, sensor bridges) report as registered with sensor count.
 
     Args:
         hosts: Hosts with tasmota_data attached.
         ha_config: Home Assistant connection config.
-        max_workers: Maximum concurrent HA API requests.
+        max_workers: Unused (kept for API compatibility).
         verbose: Print progress to stderr.
 
     Returns:
         Mapping of hostname to status dict with keys:
-        exists, entity_id, state, last_changed.
+        exists, entity_id/entities, state, last_changed.
     """
-    # Build work list: (hostname, entity_id) for hosts with tasmota data
-    work: list[tuple[str, str]] = []
-    for host in sorted(hosts, key=lambda h: h.hostname):
-        if host.tasmota_data is None:
-            continue
-        work.append((host.hostname, _entity_id_for_host(host)))
-
-    if not work:
+    tasmota_hosts = [
+        h for h in sorted(hosts, key=lambda h: h.hostname)
+        if h.tasmota_data is not None
+    ]
+    if not tasmota_hosts:
         return {}
+
+    try:
+        all_states = _fetch_all_states(ha_config)
+    except (urllib.error.URLError, OSError, json.JSONDecodeError, TimeoutError) as e:
+        if verbose:
+            print(f"  Error fetching HA states: {e}", file=sys.stderr)
+        return {
+            h.hostname: {"exists": False, "error": str(e)}
+            for h in tasmota_hosts
+        }
+
+    # Index entities by slug prefix for fast lookup.
+    # e.g. "switch.au_plug_1" and "sensor.au_plug_1_energy_power"
+    # both have prefix "au_plug_1".
+    prefix_to_entities: dict[str, list[dict]] = {}
+    for entity in all_states:
+        eid = entity["entity_id"]
+        domain, slug = eid.split(".", 1)
+        prefix_to_entities.setdefault(slug, []).append(entity)
+        # Also index by the prefix before the first sensor-type suffix,
+        # so "au_plug_1_energy_power" is findable under "au_plug_1".
+        # We do this by checking if slug starts with any known device prefix.
+        # (handled below in the matching loop instead)
 
     results: dict[str, dict] = {}
 
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        # Submit all lookups in parallel
-        futures: list[tuple[str, str, Future[dict]]] = [
-            (hostname, entity_id, pool.submit(_query_ha_entity, ha_config, entity_id))
-            for hostname, entity_id in work
-        ]
+    for host in tasmota_hosts:
+        slug = _slug_for_host(host)
 
-        # Collect results in sorted order, printing as each completes
-        for hostname, entity_id, future in futures:
-            status = future.result()
-            results[hostname] = status
+        # Find all entities whose slug starts with this device's prefix.
+        matching: list[dict] = []
+        for entity in all_states:
+            eid = entity["entity_id"]
+            entity_slug = eid.split(".", 1)[1]
+            if entity_slug == slug or entity_slug.startswith(slug + "_"):
+                matching.append(entity)
 
-            if verbose:
-                if status["exists"]:
-                    state = status.get("state", "?")
-                    changed = status.get("last_changed", "?")
-                    print(
-                        f"  {hostname:30s}  {entity_id:40s}  "
-                        f"state={state}  last_changed={changed}",
-                        file=sys.stderr,
-                    )
-                else:
-                    print(
-                        f"  {hostname:30s}  {entity_id:40s}  NOT FOUND",
-                        file=sys.stderr,
-                    )
+        switches = [e for e in matching if e["entity_id"].startswith("switch.")]
+        sensors = [e for e in matching if e["entity_id"].startswith("sensor.")]
+
+        if switches:
+            # Device has relay entities — report the primary switch state.
+            sw = switches[0]
+            status: dict = {
+                "exists": True,
+                "entity_id": sw["entity_id"],
+                "state": sw.get("state", "unknown"),
+                "last_changed": sw.get("last_changed", ""),
+                "entity_count": len(matching),
+            }
+        elif sensors:
+            # Relay-less device (IR blaster, bridge) — sensors only.
+            status = {
+                "exists": True,
+                "entity_id": sensors[0]["entity_id"],
+                "state": f"{len(sensors)} sensors",
+                "last_changed": sensors[0].get("last_changed", ""),
+                "entity_count": len(matching),
+            }
+        else:
+            status = {"exists": False, "entity_count": 0}
+
+        results[host.hostname] = status
+
+        if verbose:
+            if status["exists"]:
+                state = status.get("state", "?")
+                count = status["entity_count"]
+                print(
+                    f"  {host.hostname:30s}  {status['entity_id']:40s}  "
+                    f"state={state}  ({count} entities)",
+                    file=sys.stderr,
+                )
+            else:
+                expected = f"switch.{slug}"
+                print(
+                    f"  {host.hostname:30s}  {expected:40s}  NOT FOUND",
+                    file=sys.stderr,
+                )
 
     return results
-
-
-def _query_ha_entity(
-    ha_config: HomeAssistantConfig,
-    entity_id: str,
-) -> dict:
-    """Query a single entity from the Home Assistant REST API.
-
-    Args:
-        ha_config: HA connection config.
-        entity_id: Entity ID to look up (e.g. "switch.tasmota_au_plug_10").
-
-    Returns:
-        Dict with 'exists' bool, plus 'state', 'last_changed',
-        'entity_id' if found.
-    """
-    url = f"{ha_config.url.rstrip('/')}/api/states/{entity_id}"
-    req = urllib.request.Request(
-        url,
-        headers={
-            "Authorization": f"Bearer {ha_config.token}",
-            "Content-Type": "application/json",
-        },
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=10.0) as resp:
-            data = json.loads(resp.read())
-            return {
-                "exists": True,
-                "entity_id": entity_id,
-                "state": data.get("state", "unknown"),
-                "last_changed": data.get("last_changed", ""),
-                "attributes": data.get("attributes", {}),
-            }
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return {"exists": False, "entity_id": entity_id}
-        return {"exists": False, "entity_id": entity_id, "error": str(e)}
-    except (urllib.error.URLError, OSError, json.JSONDecodeError, TimeoutError) as e:
-        return {"exists": False, "entity_id": entity_id, "error": str(e)}

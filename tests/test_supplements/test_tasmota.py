@@ -26,7 +26,7 @@ from gdoc2netcfg.supplements.tasmota_configure import (
     configure_tasmota_device,
 )
 from gdoc2netcfg.supplements.tasmota_ha import (
-    _entity_id_for_host,
+    _slug_for_host,
     check_ha_status,
 )
 
@@ -1289,22 +1289,22 @@ class TestConfigureAllTasmotaDevices:
 
 
 # ---------------------------------------------------------------------------
-# _entity_id_for_host
+# _slug_for_host
 # ---------------------------------------------------------------------------
 
-class TestEntityIdForHost:
+class TestSlugForHost:
     def test_basic(self):
         host = _make_host(hostname="au-plug-10")
-        assert _entity_id_for_host(host) == "switch.au_plug_10"
+        assert _slug_for_host(host) == "au_plug_10"
 
     def test_dashes_to_underscores(self):
         host = _make_host(hostname="au-plug-big-server")
-        assert _entity_id_for_host(host) == "switch.au_plug_big_server"
+        assert _slug_for_host(host) == "au_plug_big_server"
 
     def test_dots_to_underscores(self):
         host = _make_host(hostname="ir-ac-remote.iot")
         host.machine_name = "ir-ac-remote"
-        assert _entity_id_for_host(host) == "switch.ir_ac_remote"
+        assert _slug_for_host(host) == "ir_ac_remote"
 
 
 # ---------------------------------------------------------------------------
@@ -1312,15 +1312,14 @@ class TestEntityIdForHost:
 # ---------------------------------------------------------------------------
 
 class TestCheckHAStatus:
-    @patch("gdoc2netcfg.supplements.tasmota_ha._query_ha_entity")
-    def test_found_entity(self, mock_query):
-        mock_query.return_value = {
-            "exists": True,
-            "entity_id": "switch.tasmota_au_plug_10",
-            "state": "on",
-            "last_changed": "2025-01-15T14:30:00Z",
-            "attributes": {},
-        }
+    @patch("gdoc2netcfg.supplements.tasmota_ha._fetch_all_states")
+    def test_found_switch_entity(self, mock_fetch):
+        mock_fetch.return_value = [
+            {"entity_id": "switch.au_plug_10", "state": "on",
+             "last_changed": "2025-01-15T14:30:00Z", "attributes": {}},
+            {"entity_id": "sensor.au_plug_10_energy_power", "state": "42",
+             "last_changed": "2025-01-15T14:30:00Z", "attributes": {}},
+        ]
 
         host = _make_host(hostname="au-plug-10")
         host.tasmota_data = _make_tasmota_data(mqtt_topic="au-plug-10")
@@ -1330,13 +1329,30 @@ class TestCheckHAStatus:
         assert "au-plug-10" in results
         assert results["au-plug-10"]["exists"] is True
         assert results["au-plug-10"]["state"] == "on"
+        assert results["au-plug-10"]["entity_count"] == 2
 
-    @patch("gdoc2netcfg.supplements.tasmota_ha._query_ha_entity")
-    def test_missing_entity(self, mock_query):
-        mock_query.return_value = {
-            "exists": False,
-            "entity_id": "switch.tasmota_au_plug_10",
-        }
+    @patch("gdoc2netcfg.supplements.tasmota_ha._fetch_all_states")
+    def test_found_sensor_only(self, mock_fetch):
+        """Relay-less devices (IR blasters) with only sensors are found."""
+        mock_fetch.return_value = [
+            {"entity_id": "sensor.ir_ac_remote_ssid", "state": "my-wifi",
+             "last_changed": "2025-01-15T14:30:00Z", "attributes": {}},
+            {"entity_id": "sensor.ir_ac_remote_rssi", "state": "80",
+             "last_changed": "2025-01-15T14:30:00Z", "attributes": {}},
+        ]
+
+        host = _make_host(hostname="ir-ac-remote.iot")
+        host.machine_name = "ir-ac-remote"
+        host.tasmota_data = _make_tasmota_data(mqtt_topic="ir-ac-remote")
+        ha_config = HomeAssistantConfig(url="http://ha:8123", token="test")
+
+        results = check_ha_status([host], ha_config)
+        assert results["ir-ac-remote.iot"]["exists"] is True
+        assert results["ir-ac-remote.iot"]["state"] == "2 sensors"
+
+    @patch("gdoc2netcfg.supplements.tasmota_ha._fetch_all_states")
+    def test_missing_entity(self, mock_fetch):
+        mock_fetch.return_value = []
 
         host = _make_host(hostname="au-plug-10")
         host.tasmota_data = _make_tasmota_data(mqtt_topic="au-plug-10")
@@ -1345,21 +1361,24 @@ class TestCheckHAStatus:
         results = check_ha_status([host], ha_config)
         assert results["au-plug-10"]["exists"] is False
 
-    @patch("gdoc2netcfg.supplements.tasmota_ha._query_ha_entity")
-    def test_skips_hosts_without_tasmota_data(self, mock_query):
+    @patch("gdoc2netcfg.supplements.tasmota_ha._fetch_all_states")
+    def test_skips_hosts_without_tasmota_data(self, mock_fetch):
         host = _make_host(hostname="au-plug-10")
         # No tasmota_data
         ha_config = HomeAssistantConfig(url="http://ha:8123", token="test")
 
         results = check_ha_status([host], ha_config)
         assert results == {}
-        mock_query.assert_not_called()
+        mock_fetch.assert_not_called()
 
-    @patch("gdoc2netcfg.supplements.tasmota_ha._query_ha_entity")
-    def test_multiple_hosts_parallel(self, mock_query):
-        """Verify all hosts are queried (parallel execution)."""
-        mock_query.return_value = {"exists": True, "entity_id": "x", "state": "on",
-                                   "last_changed": "", "attributes": {}}
+    @patch("gdoc2netcfg.supplements.tasmota_ha._fetch_all_states")
+    def test_multiple_hosts(self, mock_fetch):
+        """Verify all hosts are matched from a single bulk fetch."""
+        mock_fetch.return_value = [
+            {"entity_id": f"switch.plug_{i}", "state": "on",
+             "last_changed": "", "attributes": {}}
+            for i in range(5)
+        ]
 
         hosts = []
         for i in range(5):
@@ -1374,36 +1393,34 @@ class TestCheckHAStatus:
         ha_config = HomeAssistantConfig(url="http://ha:8123", token="test")
         results = check_ha_status(hosts, ha_config)
         assert len(results) == 5
-        assert mock_query.call_count == 5
+        assert all(r["exists"] for r in results.values())
+        mock_fetch.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
-# _query_ha_entity (mocked HTTP)
+# _fetch_all_states (mocked HTTP)
 # ---------------------------------------------------------------------------
 
-class TestQueryHAEntity:
+class TestFetchAllStates:
     @patch("gdoc2netcfg.supplements.tasmota_ha.urllib.request.urlopen")
-    def test_found(self, mock_urlopen):
+    def test_fetches_and_parses(self, mock_urlopen):
         import json
-        body = json.dumps({
-            "state": "on",
-            "last_changed": "2025-01-15T14:30:00Z",
-            "attributes": {"friendly_name": "Plug"},
-        }).encode()
+        body = json.dumps([
+            {"entity_id": "switch.au_plug_10", "state": "on"},
+        ]).encode()
         mock_resp = MagicMock()
         mock_resp.read.return_value = body
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = mock_resp
 
-        from gdoc2netcfg.supplements.tasmota_ha import _query_ha_entity
+        from gdoc2netcfg.supplements.tasmota_ha import _fetch_all_states
 
         ha_config = HomeAssistantConfig(url="http://ha:8123", token="test-token")
-        result = _query_ha_entity(ha_config, "switch.tasmota_au_plug_10")
+        result = _fetch_all_states(ha_config)
 
-        assert result["exists"] is True
-        assert result["state"] == "on"
-        assert result["entity_id"] == "switch.tasmota_au_plug_10"
+        assert len(result) == 1
+        assert result[0]["entity_id"] == "switch.au_plug_10"
 
         # Verify auth header was set
         call_args = mock_urlopen.call_args
@@ -1411,68 +1428,18 @@ class TestQueryHAEntity:
         assert req.get_header("Authorization") == "Bearer test-token"
 
     @patch("gdoc2netcfg.supplements.tasmota_ha.urllib.request.urlopen")
-    def test_not_found_404(self, mock_urlopen):
-        import urllib.error
-        mock_urlopen.side_effect = urllib.error.HTTPError(
-            url="http://ha:8123/api/states/switch.tasmota_x",
-            code=404,
-            msg="Not Found",
-            hdrs={},
-            fp=None,
-        )
-
-        from gdoc2netcfg.supplements.tasmota_ha import _query_ha_entity
-
-        ha_config = HomeAssistantConfig(url="http://ha:8123", token="test")
-        result = _query_ha_entity(ha_config, "switch.tasmota_x")
-
-        assert result["exists"] is False
-        assert "error" not in result  # 404 is expected, no error field
-
-    @patch("gdoc2netcfg.supplements.tasmota_ha.urllib.request.urlopen")
-    def test_server_error_500(self, mock_urlopen):
-        import urllib.error
-        mock_urlopen.side_effect = urllib.error.HTTPError(
-            url="http://ha:8123/api/states/switch.tasmota_x",
-            code=500,
-            msg="Internal Server Error",
-            hdrs={},
-            fp=None,
-        )
-
-        from gdoc2netcfg.supplements.tasmota_ha import _query_ha_entity
-
-        ha_config = HomeAssistantConfig(url="http://ha:8123", token="test")
-        result = _query_ha_entity(ha_config, "switch.tasmota_x")
-
-        assert result["exists"] is False
-        assert "error" in result
-
-    @patch("gdoc2netcfg.supplements.tasmota_ha.urllib.request.urlopen")
-    def test_connection_error(self, mock_urlopen):
-        mock_urlopen.side_effect = OSError("Connection refused")
-
-        from gdoc2netcfg.supplements.tasmota_ha import _query_ha_entity
-
-        ha_config = HomeAssistantConfig(url="http://ha:8123", token="test")
-        result = _query_ha_entity(ha_config, "switch.tasmota_x")
-
-        assert result["exists"] is False
-        assert "error" in result
-
-    @patch("gdoc2netcfg.supplements.tasmota_ha.urllib.request.urlopen")
     def test_url_trailing_slash_stripped(self, mock_urlopen):
         import json
         mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps({"state": "off"}).encode()
+        mock_resp.read.return_value = json.dumps([]).encode()
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = mock_resp
 
-        from gdoc2netcfg.supplements.tasmota_ha import _query_ha_entity
+        from gdoc2netcfg.supplements.tasmota_ha import _fetch_all_states
 
         ha_config = HomeAssistantConfig(url="http://ha:8123/", token="t")
-        _query_ha_entity(ha_config, "switch.tasmota_x")
+        _fetch_all_states(ha_config)
 
         call_args = mock_urlopen.call_args
         req = call_args[0][0]

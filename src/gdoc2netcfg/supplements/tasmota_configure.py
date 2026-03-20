@@ -52,19 +52,20 @@ def compute_desired_config(host: Host, tasmota_config: TasmotaConfig) -> dict[st
     Returns:
         Mapping of Tasmota command name to desired value.
     """
-    is_plug = host.machine_name.startswith("au-plug-")
     controls_str = host.extra.get("Controls", "").strip()
 
     desired: dict[str, str] = {}
 
-    if is_plug:
+    # FriendlyName → HA entity ID basis (must be the machine name for
+    # predictable entity IDs like switch.tasmota_au_plug_4).
+    # DeviceName → HA device display name (human-readable description).
+    # This matches the Zigbee pattern: stable IDs, descriptive labels.
+    desired["FriendlyName1"] = host.machine_name
+    if controls_str:
+        controls = [c.strip() for c in re.split(r"[,\r\n]", controls_str) if c.strip()]
+        desired["DeviceName"] = "Power for " + ", ".join(controls)
+    else:
         desired["DeviceName"] = host.machine_name
-        if controls_str:
-            # Controls may be comma or newline separated
-            controls = [c.strip() for c in re.split(r"[,\r\n]", controls_str) if c.strip()]
-            desired["FriendlyName1"] = "Power for " + ", ".join(controls)
-        else:
-            desired["FriendlyName1"] = host.machine_name
 
     desired.update({
         "Hostname": host.machine_name,

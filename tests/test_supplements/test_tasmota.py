@@ -854,6 +854,9 @@ class TestComputeDesiredConfig:
         config = _make_tasmota_config()
         desired = compute_desired_config(host, config)
 
+        # FriendlyName = machine name (→ HA entity ID basis)
+        # DeviceName = machine name when no controls (→ HA device display name)
+        assert desired["FriendlyName1"] == "au-plug-10"
         assert desired["DeviceName"] == "au-plug-10"
         assert desired["Hostname"] == "au-plug-10"
         assert desired["Topic"] == "au-plug-10"
@@ -862,38 +865,49 @@ class TestComputeDesiredConfig:
         assert desired["MqttUser"] == "tasmota"
         assert desired["MqttPassword"] == "secret123"
 
-    def test_friendly_name_without_controls(self):
-        host = _make_host(hostname="au-plug-10", extra={})
+    def test_friendly_name_always_machine_name(self):
+        """FriendlyName is always machine_name for predictable HA entity IDs."""
+        host = _make_host(hostname="au-plug-10", extra={"Controls": "desktop"})
         config = _make_tasmota_config()
         desired = compute_desired_config(host, config)
         assert desired["FriendlyName1"] == "au-plug-10"
 
-    def test_friendly_name_with_controls(self):
+    def test_device_name_with_controls(self):
+        """DeviceName uses human-readable description when controls exist."""
         host = _make_host(extra={"Controls": "desktop, monitor"})
         config = _make_tasmota_config()
         desired = compute_desired_config(host, config)
-        assert desired["FriendlyName1"] == "Power for desktop, monitor"
+        assert desired["DeviceName"] == "Power for desktop, monitor"
+        assert desired["FriendlyName1"] == "au-plug-10"
 
-    def test_friendly_name_with_whitespace_controls(self):
+    def test_device_name_without_controls(self):
+        host = _make_host(extra={})
+        config = _make_tasmota_config()
+        desired = compute_desired_config(host, config)
+        assert desired["DeviceName"] == "au-plug-10"
+        assert desired["FriendlyName1"] == "au-plug-10"
+
+    def test_device_name_with_whitespace_controls(self):
         host = _make_host(extra={"Controls": "  "})
         config = _make_tasmota_config()
         desired = compute_desired_config(host, config)
         # Whitespace-only should fall back to machine_name
-        assert desired["FriendlyName1"] == "au-plug-10"
+        assert desired["DeviceName"] == "au-plug-10"
 
-    def test_friendly_name_with_newline_controls(self):
+    def test_device_name_with_newline_controls(self):
         host = _make_host(extra={"Controls": "desktop\nmonitor\nserver"})
         config = _make_tasmota_config()
         desired = compute_desired_config(host, config)
-        assert desired["FriendlyName1"] == "Power for desktop, monitor, server"
+        assert desired["DeviceName"] == "Power for desktop, monitor, server"
+        assert desired["FriendlyName1"] == "au-plug-10"
 
-    def test_non_plug_has_no_device_name_or_friendly(self):
+    def test_non_plug_still_sets_names(self):
+        """All devices get DeviceName and FriendlyName, not just plugs."""
         host = _make_host(hostname="ir-ac-remote")
         config = _make_tasmota_config()
         desired = compute_desired_config(host, config)
-        assert "DeviceName" not in desired
-        assert "FriendlyName1" not in desired
-        # But still has MQTT and hostname settings
+        assert desired["DeviceName"] == "ir-ac-remote"
+        assert desired["FriendlyName1"] == "ir-ac-remote"
         assert desired["Hostname"] == "ir-ac-remote"
         assert desired["MqttHost"] == "ha.welland.mithis.com"
         assert desired["Topic"] == "ir-ac-remote"

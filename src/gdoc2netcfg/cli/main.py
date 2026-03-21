@@ -1641,6 +1641,46 @@ def cmd_tasmota_ha_status(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: tasmota ha-sync
+# ---------------------------------------------------------------------------
+
+def cmd_tasmota_ha_sync(args: argparse.Namespace) -> int:
+    """Sync Tasmota device metadata to Home Assistant."""
+    config = _load_config(args)
+
+    if not config.homeassistant.url or not config.homeassistant.token:
+        print(
+            "Error: [homeassistant] url and token must be configured in gdoc2netcfg.toml",
+            file=sys.stderr,
+        )
+        return 1
+
+    from gdoc2netcfg.supplements.tasmota_ha import sync_ha_devices
+
+    _records, hosts, _inventory, _result = _build_pipeline(config)
+
+    tasmota_hosts = [h for h in hosts if h.tasmota_data is not None]
+    if not tasmota_hosts:
+        print("No Tasmota devices found. Run 'tasmota scan' first.")
+        return 1
+
+    dry_run = getattr(args, "dry_run", False)
+    changes = sync_ha_devices(tasmota_hosts, config.homeassistant, dry_run=dry_run)
+
+    if not changes:
+        print("All Tasmota devices already in sync with Home Assistant.")
+        return 0
+
+    action = "Would update" if dry_run else "Updated"
+    for machine_name, old_val, new_val in changes:
+        old_display = f'"{old_val}"' if old_val else "(unset)"
+        print(f"  {action} {machine_name:20s}  {old_display} -> \"{new_val}\"")
+
+    print(f"\n{action} {len(changes)} device(s).")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: password
 # ---------------------------------------------------------------------------
 
@@ -1902,6 +1942,14 @@ def main(argv: list[str] | None = None) -> int:
         "ha-status", help="Check Home Assistant integration status",
     )
 
+    tasmota_ha_sync_parser = tasmota_subparsers.add_parser(
+        "ha-sync", help="Sync device metadata (names) to Home Assistant",
+    )
+    tasmota_ha_sync_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would be changed without applying",
+    )
+
     # password (device credential lookup)
     pwd_parser = subparsers.add_parser(
         "password", help="Look up device credentials",
@@ -1962,6 +2010,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_tasmota_configure(args)
         elif args.tasmota_command == "ha-status":
             return cmd_tasmota_ha_status(args)
+        elif args.tasmota_command == "ha-sync":
+            return cmd_tasmota_ha_sync(args)
         else:
             tasmota_parser.print_help()
             return 0

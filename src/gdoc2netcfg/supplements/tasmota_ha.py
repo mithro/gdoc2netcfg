@@ -1,4 +1,4 @@
-"""Tasmota Home Assistant integration check.
+"""Tasmota Home Assistant integration check and sync.
 
 Queries the Home Assistant REST API to verify that Tasmota devices
 are properly registered and reporting state.  Devices with relays
@@ -6,10 +6,14 @@ appear as switch entities; relay-less devices (IR blasters, bridges)
 appear as sensor-only.  The check fetches all HA states in one bulk
 request and matches by the entity-name prefix derived from each
 device's machine_name.
+
+The sync function pushes device metadata (name_by_user) from the
+spreadsheet into HA's device registry via the WebSocket API.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import urllib.error
@@ -156,3 +160,115 @@ def check_ha_status(
                 )
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# HA device metadata sync
+# ---------------------------------------------------------------------------
+
+
+def _desired_name_by_user(host: Host) -> str:
+    """Compose the desired name_by_user for a Tasmota device.
+
+    Follows the Zigbee2MQTT convention: ``(code) description``.
+    The description is the comma-separated list of hostnames this
+    device controls (from the spreadsheet "Controls" column).
+    Devices with no controls get just ``(code)``.
+    """
+    code = host.machine_name
+    controls = host.tasmota_data.controls if host.tasmota_data else ()
+    if controls:
+        return f"({code}) {', '.join(controls)}"
+    return f"({code})"
+
+
+async def _sync_ha_devices(
+    hosts: list[Host],
+    ha_config: HomeAssistantConfig,
+    dry_run: bool = False,
+) -> list[tuple[str, str, str]]:
+    """Sync Tasmota device metadata to HA via WebSocket API.
+
+    Matches devices by MAC address, then sets name_by_user to the
+    ``(code) controlled-hostnames`` format.
+
+    Returns list of (machine_name, old_value, new_value) for changes made.
+    """
+    import websockets
+
+    tasmota_hosts = [h for h in hosts if h.tasmota_data is not None]
+    if not tasmota_hosts:
+        return []
+
+    # Build MAC -> (host, desired_name) mapping.
+    mac_to_desired: dict[str, tuple[Host, str]] = {}
+    for host in tasmota_hosts:
+        mac = host.tasmota_data.mac.lower()
+        mac_to_desired[mac] = (host, _desired_name_by_user(host))
+
+    ws_url = ha_config.url.rstrip("/").replace("http://", "ws://").replace(
+        "https://", "wss://"
+    ) + "/api/websocket"
+
+    changes: list[tuple[str, str, str]] = []
+
+    async with websockets.connect(ws_url, max_size=10 * 1024 * 1024) as ws:
+        # Authenticate
+        await ws.recv()  # auth_required
+        await ws.send(json.dumps({"type": "auth", "access_token": ha_config.token}))
+        auth_resp = json.loads(await ws.recv())
+        if auth_resp.get("type") != "auth_ok":
+            raise RuntimeError(f"HA WebSocket auth failed: {auth_resp}")
+
+        msg_id = 1
+
+        # Fetch device registry
+        await ws.send(json.dumps({"id": msg_id, "type": "config/device_registry/list"}))
+        msg_id += 1
+        dev_resp = json.loads(await ws.recv())
+        if not dev_resp.get("success"):
+            raise RuntimeError(f"Failed to list devices: {dev_resp.get('error')}")
+
+        # Match HA devices to our hosts by MAC
+        for device in dev_resp["result"]:
+            device_mac = None
+            for conn_type, conn_val in device.get("connections", []):
+                if conn_type == "mac":
+                    device_mac = conn_val.lower()
+
+            if device_mac not in mac_to_desired:
+                continue
+
+            host, desired_name = mac_to_desired[device_mac]
+            current_name = device.get("name_by_user") or ""
+
+            if current_name == desired_name:
+                continue
+
+            changes.append((host.machine_name, current_name, desired_name))
+
+            if not dry_run:
+                await ws.send(json.dumps({
+                    "id": msg_id,
+                    "type": "config/device_registry/update",
+                    "device_id": device["id"],
+                    "name_by_user": desired_name,
+                }))
+                msg_id += 1
+                update_resp = json.loads(await ws.recv())
+                if not update_resp.get("success"):
+                    err = update_resp.get("error", {}).get("message", "unknown")
+                    raise RuntimeError(
+                        f"Failed to update {host.machine_name}: {err}"
+                    )
+
+    return changes
+
+
+def sync_ha_devices(
+    hosts: list[Host],
+    ha_config: HomeAssistantConfig,
+    dry_run: bool = False,
+) -> list[tuple[str, str, str]]:
+    """Synchronous wrapper for _sync_ha_devices."""
+    return asyncio.run(_sync_ha_devices(hosts, ha_config, dry_run=dry_run))

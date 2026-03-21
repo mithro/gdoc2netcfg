@@ -427,17 +427,18 @@ def build_interface_state(
     # Stack mode
     states[f"{prefix}/stack_mode/state"] = ir.reachability_mode
 
-    # IPv4
-    try:
-        states[f"{prefix}/ipv4/state"] = str(vi.ipv4)
-    except ValueError:
-        states[f"{prefix}/ipv4/state"] = ""
+    # IPv4 — every VirtualInterface must have an IPv4; ValueError here
+    # means the host-builder produced a broken interface.
+    states[f"{prefix}/ipv4/state"] = str(vi.ipv4)
 
-    # MAC
-    if vi.macs:
-        states[f"{prefix}/mac/state"] = str(vi.macs[0]).lower()
-    else:
-        states[f"{prefix}/mac/state"] = ""
+    # MAC — every VirtualInterface groups physical NICs, so macs must
+    # be non-empty.
+    if not vi.macs:
+        raise ValueError(
+            f"VirtualInterface {vi.name!r} for {host.machine_name!r} "
+            f"has no MACs — bug in host-builder pipeline."
+        )
+    states[f"{prefix}/mac/state"] = str(vi.macs[0]).lower()
 
     # RTT — build JSON with per-IP ping data
     rtt_data: dict = {}

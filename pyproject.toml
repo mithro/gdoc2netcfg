@@ -11,6 +11,7 @@ license = "Apache-2.0"
 dependencies = [
     "cryptography",
     "jinja2",
+    "paho-mqtt>=2",
     "pysnmp>=7.0",
     "websockets>=13.0",
 ]

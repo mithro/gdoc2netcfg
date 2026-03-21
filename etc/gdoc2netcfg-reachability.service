@@ -7,6 +7,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/gdoc2netcfg
+Environment=UV_CACHE_DIR=/opt/gdoc2netcfg/.uv-cache
 ExecStart=/usr/local/bin/uv run gdoc2netcfg reachability publish --daemon --interval 300
 Restart=on-failure
 RestartSec=30
@@ -15,7 +16,7 @@ RestartSec=30
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/opt/gdoc2netcfg/.cache
+ReadWritePaths=/opt/gdoc2netcfg/.cache /opt/gdoc2netcfg/.uv-cache
 
 [Install]
 WantedBy=multi-user.target

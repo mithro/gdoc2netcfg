@@ -566,6 +566,13 @@ def cmd_reachability_publish(args: argparse.Namespace) -> int:
         return 1
 
     if args.daemon:
+        if args.force:
+            print(
+                "Error: --force cannot be used with --daemon "
+                "(daemon always scans fresh)",
+                file=sys.stderr,
+            )
+            return 1
         from gdoc2netcfg.supplements.mqtt_ha import run_daemon
 
         run_daemon(config, interval=args.interval, verbose=True)

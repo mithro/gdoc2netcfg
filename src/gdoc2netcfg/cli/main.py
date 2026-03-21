@@ -5,7 +5,9 @@ Subcommands:
     generate       Run the pipeline and produce output config files.
     validate       Run constraint checks on the data.
     info           Show pipeline configuration.
-    reachability   Ping all hosts and report which are up/down.
+    reachability   Host reachability scanning and MQTT publishing.
+        scan       Ping all hosts and report which are up/down (default).
+        publish    Publish reachability to Home Assistant via MQTT.
     sshfp          Scan hosts for SSH fingerprints.
     known-hosts    Scan hosts for SSH host keys (for known_hosts generation).
     ssl-certs      Scan hosts for SSL/TLS certificates.
@@ -514,13 +516,11 @@ def _print_reachability_summary(
 
 
 # ---------------------------------------------------------------------------
-# Subcommand: reachability
+# Subcommand: reachability scan (default)
 # ---------------------------------------------------------------------------
 
-def cmd_reachability(args: argparse.Namespace) -> int:
-    """Ping all hosts and report which are up/down."""
-    config = _load_config(args)
-
+def _reachability_build_hosts(config):
+    """Shared helper: build hosts from cached CSVs for reachability commands."""
     from gdoc2netcfg.derivations.host_builder import build_hosts
     from gdoc2netcfg.sources.parser import parse_csv
 
@@ -533,13 +533,67 @@ def cmd_reachability(args: argparse.Namespace) -> int:
         records = parse_csv(csv_text, name)
         all_records.extend(records)
 
-    hosts = build_hosts(all_records, config.site)
+    return build_hosts(all_records, config.site)
+
+
+def cmd_reachability_scan(args: argparse.Namespace) -> int:
+    """Ping all hosts and report which are up/down."""
+    config = _load_config(args)
+    hosts = _reachability_build_hosts(config)
 
     reachability = _load_or_run_reachability(
         config, hosts, force=args.force,
     )
 
     _print_reachability_summary(reachability, hosts)
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: reachability publish
+# ---------------------------------------------------------------------------
+
+def cmd_reachability_publish(args: argparse.Namespace) -> int:
+    """Publish reachability data to Home Assistant via MQTT."""
+    config = _load_config(args)
+
+    if not config.tasmota.mqtt_host:
+        print(
+            "Error: [tasmota] mqtt_host not configured in gdoc2netcfg.toml",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.daemon:
+        from gdoc2netcfg.supplements.mqtt_ha import run_daemon
+
+        run_daemon(config, interval=args.interval, verbose=True)
+        return 0
+
+    # One-shot mode: build hosts, scan, publish, exit
+    hosts = _reachability_build_hosts(config)
+
+    reachability = _load_or_run_reachability(
+        config, hosts, force=args.force,
+    )
+    _print_reachability_summary(reachability, hosts)
+
+    from gdoc2netcfg.supplements.mqtt_ha import publish_all_hosts
+
+    # Enrich hosts with tasmota data for power-plug availability linkage
+    from gdoc2netcfg.supplements.tasmota import (
+        enrich_hosts_with_tasmota,
+        load_tasmota_cache,
+    )
+
+    tasmota_cache_path = Path(config.cache.directory) / "tasmota.json"
+    tasmota_cache = load_tasmota_cache(tasmota_cache_path)
+    enrich_hosts_with_tasmota(hosts, tasmota_cache)
+
+    publish_all_hosts(
+        hosts, reachability, config.tasmota, verbose=True,
+    )
 
     return 0
 
@@ -1808,11 +1862,38 @@ def main(argv: list[str] | None = None) -> int:
     # info
     subparsers.add_parser("info", help="Show pipeline configuration")
 
-    # reachability
-    reach_parser = subparsers.add_parser("reachability", help="Ping all hosts and report up/down")
+    # reachability (subcommand group: scan, publish)
+    reach_parser = subparsers.add_parser(
+        "reachability", help="Host reachability scanning and MQTT publishing",
+    )
     reach_parser.add_argument(
         "--force", action="store_true",
         help="Force re-ping even if .cache/reachability.json is <5 min old",
+    )
+    reach_subparsers = reach_parser.add_subparsers(dest="reach_command")
+
+    reach_scan_parser = reach_subparsers.add_parser(
+        "scan", help="Ping all hosts and report up/down",
+    )
+    reach_scan_parser.add_argument(
+        "--force", action="store_true",
+        help="Force re-ping even if .cache/reachability.json is <5 min old",
+    )
+
+    reach_publish_parser = reach_subparsers.add_parser(
+        "publish", help="Publish reachability to Home Assistant via MQTT",
+    )
+    reach_publish_parser.add_argument(
+        "--force", action="store_true",
+        help="Force re-ping before publishing",
+    )
+    reach_publish_parser.add_argument(
+        "--daemon", action="store_true",
+        help="Run continuously, scanning and publishing on an interval",
+    )
+    reach_publish_parser.add_argument(
+        "--interval", type=int, default=300,
+        help="Seconds between scans in daemon mode (default: 300)",
     )
 
     # sshfp
@@ -2016,12 +2097,19 @@ def main(argv: list[str] | None = None) -> int:
             tasmota_parser.print_help()
             return 0
 
+    # Handle reachability subcommands
+    if args.command == "reachability":
+        if args.reach_command == "publish":
+            return cmd_reachability_publish(args)
+        else:
+            # Default (no subcommand or "scan") -> scan behavior
+            return cmd_reachability_scan(args)
+
     commands = {
         "fetch": cmd_fetch,
         "generate": cmd_generate,
         "validate": cmd_validate,
         "info": cmd_info,
-        "reachability": cmd_reachability,
         "sshfp": cmd_sshfp,
         "known-hosts": cmd_known_hosts,
         "ssl-certs": cmd_ssl_certs,

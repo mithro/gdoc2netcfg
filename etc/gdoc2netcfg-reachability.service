@@ -1,0 +1,21 @@
+[Unit]
+Description=gdoc2netcfg reachability MQTT publisher
+Documentation=https://github.com/mithro/gdoc2netcfg
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/gdoc2netcfg
+ExecStart=/usr/local/bin/uv run gdoc2netcfg reachability publish --daemon --interval 300
+Restart=on-failure
+RestartSec=30
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/gdoc2netcfg/.cache
+
+[Install]
+WantedBy=multi-user.target

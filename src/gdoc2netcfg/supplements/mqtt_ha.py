@@ -305,8 +305,13 @@ def discovery_payload(
     """Build a complete HA MQTT discovery payload."""
     unique_id = f"gdoc2netcfg_{node_id}_{entity.suffix}"
 
+    # Explicit entity_id so it's stable regardless of device name_by_user
+    # or cross-integration device merging.  Full domain-qualified form.
+    default_eid = f"{entity.component}.gdoc2netcfg_{node_id}_{entity.suffix}"
+
     payload: dict = {
         "unique_id": unique_id,
+        "default_entity_id": default_eid,
         "state_topic": state_topic,
         "device": device_dict,
         "origin": ORIGIN,

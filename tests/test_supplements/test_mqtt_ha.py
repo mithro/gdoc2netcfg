@@ -287,6 +287,9 @@ class TestDiscoveryPayload:
         )
 
         assert payload["unique_id"] == "gdoc2netcfg_big_storage_connectivity"
+        assert payload["default_entity_id"] == (
+            "binary_sensor.gdoc2netcfg_big_storage_connectivity"
+        )
         assert payload["name"] is None  # Main entity
         assert payload["device_class"] == "connectivity"
         assert payload["payload_on"] == "ON"
@@ -310,6 +313,9 @@ class TestDiscoveryPayload:
         )
 
         assert payload["unique_id"] == "gdoc2netcfg_big_storage_tracker"
+        assert payload["default_entity_id"] == (
+            "device_tracker.gdoc2netcfg_big_storage_tracker"
+        )
         assert payload["source_type"] == "router"
         assert payload["payload_home"] == "home"
         assert payload["payload_not_home"] == "not_home"

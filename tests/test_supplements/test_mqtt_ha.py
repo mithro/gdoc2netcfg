@@ -1,7 +1,9 @@
 """Tests for the MQTT HA discovery publisher."""
 
 import json
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from gdoc2netcfg.models.addressing import IPv4Address, IPv6Address, MACAddress
 from gdoc2netcfg.models.host import Host, NetworkInterface, TasmotaData
@@ -13,9 +15,11 @@ from gdoc2netcfg.supplements.mqtt_ha import (
     HOST_TRACKER,
     ORIGIN,
     STATE_PREFIX,
+    EntityDef,
     _availability_list,
     _device_dict,
     _iface_entities,
+    _iface_entity_state_topic,
     _iface_slug,
     _node_id,
     build_host_state,
@@ -29,7 +33,6 @@ from gdoc2netcfg.supplements.reachability import (
     InterfaceReachability,
     PingResult,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -742,3 +745,81 @@ class TestPublishAllHosts:
 
         client.disconnect.assert_called_once()
         client.loop_stop.assert_called_once()
+
+    @patch("gdoc2netcfg.supplements.mqtt_ha.mqtt.Client")
+    def test_raises_on_missing_reachability(self, mock_client_cls):
+        """Publish must raise KeyError if host has no reachability entry."""
+        client = MagicMock()
+        mock_client_cls.return_value = client
+
+        host = _make_host()
+
+        from gdoc2netcfg.config import TasmotaConfig
+
+        mqtt_config = TasmotaConfig(
+            mqtt_host="broker", mqtt_port=1883,
+            mqtt_user="user", mqtt_password="pass",
+        )
+
+        # Empty reachability dict — host is missing
+        with pytest.raises(KeyError, match="big-storage"):
+            publish_all_hosts([host], {}, mqtt_config)
+
+    @patch("gdoc2netcfg.supplements.mqtt_ha.mqtt.Client")
+    def test_raises_on_interface_count_mismatch(self, mock_client_cls):
+        """Publish must raise ValueError if interface counts don't match."""
+        client = MagicMock()
+        mock_client_cls.return_value = client
+
+        host = _make_multi_iface_host()  # 2 interfaces
+        # Reachability with only 1 interface
+        ir1 = InterfaceReachability(pings=(
+            ("10.1.5.20", PingResult(10, 10, 1.0)),
+        ))
+        hr = HostReachability(
+            hostname="dual-nic",
+            active_ips=("10.1.5.20",),
+            interfaces=(ir1,),  # Only 1, host has 2
+        )
+
+        from gdoc2netcfg.config import TasmotaConfig
+
+        mqtt_config = TasmotaConfig(
+            mqtt_host="broker", mqtt_port=1883,
+            mqtt_user="user", mqtt_password="pass",
+        )
+
+        with pytest.raises(ValueError, match="data consistency bug"):
+            publish_all_hosts([host], {"dual-nic": hr}, mqtt_config)
+
+
+# ---------------------------------------------------------------------------
+# _iface_entity_state_topic helper
+# ---------------------------------------------------------------------------
+
+class TestIfaceEntityStateTopic:
+    def test_connectivity_suffix(self):
+        entities = _iface_entities("eth0", "eth0")
+        conn = [e for e in entities if e.suffix == "eth0_connectivity"][0]
+        st, ja = _iface_entity_state_topic(conn, "big_storage", "eth0")
+        assert st == f"{STATE_PREFIX}/big_storage/eth0/connectivity/state"
+        assert ja is None
+
+    def test_rtt_suffix_has_attributes(self):
+        entities = _iface_entities("eth0", "eth0")
+        rtt = [e for e in entities if e.suffix == "eth0_rtt"][0]
+        st, ja = _iface_entity_state_topic(rtt, "big_storage", "eth0")
+        assert st == f"{STATE_PREFIX}/big_storage/eth0/rtt/state"
+        assert ja == f"{STATE_PREFIX}/big_storage/eth0/rtt/attributes"
+
+    def test_unknown_suffix_raises(self):
+        bad_entity = EntityDef(
+            component="sensor", suffix="eth0_unknown",
+        )
+        with pytest.raises(ValueError, match="Unknown entity suffix"):
+            _iface_entity_state_topic(bad_entity, "x", "eth0")
+
+
+class TestEntityDefImport:
+    """Verify EntityDef is importable for test_unknown_suffix_raises."""
+    pass

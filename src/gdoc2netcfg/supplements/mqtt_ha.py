@@ -69,6 +69,32 @@ def _iface_slug(vi: VirtualInterface) -> str:
     return re.sub(r"[^a-zA-Z0-9]", "_", name).lower()
 
 
+def _iface_entity_state_topic(
+    entity: EntityDef,
+    nid: str,
+    slug: str,
+) -> tuple[str, str | None]:
+    """Derive the state topic and JSON attributes topic for an interface entity.
+
+    Returns (state_topic, json_attributes_topic_or_None).
+    """
+    if entity.suffix.endswith("_connectivity"):
+        return f"{STATE_PREFIX}/{nid}/{slug}/connectivity/state", None
+    elif entity.suffix.endswith("_stack_mode"):
+        return f"{STATE_PREFIX}/{nid}/{slug}/stack_mode/state", None
+    elif entity.suffix.endswith("_ipv4"):
+        return f"{STATE_PREFIX}/{nid}/{slug}/ipv4/state", None
+    elif entity.suffix.endswith("_mac"):
+        return f"{STATE_PREFIX}/{nid}/{slug}/mac/state", None
+    elif entity.suffix.endswith("_rtt"):
+        return (
+            f"{STATE_PREFIX}/{nid}/{slug}/rtt/state",
+            f"{STATE_PREFIX}/{nid}/{slug}/rtt/attributes",
+        )
+    else:
+        raise ValueError(f"Unknown entity suffix: {entity.suffix}")
+
+
 # ---------------------------------------------------------------------------
 # Entity definitions
 # ---------------------------------------------------------------------------
@@ -232,6 +258,9 @@ def _availability_list(
     The base availability is always the bridge topic.
     If the host is controlled by a Tasmota plug, adds the plug's
     power state topic so HA shows "unavailable" when plug is off.
+
+    Hosts that ARE Tasmota plugs (have a Controls column) are skipped
+    for the reverse lookup — they control others, they aren't controlled.
     """
     avail: list[dict] = [
         {
@@ -242,9 +271,10 @@ def _availability_list(
     ]
     mode = None
 
-    # Check if this host is controlled by a Tasmota device
-    controls_str = host.extra.get("Controls", "").strip()
-    if not controls_str and hosts_by_name:
+    # Only look for a controlling plug if this host doesn't have a Controls
+    # entry itself (plugs control other devices, they aren't controlled).
+    has_controls = bool(host.extra.get("Controls", "").strip())
+    if not has_controls and hosts_by_name:
         # Check if any Tasmota device lists this host in its controls
         for other_host in hosts_by_name.values():
             if other_host.tasmota_data is None:
@@ -327,7 +357,10 @@ def discovery_payload(
 def discovery_topic(entity: EntityDef, node_id: str) -> str:
     """Build the MQTT discovery topic for an entity."""
     unique_id = f"gdoc2netcfg_{node_id}_{entity.suffix}"
-    return f"{DISCOVERY_PREFIX}/{entity.component}/gdoc2netcfg_{node_id}/{unique_id}/config"
+    return (
+        f"{DISCOVERY_PREFIX}/{entity.component}/"
+        f"gdoc2netcfg_{node_id}/{unique_id}/config"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -346,10 +379,14 @@ def build_host_state(
     states: dict[str, str | dict] = {}
 
     # Connectivity: ON/OFF
-    states[f"{STATE_PREFIX}/{nid}/connectivity/state"] = "ON" if hr.is_up else "OFF"
+    states[f"{STATE_PREFIX}/{nid}/connectivity/state"] = (
+        "ON" if hr.is_up else "OFF"
+    )
 
     # Device tracker: home/not_home
-    states[f"{STATE_PREFIX}/{nid}/tracker/state"] = "home" if hr.is_up else "not_home"
+    states[f"{STATE_PREFIX}/{nid}/tracker/state"] = (
+        "home" if hr.is_up else "not_home"
+    )
 
     # Device tracker attributes
     tracker_attrs: dict = {"host_name": host.hostname}
@@ -359,7 +396,9 @@ def build_host_state(
     macs = host.all_macs
     if macs:
         tracker_attrs["mac"] = str(macs[0]).lower()
-    states[f"{STATE_PREFIX}/{nid}/tracker/attributes"] = json.dumps(tracker_attrs)
+    states[f"{STATE_PREFIX}/{nid}/tracker/attributes"] = json.dumps(
+        tracker_attrs,
+    )
 
     # Stack mode
     states[f"{STATE_PREFIX}/{nid}/stack_mode/state"] = hr.reachability_mode
@@ -425,6 +464,102 @@ def build_interface_state(
 
 
 # ---------------------------------------------------------------------------
+# Shared publish logic (used by both one-shot and daemon)
+# ---------------------------------------------------------------------------
+
+def _publish_hosts_to_client(
+    client: mqtt.Client,
+    hosts: list[Host],
+    reachability: dict[str, HostReachability],
+    hosts_by_name: dict[str, Host],
+) -> tuple[int, int, int]:
+    """Publish discovery + state for all hosts to an MQTT client.
+
+    Returns (published_count, discovery_count, state_count).
+    Raises KeyError if a host has no reachability entry.
+    Raises ValueError if interface counts don't match.
+    """
+    published = 0
+    discovery_count = 0
+    state_count = 0
+
+    for host in sorted(hosts, key=lambda h: h.hostname):
+        nid = _node_id(host.machine_name)
+
+        # Fail loud: every host must have reachability data
+        if host.hostname not in reachability:
+            raise KeyError(
+                f"No reachability data for host {host.hostname!r}. "
+                f"This indicates a bug in the scan or stale data."
+            )
+        hr = reachability[host.hostname]
+
+        dev_dict = _device_dict(host)
+        avail_list, avail_mode = _availability_list(host, hosts_by_name)
+
+        # --- Host-level discovery ---
+        for entity in [HOST_CONNECTIVITY, HOST_TRACKER, HOST_STACK_MODE]:
+            if entity == HOST_CONNECTIVITY:
+                state_topic = f"{STATE_PREFIX}/{nid}/connectivity/state"
+            elif entity == HOST_TRACKER:
+                state_topic = f"{STATE_PREFIX}/{nid}/tracker/state"
+            else:
+                state_topic = f"{STATE_PREFIX}/{nid}/stack_mode/state"
+
+            # device_tracker uses attributes topic
+            json_attr = None
+            if entity == HOST_TRACKER:
+                json_attr = f"{STATE_PREFIX}/{nid}/tracker/attributes"
+
+            payload = discovery_payload(
+                entity, nid, dev_dict, avail_list, avail_mode,
+                state_topic, json_attr,
+            )
+            topic = discovery_topic(entity, nid)
+            client.publish(topic, json.dumps(payload), retain=True)
+            discovery_count += 1
+
+        # --- Interface-level discovery ---
+        vis = host.virtual_interfaces
+        for vi in vis:
+            slug = _iface_slug(vi)
+            for entity in _iface_entities(slug, vi.name):
+                st, ja = _iface_entity_state_topic(entity, nid, slug)
+                payload = discovery_payload(
+                    entity, nid, dev_dict, avail_list, avail_mode,
+                    st, ja,
+                )
+                topic = discovery_topic(entity, nid)
+                client.publish(topic, json.dumps(payload), retain=True)
+                discovery_count += 1
+
+        # --- Host-level state ---
+        host_states = build_host_state(host, hr)
+        for topic, payload_val in host_states.items():
+            client.publish(topic, payload_val, retain=False)
+            state_count += 1
+
+        # --- Interface-level state ---
+        # Fail loud: interface count must match between host and reachability
+        if len(vis) != len(hr.interfaces):
+            raise ValueError(
+                f"Host {host.hostname!r} has {len(vis)} virtual interfaces "
+                f"but reachability has {len(hr.interfaces)} interface entries. "
+                f"This indicates a data consistency bug."
+            )
+        for vi_idx, vi in enumerate(vis):
+            ir = hr.interfaces[vi_idx]
+            iface_states = build_interface_state(host, vi, ir)
+            for topic, payload_val in iface_states.items():
+                client.publish(topic, payload_val, retain=False)
+                state_count += 1
+
+        published += 1
+
+    return published, discovery_count, state_count
+
+
+# ---------------------------------------------------------------------------
 # Publisher
 # ---------------------------------------------------------------------------
 
@@ -450,100 +585,22 @@ def publish_all_hosts(
     )
     client.username_pw_set(mqtt_config.mqtt_user, mqtt_config.mqtt_password)
 
-    # Set LWT before connecting — broker publishes this if we disconnect unexpectedly
+    # Set LWT before connecting — broker publishes this if we disconnect
+    # unexpectedly
     client.will_set(BRIDGE_AVAIL_TOPIC, "offline", retain=True)
 
     if verbose:
         print("Connecting to MQTT broker...", file=sys.stderr)
 
-    client.connect(mqtt_config.mqtt_host, mqtt_config.mqtt_port, keepalive=120)
+    client.connect(
+        mqtt_config.mqtt_host, mqtt_config.mqtt_port, keepalive=120,
+    )
     client.loop_start()
 
     try:
-        published = 0
-        discovery_count = 0
-        state_count = 0
-
-        for host in sorted(hosts, key=lambda h: h.hostname):
-            nid = _node_id(host.machine_name)
-            hr = reachability.get(host.hostname)
-            if hr is None:
-                continue
-
-            dev_dict = _device_dict(host)
-            avail_list, avail_mode = _availability_list(host, hosts_by_name)
-
-            # --- Host-level discovery ---
-            for entity in [HOST_CONNECTIVITY, HOST_TRACKER, HOST_STACK_MODE]:
-                if entity == HOST_CONNECTIVITY:
-                    state_topic = f"{STATE_PREFIX}/{nid}/connectivity/state"
-                elif entity == HOST_TRACKER:
-                    state_topic = f"{STATE_PREFIX}/{nid}/tracker/state"
-                else:
-                    state_topic = f"{STATE_PREFIX}/{nid}/stack_mode/state"
-
-                # device_tracker uses attributes topic
-                json_attr = None
-                if entity == HOST_TRACKER:
-                    json_attr = f"{STATE_PREFIX}/{nid}/tracker/attributes"
-
-                payload = discovery_payload(
-                    entity, nid, dev_dict, avail_list, avail_mode,
-                    state_topic, json_attr,
-                )
-                topic = discovery_topic(entity, nid)
-                client.publish(topic, json.dumps(payload), retain=True)
-                discovery_count += 1
-
-            # --- Interface-level discovery ---
-            for vi_idx, vi in enumerate(host.virtual_interfaces):
-                slug = _iface_slug(vi)
-                iface_entities = _iface_entities(slug, vi.name)
-
-                for entity in iface_entities:
-                    if entity.suffix.endswith("_connectivity"):
-                        st = f"{STATE_PREFIX}/{nid}/{slug}/connectivity/state"
-                        ja = None
-                    elif entity.suffix.endswith("_stack_mode"):
-                        st = f"{STATE_PREFIX}/{nid}/{slug}/stack_mode/state"
-                        ja = None
-                    elif entity.suffix.endswith("_ipv4"):
-                        st = f"{STATE_PREFIX}/{nid}/{slug}/ipv4/state"
-                        ja = None
-                    elif entity.suffix.endswith("_mac"):
-                        st = f"{STATE_PREFIX}/{nid}/{slug}/mac/state"
-                        ja = None
-                    elif entity.suffix.endswith("_rtt"):
-                        st = f"{STATE_PREFIX}/{nid}/{slug}/rtt/state"
-                        ja = f"{STATE_PREFIX}/{nid}/{slug}/rtt/attributes"
-                    else:
-                        raise ValueError(f"Unknown entity suffix: {entity.suffix}")
-
-                    payload = discovery_payload(
-                        entity, nid, dev_dict, avail_list, avail_mode,
-                        st, ja,
-                    )
-                    topic = discovery_topic(entity, nid)
-                    client.publish(topic, json.dumps(payload), retain=True)
-                    discovery_count += 1
-
-            # --- Host-level state ---
-            host_states = build_host_state(host, hr)
-            for topic, payload_val in host_states.items():
-                client.publish(topic, payload_val, retain=False)
-                state_count += 1
-
-            # --- Interface-level state ---
-            for vi_idx, vi in enumerate(host.virtual_interfaces):
-                ir = hr.interfaces[vi_idx] if vi_idx < len(hr.interfaces) else None
-                if ir is None:
-                    continue
-                iface_states = build_interface_state(host, vi, ir)
-                for topic, payload_val in iface_states.items():
-                    client.publish(topic, payload_val, retain=False)
-                    state_count += 1
-
-            published += 1
+        published, discovery_count, state_count = _publish_hosts_to_client(
+            client, hosts, reachability, hosts_by_name,
+        )
 
         # Bridge availability — we're online
         client.publish(BRIDGE_AVAIL_TOPIC, "online", retain=True)
@@ -575,6 +632,8 @@ def run_daemon(
 
     Handles SIGTERM and SIGINT for clean shutdown.
     Saves reachability.json cache on each cycle so CLI tools share data.
+
+    Assumes the caller has already validated that mqtt_host is configured.
     """
     from gdoc2netcfg.supplements.reachability import (
         check_all_hosts_reachability,
@@ -584,7 +643,10 @@ def run_daemon(
     stop_event = threading.Event()
 
     def signal_handler(signum, frame):
-        print(f"\nReceived signal {signum}, shutting down...", file=sys.stderr)
+        print(
+            f"\nReceived signal {signum}, shutting down...",
+            file=sys.stderr,
+        )
         stop_event.set()
 
     signal.signal(signal.SIGTERM, signal_handler)
@@ -593,15 +655,7 @@ def run_daemon(
     # Build pipeline once
     from gdoc2netcfg.cli.main import _build_pipeline
 
-    # Use the config's MQTT settings
     mqtt_config = config.tasmota
-
-    if not mqtt_config.mqtt_host:
-        print(
-            "Error: [tasmota] mqtt_host not configured in gdoc2netcfg.toml",
-            file=sys.stderr,
-        )
-        sys.exit(1)
 
     # Set up persistent MQTT connection with LWT
     client = mqtt.Client(
@@ -613,11 +667,14 @@ def run_daemon(
 
     if verbose:
         print(
-            f"Connecting to MQTT {mqtt_config.mqtt_host}:{mqtt_config.mqtt_port}...",
+            f"Connecting to MQTT "
+            f"{mqtt_config.mqtt_host}:{mqtt_config.mqtt_port}...",
             file=sys.stderr,
         )
 
-    client.connect(mqtt_config.mqtt_host, mqtt_config.mqtt_port, keepalive=120)
+    client.connect(
+        mqtt_config.mqtt_host, mqtt_config.mqtt_port, keepalive=120,
+    )
     client.loop_start()
 
     try:
@@ -635,91 +692,24 @@ def run_daemon(
                 )
 
             # Scan reachability
-            reachability = check_all_hosts_reachability(hosts, verbose=verbose)
+            reachability = check_all_hosts_reachability(
+                hosts, verbose=verbose,
+            )
 
             # Save cache for CLI tools
             save_reachability_cache(cache_path, reachability)
 
-            # Publish discovery + state
-            published = 0
-            discovery_count = 0
-            state_count = 0
-
-            for host in sorted(hosts, key=lambda h: h.hostname):
-                nid = _node_id(host.machine_name)
-                hr = reachability.get(host.hostname)
-                if hr is None:
-                    continue
-
-                dev_dict = _device_dict(host)
-                avail_list, avail_mode = _availability_list(host, hosts_by_name)
-
-                # Host-level discovery
-                for entity in [HOST_CONNECTIVITY, HOST_TRACKER, HOST_STACK_MODE]:
-                    if entity == HOST_CONNECTIVITY:
-                        state_topic = f"{STATE_PREFIX}/{nid}/connectivity/state"
-                    elif entity == HOST_TRACKER:
-                        state_topic = f"{STATE_PREFIX}/{nid}/tracker/state"
-                    else:
-                        state_topic = f"{STATE_PREFIX}/{nid}/stack_mode/state"
-
-                    json_attr = None
-                    if entity == HOST_TRACKER:
-                        json_attr = f"{STATE_PREFIX}/{nid}/tracker/attributes"
-
-                    payload = discovery_payload(
-                        entity, nid, dev_dict, avail_list, avail_mode,
-                        state_topic, json_attr,
-                    )
-                    topic = discovery_topic(entity, nid)
-                    client.publish(topic, json.dumps(payload), retain=True)
-                    discovery_count += 1
-
-                # Interface-level discovery
-                for vi in host.virtual_interfaces:
-                    slug = _iface_slug(vi)
-                    for entity in _iface_entities(slug, vi.name):
-                        if entity.suffix.endswith("_rtt"):
-                            st = f"{STATE_PREFIX}/{nid}/{slug}/rtt/state"
-                            ja = f"{STATE_PREFIX}/{nid}/{slug}/rtt/attributes"
-                        else:
-                            # Extract the part after the iface slug
-                            kind = entity.suffix[len(slug) + 1:]
-                            st = f"{STATE_PREFIX}/{nid}/{slug}/{kind}/state"
-                            ja = None
-
-                        payload = discovery_payload(
-                            entity, nid, dev_dict, avail_list, avail_mode,
-                            st, ja,
-                        )
-                        topic = discovery_topic(entity, nid)
-                        client.publish(topic, json.dumps(payload), retain=True)
-                        discovery_count += 1
-
-                # Host-level state
-                host_states = build_host_state(host, hr)
-                for topic, payload_val in host_states.items():
-                    client.publish(topic, payload_val, retain=False)
-                    state_count += 1
-
-                # Interface-level state
-                for vi_idx, vi in enumerate(host.virtual_interfaces):
-                    ir = hr.interfaces[vi_idx] if vi_idx < len(hr.interfaces) else None
-                    if ir is None:
-                        continue
-                    iface_states = build_interface_state(host, vi, ir)
-                    for topic, payload_val in iface_states.items():
-                        client.publish(topic, payload_val, retain=False)
-                        state_count += 1
-
-                published += 1
+            # Publish discovery + state using shared helper
+            published, disc, state = _publish_hosts_to_client(
+                client, hosts, reachability, hosts_by_name,
+            )
 
             # Bridge online
             client.publish(BRIDGE_AVAIL_TOPIC, "online", retain=True)
 
             if verbose:
                 print(
-                    f"Published {discovery_count} discovery + {state_count} state "
+                    f"Published {disc} discovery + {state} state "
                     f"for {published} hosts. Next scan in {interval}s.",
                     file=sys.stderr,
                 )

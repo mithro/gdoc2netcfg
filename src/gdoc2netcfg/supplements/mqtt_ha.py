@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import paho.mqtt.client as mqtt
+
 if TYPE_CHECKING:
     from gdoc2netcfg.config import PipelineConfig, TasmotaConfig
     from gdoc2netcfg.models.host import Host, VirtualInterface
@@ -440,8 +442,6 @@ def publish_all_hosts(
 
     Returns the number of hosts published.
     """
-    import paho.mqtt.client as mqtt
-
     hosts_by_name = {h.machine_name: h for h in hosts}
 
     client = mqtt.Client(
@@ -576,8 +576,6 @@ def run_daemon(
     Handles SIGTERM and SIGINT for clean shutdown.
     Saves reachability.json cache on each cycle so CLI tools share data.
     """
-    import paho.mqtt.client as mqtt
-
     from gdoc2netcfg.supplements.reachability import (
         check_all_hosts_reachability,
         save_reachability_cache,

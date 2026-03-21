@@ -473,32 +473,52 @@ def _publish_hosts_to_client(
     hosts: list[Host],
     reachability: dict[str, HostReachability],
     hosts_by_name: dict[str, Host],
+    verbose: bool = False,
 ) -> tuple[int, int, int]:
     """Publish discovery + state for all hosts to an MQTT client.
+
+    Discovery is published for ALL hosts first, then a 2-second delay
+    allows HA to process config and subscribe to state topics, then
+    state is published for all hosts.  Without this delay, HA misses
+    the initial state because it hasn't subscribed yet when the state
+    messages arrive.
 
     Returns (published_count, discovery_count, state_count).
     Raises KeyError if a host has no reachability entry.
     Raises ValueError if interface counts don't match.
     """
+    import time
+
     published = 0
     discovery_count = 0
     state_count = 0
 
-    for host in sorted(hosts, key=lambda h: h.hostname):
-        nid = _node_id(host.machine_name)
-
-        # Fail loud: every host must have reachability data
+    # Pre-validate all hosts before publishing anything
+    sorted_hosts = sorted(hosts, key=lambda h: h.hostname)
+    for host in sorted_hosts:
         if host.hostname not in reachability:
             raise KeyError(
                 f"No reachability data for host {host.hostname!r}. "
                 f"This indicates a bug in the scan or stale data."
             )
         hr = reachability[host.hostname]
+        vis = host.virtual_interfaces
+        if len(vis) != len(hr.interfaces):
+            raise ValueError(
+                f"Host {host.hostname!r} has {len(vis)} virtual "
+                f"interfaces but reachability has "
+                f"{len(hr.interfaces)} interface entries. "
+                f"This indicates a data consistency bug."
+            )
 
+    # Phase 1: Publish ALL discovery payloads (retained)
+    for host in sorted_hosts:
+        nid = _node_id(host.machine_name)
+        hr = reachability[host.hostname]
         dev_dict = _device_dict(host)
         avail_list, avail_mode = _availability_list(host, hosts_by_name)
 
-        # --- Host-level discovery ---
+        # Host-level discovery
         for entity in [HOST_CONNECTIVITY, HOST_TRACKER, HOST_STACK_MODE]:
             if entity == HOST_CONNECTIVITY:
                 state_topic = f"{STATE_PREFIX}/{nid}/connectivity/state"
@@ -507,7 +527,6 @@ def _publish_hosts_to_client(
             else:
                 state_topic = f"{STATE_PREFIX}/{nid}/stack_mode/state"
 
-            # device_tracker uses attributes topic
             json_attr = None
             if entity == HOST_TRACKER:
                 json_attr = f"{STATE_PREFIX}/{nid}/tracker/attributes"
@@ -520,9 +539,8 @@ def _publish_hosts_to_client(
             client.publish(topic, json.dumps(payload), retain=True)
             discovery_count += 1
 
-        # --- Interface-level discovery ---
-        vis = host.virtual_interfaces
-        for vi in vis:
+        # Interface-level discovery
+        for vi in host.virtual_interfaces:
             slug = _iface_slug(vi)
             for entity in _iface_entities(slug, vi.name):
                 st, ja = _iface_entity_state_topic(entity, nid, slug)
@@ -534,20 +552,28 @@ def _publish_hosts_to_client(
                 client.publish(topic, json.dumps(payload), retain=True)
                 discovery_count += 1
 
-        # --- Host-level state ---
+    # Wait for HA to process discovery and subscribe to state topics
+    if verbose:
+        print(
+            f"Published {discovery_count} discovery messages, "
+            f"waiting 2s for HA to subscribe...",
+            file=sys.stderr,
+        )
+    time.sleep(2)
+
+    # Phase 2: Publish ALL state messages (not retained)
+    for host in sorted_hosts:
+        nid = _node_id(host.machine_name)
+        hr = reachability[host.hostname]
+
+        # Host-level state
         host_states = build_host_state(host, hr)
         for topic, payload_val in host_states.items():
             client.publish(topic, payload_val, retain=False)
             state_count += 1
 
-        # --- Interface-level state ---
-        # Fail loud: interface count must match between host and reachability
-        if len(vis) != len(hr.interfaces):
-            raise ValueError(
-                f"Host {host.hostname!r} has {len(vis)} virtual interfaces "
-                f"but reachability has {len(hr.interfaces)} interface entries. "
-                f"This indicates a data consistency bug."
-            )
+        # Interface-level state
+        vis = host.virtual_interfaces
         for vi_idx, vi in enumerate(vis):
             ir = hr.interfaces[vi_idx]
             iface_states = build_interface_state(host, vi, ir)
@@ -601,6 +627,7 @@ def publish_all_hosts(
     try:
         published, discovery_count, state_count = _publish_hosts_to_client(
             client, hosts, reachability, hosts_by_name,
+            verbose=verbose,
         )
 
         # Bridge availability — we're online
@@ -703,6 +730,7 @@ def run_daemon(
             # Publish discovery + state using shared helper
             published, disc, state = _publish_hosts_to_client(
                 client, hosts, reachability, hosts_by_name,
+                verbose=verbose,
             )
 
             # Bridge online

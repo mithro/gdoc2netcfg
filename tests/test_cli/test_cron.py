@@ -96,9 +96,17 @@ class TestDetectUvPath:
         """Should raise FileNotFoundError with install instructions when uv not found."""
         from gdoc2netcfg.cli.cron import detect_uv_path
 
+        original_exists = Path.exists
+
+        def fake_exists(path):
+            if str(path) == "/usr/local/bin/uv":
+                return False
+            return original_exists(path)
+
         with (
             patch("shutil.which", return_value=None),
             patch("pathlib.Path.home", return_value=tmp_path),
+            patch.object(Path, "exists", fake_exists),
         ):
             with pytest.raises(FileNotFoundError, match="uv"):
                 detect_uv_path()

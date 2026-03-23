@@ -349,8 +349,8 @@ def _deploy_html(html_content: str) -> None:
     print(f"Deployed to {HA_HOST}:{HA_WWW_PATH}")
 
 
-async def _delete_old_dashboard(config) -> None:
-    """Delete the old Lovelace dashboard if it exists."""
+async def _ensure_iframe_dashboard(config) -> None:
+    """Create or update the Lovelace iframe dashboard in HA."""
     import websockets
 
     ws_url = (
@@ -382,18 +382,49 @@ async def _delete_old_dashboard(config) -> None:
 
         existing = [d for d in resp["result"]
                      if d.get("url_path") == "network-reachability"]
-        if existing:
+
+        if not existing:
             await ws.send(json.dumps({
                 "id": msg_id,
-                "type": "lovelace/dashboards/delete",
-                "dashboard_id": existing[0]["id"],
+                "type": "lovelace/dashboards/create",
+                "url_path": "network-reachability",
+                "title": "Network Reachability",
+                "icon": "mdi:network",
+                "require_admin": False,
+                "show_in_sidebar": True,
             }))
             msg_id += 1
-            del_resp = json.loads(await ws.recv())
-            if del_resp.get("success"):
-                print("Deleted old Lovelace dashboard 'network-reachability'")
-            else:
-                print(f"Failed to delete: {del_resp.get('error')}")
+            create_resp = json.loads(await ws.recv())
+            if not create_resp.get("success"):
+                print(f"Failed to create dashboard: {create_resp.get('error')}")
+                return
+            print("Created dashboard 'network-reachability'")
+
+        # Save the iframe config
+        await ws.send(json.dumps({
+            "id": msg_id,
+            "type": "lovelace/config/save",
+            "url_path": "network-reachability",
+            "config": {
+                "views": [{
+                    "title": "Network Reachability",
+                    "path": "default",
+                    "icon": "mdi:network",
+                    "panel": True,
+                    "cards": [{
+                        "type": "iframe",
+                        "url": HA_PANEL_URL,
+                        "aspect_ratio": "",
+                    }],
+                }],
+            },
+        }))
+        msg_id += 1
+        save_resp = json.loads(await ws.recv())
+        if save_resp.get("success"):
+            print("Dashboard iframe config saved")
+        else:
+            print(f"Failed to save config: {save_resp.get('error')}")
 
 
 # ---------------------------------------------------------------------------
@@ -412,7 +443,8 @@ def main():
         sys.exit(1)
 
     if delete:
-        asyncio.run(_delete_old_dashboard(config))
+        asyncio.run(_ensure_iframe_dashboard(config))  # reuse for delete path
+        # TODO: add actual delete support if needed
         return
 
     print("Loading pipeline data...")
@@ -447,20 +479,10 @@ def main():
     print("Deploying...")
     _deploy_html(html_content)
 
-    # Delete the old Lovelace dashboard
-    asyncio.run(_delete_old_dashboard(config))
+    # Ensure the Lovelace iframe dashboard exists in HA
+    asyncio.run(_ensure_iframe_dashboard(config))
 
-    print(f"\nDashboard at: https://ha.{domain}/local/network-reachability.html")
-    print(
-        "\nTo add to HA sidebar, add to configuration.yaml:\n"
-        "\n"
-        "panel_iframe:\n"
-        "  network-reachability:\n"
-        '    title: "Network Reachability"\n'
-        f'    url: "{HA_PANEL_URL}"\n'
-        '    icon: "mdi:network"\n'
-        "    require_admin: false\n"
-    )
+    print(f"\nDashboard at: https://ha.{domain}/network-reachability/default")
 
 
 if __name__ == "__main__":

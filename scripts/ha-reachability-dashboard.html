@@ -33,7 +33,19 @@ table {
   border-collapse: collapse;
   font-size: 0.85em;
   margin-bottom: 16px;
+  table-layout: fixed;
 }
+/* Fixed column widths for alignment across tables */
+col.c-st    { width: 30px; }
+col.c-fold  { width: 20px; }
+col.c-name  { width: 18%; }
+col.c-stack { width: 40px; }
+col.c-ipv4  { width: 12%; }
+col.c-ipv6  { width: 10%; }
+col.c-mac   { width: 14%; }
+col.c-rtt   { width: 60px; }
+col.c-loc   { width: 14%; }
+col.c-ctrl  { /* remainder */ }
 th {
   text-align: left;
   padding: 4px 6px;
@@ -124,7 +136,8 @@ function sortVal(h, col) {
       var r = bestRtt(h);
       return r !== null ? r : Infinity;
     case "location": return h.location || "";
-    case "controls": return h.ctrl_name || "";
+    case "controls":
+      return (h.controls && h.controls.length > 0) ? h.controls[0].name : "";
     default: return h.hostname;
   }
 }
@@ -192,6 +205,35 @@ function addCodeCell(tr, text) {
   return tr.appendChild(td);
 }
 
+function addCtrlCell(tr, h) {
+  var td = document.createElement("td");
+  if (!h.controls || h.controls.length === 0) {
+    td.textContent = "\u2014";
+    tr.appendChild(td);
+    return;
+  }
+  for (var i = 0; i < h.controls.length; i++) {
+    if (i > 0) td.appendChild(document.createTextNode(", "));
+    var c = h.controls[i];
+    // State indicator
+    var st = c.state === "on" ? "\u{1f7e2}" : c.state === "off" ? "\u{1f534}" : "\u26ab";
+    td.appendChild(document.createTextNode(st + " "));
+    // Type icon
+    var icon = c.type === "poe" ? "\u26a1" : "\u{1f50c}";
+    td.appendChild(document.createTextNode(icon));
+    // Name (linked if URL available)
+    if (c.url) {
+      var a = document.createElement("a");
+      a.href = c.url;
+      a.textContent = c.name;
+      td.appendChild(a);
+    } else {
+      td.appendChild(document.createTextNode(c.name));
+    }
+  }
+  tr.appendChild(td);
+}
+
 function render() {
   var root = document.getElementById("dashboard");
   while (root.firstChild) root.removeChild(root.firstChild);
@@ -206,6 +248,16 @@ function render() {
     root.appendChild(h2);
 
     var table = document.createElement("table");
+
+    // Column widths for alignment across tables
+    var colgroup = document.createElement("colgroup");
+    var colClasses = ["c-st","c-fold","c-name","c-stack","c-ipv4","c-ipv6","c-mac","c-rtt","c-loc","c-ctrl"];
+    for (var ci2 = 0; ci2 < colClasses.length; ci2++) {
+      var col = document.createElement("col");
+      col.className = colClasses[ci2];
+      colgroup.appendChild(col);
+    }
+    table.appendChild(colgroup);
 
     // Header
     var thead = document.createElement("thead");
@@ -251,7 +303,7 @@ function render() {
         addCell(tr, STACK_LABEL[h.stack] || "\u2014", "stack");
         addCell(tr, ""); addCell(tr, ""); addCell(tr, ""); addCell(tr, "");
         addCell(tr, h.location || "\u2014");
-        addCell(tr, h.ctrl_name ? makeLink("http://" + h.ctrl_fqdn, h.ctrl_name) : "\u2014");
+        addCtrlCell(tr, h);
         tbody.appendChild(tr);
 
         // Interface rows — hidden by default
@@ -286,7 +338,7 @@ function render() {
         addCodeCell(tr, f.mac);
         addCell(tr, f.rtt !== null ? f.rtt + "ms" : "\u2014");
         addCell(tr, h.location || "\u2014");
-        addCell(tr, h.ctrl_name ? makeLink("http://" + h.ctrl_fqdn, h.ctrl_name) : "\u2014");
+        addCtrlCell(tr, h);
         tbody.appendChild(tr);
       }
     }

@@ -132,15 +132,126 @@ def _group_hosts_by_network(hosts, site):
     return networks
 
 
-def _build_controls_map(hosts) -> dict[str, tuple[str, str]]:
-    """Build reverse mapping: machine_name -> (ctrl_name, ctrl_hostname)."""
-    controls_map: dict[str, tuple[str, str]] = {}
+def _fetch_ha_states(config) -> list[dict]:
+    """Fetch all entity states from HA API."""
+    import urllib.request
+
+    url = f"{config.homeassistant.url.rstrip('/')}/api/states"
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {config.homeassistant.token}",
+        "Content-Type": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())
+    except Exception:
+        return []
+
+
+def _build_controls_map(
+    hosts, config, ha_states: list[dict],
+) -> dict[str, list[dict]]:
+    """Build reverse mapping: machine_name -> [{name, url, state}, ...].
+
+    Combines Tasmota plug controls (from spreadsheet) with PoE port
+    controls (from HA switch port description entities).  Each host
+    can have multiple power sources.  State is fetched from HA.
+    """
+    domain = config.site.domain
+
+    # Index HA states by entity_id for fast lookup
+    state_by_eid: dict[str, str] = {}
+    for e in ha_states:
+        state_by_eid[e["entity_id"]] = e["state"]
+
+    controls_map: dict[str, list[dict]] = {}
+
+    # Tasmota plug controls
     for host in hosts:
         if host.tasmota_data is None:
             continue
         for controlled in host.tasmota_data.controls:
-            controls_map[controlled] = (host.machine_name, host.hostname)
+            ctrl_url = f"http://ipv4.{host.hostname}.{domain}"
+            # Try to find the HA switch entity for this plug
+            plug_eid = f"switch.{_node_id(host.hostname)}"
+            plug_state = state_by_eid.get(plug_eid, "")
+            if not plug_state:
+                # Try the connectivity entity as fallback
+                conn_eid = (
+                    f"binary_sensor.gdoc2netcfg_{_node_id(host.hostname)}"
+                    f"_connectivity"
+                )
+                conn = state_by_eid.get(conn_eid, "")
+                plug_state = "on" if conn == "on" else "off" if conn else ""
+            controls_map.setdefault(controlled, []).append({
+                "name": host.machine_name,
+                "url": ctrl_url,
+                "state": plug_state,
+                "type": "plug",
+            })
+
+    # PoE port controls from HA entities
+    poe_controls = _fetch_poe_controls(config, ha_states, state_by_eid)
+    for hostname, entries in poe_controls.items():
+        controls_map.setdefault(hostname, []).extend(entries)
+
     return controls_map
+
+
+def _fetch_poe_controls(
+    config, ha_states: list[dict], state_by_eid: dict[str, str],
+) -> dict[str, list[dict]]:
+    """Fetch PoE port-to-host mappings from HA states.
+
+    Reads switch port description sensors to find which device is
+    connected to each port, and matches with PoE status sensors to
+    identify PoE-powered hosts.
+    """
+    desc_re = re.compile(r'^sensor\.(.+)_port_(\d+)_description$')
+    poe_re = re.compile(r'^sensor\.(.+)_port_(\d+)_poe_status$')
+
+    descriptions: dict[tuple[str, str], str] = {}
+    poe_statuses: dict[tuple[str, str], str] = {}
+    for e in ha_states:
+        m = desc_re.match(e["entity_id"])
+        if m and e["state"].strip():
+            descriptions[(m.group(1), m.group(2))] = e["state"].strip()
+        m2 = poe_re.match(e["entity_id"])
+        if m2:
+            poe_statuses[(m2.group(1), m2.group(2))] = e["state"]
+
+    result: dict[str, list[dict]] = {}
+    iface_prefixes = (
+        "eth0.", "eth1.", "eth2.", "eno1.", "enp", "lan.", "en",
+    )
+    for (sw, port), desc in descriptions.items():
+        poe_st = poe_statuses.get((sw, port), "")
+        if poe_st not in ("delivering", "searching"):
+            continue
+
+        # Extract hostname from description (strip interface prefix)
+        hostname = desc
+        for pfx in iface_prefixes:
+            if hostname.startswith(pfx) and "." in hostname[len(pfx):]:
+                hostname = hostname.split(".", 1)[1]
+                break
+            elif hostname.startswith(pfx):
+                hostname = hostname[len(pfx):]
+                break
+
+        sw_display = sw.replace("_", "-")
+        poe_entity = f"switch.{sw}_port_{port}_poe"
+        poe_switch_state = state_by_eid.get(poe_entity, "")
+
+        display = f"{sw_display} p{port}"
+        result.setdefault(hostname, []).append({
+            "name": display,
+            "url": "",  # PoE ports don't have a web UI to link to
+            "state": poe_switch_state,
+            "type": "poe",
+        })
+
+    return result
 
 
 def _ipv6_common_prefix(site) -> str:
@@ -225,9 +336,7 @@ def _build_host_data(
         host_status, host_stack = "off", "down"
 
     location = host.extra.get("Physical Location", "").strip()
-    ctrl_info = controls_map.get(host.machine_name)
-    ctrl_name = ctrl_info[0] if ctrl_info else ""
-    ctrl_fqdn = f"ipv4.{ctrl_info[1]}.{domain}" if ctrl_info else ""
+    ctrl_list = controls_map.get(host.machine_name, [])
 
     interfaces = []
     for vi_idx, vi in enumerate(host.virtual_interfaces):
@@ -279,8 +388,7 @@ def _build_host_data(
         "status": host_status,
         "stack": host_stack,
         "location": location,
-        "ctrl_name": ctrl_name,
-        "ctrl_fqdn": ctrl_fqdn,
+        "controls": ctrl_list,
         "interfaces": interfaces,
     }
 
@@ -468,7 +576,11 @@ def main():
         if subdomain not in NETWORK_ORDER:
             print(f"  {subdomain}: {len(networks[subdomain])} hosts")
 
-    controls_map = _build_controls_map(hosts)
+    print("Fetching HA entity states...")
+    ha_states = _fetch_ha_states(config)
+    print(f"  {len(ha_states)} entities")
+
+    controls_map = _build_controls_map(hosts, config, ha_states)
     ipv6_prefix = _ipv6_common_prefix(config.site)
     domain = config.site.domain
     reachability = _load_reachability(config)

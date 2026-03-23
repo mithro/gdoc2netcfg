@@ -3,7 +3,7 @@
 
 Connects to the HA WebSocket API and creates a dedicated Lovelace
 dashboard showing host connectivity grouped by network (VLAN subdomain)
-in data-dense HTML tables with live Jinja2 state lookups.
+using collapsible <details> blocks per host with interface tables.
 
 Three views provide different sort orders:
   by-name    — alphabetical by hostname (default)
@@ -61,13 +61,19 @@ SORT_VIEWS = ["by-name", "by-status", "by-rtt"]
 # Entity ID helpers (must match mqtt_ha.py exactly)
 # ---------------------------------------------------------------------------
 
-def _node_id(machine_name: str) -> str:
-    """Derive MQTT node_id from machine_name.
+def _node_id(name: str) -> str:
+    """Derive MQTT node_id from a name.
 
     Replaces non-alphanumeric characters with underscores.
     Example: "big-storage" -> "big_storage"
+
+    Note: mqtt_ha.py uses machine_name here.  For BMC hosts the
+    machine_name collides with the parent (both are "big-storage"),
+    so the dashboard uses hostname instead (e.g. "bmc.big-storage"
+    -> "bmc_big_storage").  This mismatch means BMC entity IDs in
+    the dashboard won't resolve until mqtt_ha.py is also updated.
     """
-    return re.sub(r"[^a-zA-Z0-9]", "_", machine_name).lower()
+    return re.sub(r"[^a-zA-Z0-9]", "_", name).lower()
 
 
 def _iface_slug(vi) -> str:
@@ -157,18 +163,19 @@ def _group_hosts_by_network(hosts, site):
     return networks
 
 
-def _build_controls_map(hosts):
-    """Build reverse mapping: machine_name -> controlling Tasmota plug name.
+def _build_controls_map(hosts) -> dict[str, tuple[str, str]]:
+    """Build reverse mapping: machine_name -> (ctrl_machine_name, ctrl_hostname).
 
     Scans all hosts with Tasmota data and inverts the controls list,
     so we can look up "which plug powers this device?" for any host.
+    Stores both machine_name (for display) and hostname (for FQDN link).
     """
-    controls_map: dict[str, str] = {}
+    controls_map: dict[str, tuple[str, str]] = {}
     for host in hosts:
         if host.tasmota_data is None:
             continue
         for controlled in host.tasmota_data.controls:
-            controls_map[controlled] = host.machine_name
+            controls_map[controlled] = (host.machine_name, host.hostname)
     return controls_map
 
 
@@ -239,50 +246,33 @@ def _ipv6_suffix(vi, prefix: str) -> str:
 # Template generation
 # ---------------------------------------------------------------------------
 
-def _table_header(sort_key: str) -> str:
-    """Generate HTML table header row with sort-linked column headers.
-
-    Clickable headers navigate between the 3 sort views.  The active
-    sort column gets a bold label with a down-triangle indicator.
-    """
-    def _col(label, target_sort):
-        if target_sort == sort_key:
-            return f"<b>{label}&nbsp;\u25be</b>"
-        return f'<a href="/network-reachability/{target_sort}">{label}</a>'
+def _sort_bar(sort_key: str) -> str:
+    """Generate sort navigation bar with links between views."""
+    def _item(label, target):
+        if target == sort_key:
+            return f"<b>{label}\u00a0\u25be</b>"
+        return f'<a href="/network-reachability/{target}">{label}</a>'
 
     return (
-        "<tr>"
-        f'<th style="padding:4px 6px">{_col("St", "by-status")}</th>'
-        f'<th style="padding:4px 6px">{_col("Host", "by-name")}</th>'
-        '<th style="padding:4px 6px">Iface</th>'
-        '<th style="padding:4px 6px">Stack</th>'
-        '<th style="padding:4px 6px">IPv4</th>'
-        '<th style="padding:4px 6px">IPv6</th>'
-        '<th style="padding:4px 6px">MAC</th>'
-        f'<th style="padding:4px 6px">{_col("RTT", "by-rtt")}</th>'
-        '<th style="padding:4px 6px">Location</th>'
-        '<th style="padding:4px 6px">Controls</th>'
-        "</tr>"
+        '<div style="font-size:0.9em;padding:4px 0;margin-bottom:4px;'
+        'border-bottom:1px solid var(--divider-color,#e0e0e0)">'
+        f'Sort: {_item("Host", "by-name")} · '
+        f'{_item("Status", "by-status")} · '
+        f'{_item("RTT", "by-rtt")}'
+        "</div>"
     )
 
 
-def _row_template(
-    host,
-    vi,
-    is_first_iface: bool,
-    controls_map: dict[str, str],
-    ipv6_prefix: str,
-) -> str:
+def _iface_row(host, vi, ipv6_prefix: str, domain: str) -> str:
     """Generate Jinja2 HTML table row for one interface.
 
-    The row uses Jinja2 template expressions for live data (status,
-    stack mode, IPv4, MAC, RTT) and baked-in static data (host name,
-    interface name, IPv6 suffix, location, controls).
-
-    Opacity is set dynamically: 1.0 for online, 0.5 for offline,
-    0.35 for unavailable.
+    Each row uses Jinja2 for live data (status, stack, IPv4, MAC, RTT)
+    and baked-in static data (interface name, IPv6 suffix).  The
+    interface name and IPv4 display are links using DNS FQDNs with a
+    stack-dependent prefix (ipv4./ipv6./ or bare for dual).
     """
-    nid = _node_id(host.machine_name)
+    # Use hostname for node_id so BMCs get unique entity IDs
+    nid = _node_id(host.hostname)
     slug = _iface_slug(vi)
 
     conn_eid = f"binary_sensor.gdoc2netcfg_{nid}_{slug}_connectivity"
@@ -291,77 +281,226 @@ def _row_template(
     mac_eid = f"sensor.gdoc2netcfg_{nid}_{slug}_mac"
     rtt_eid = f"sensor.gdoc2netcfg_{nid}_{slug}_rtt"
 
-    iface_display = vi.name or "default"
-    host_cell = f"<b>{host.machine_name}</b>" if is_first_iface else ""
-    location = host.extra.get("Physical Location", "").strip() or "\u2014"
-    controller = controls_map.get(host.machine_name, "\u2014")
+    iface_name = vi.name or "default"
     ipv6_suf = _ipv6_suffix(vi, ipv6_prefix)
 
-    td = 'style="padding:4px 6px"'
+    # FQDN for this interface
+    fqdn = f"{host.hostname}.{domain}"
+    if vi.name:
+        iface_fqdn = f"{vi.name}.{fqdn}"
+    else:
+        iface_fqdn = fqdn
 
-    # Stack mode abbreviations
-    # NB: closing }} must be in an f-string (}}}} → }}) not a plain
+    td = 'style="padding:2px 6px;white-space:nowrap"'
+
+    # Setup: interface connectivity + stack + DNS prefix
+    # NB: closing }} must be in an f-string (}}}} -> }}) not a plain
     # string where }}}} would be four literal braces.
-    stack_expr = (
-        f"{{{{ states('{stack_eid}')"
-        "|replace('dual-stack','dual')"
-        "|replace('ipv4-only','v4')"
-        "|replace('ipv6-only','v6')"
-        "|replace('unavailable','\u2014')"
-        f"|replace('unknown','\u2014') }}}}"
-    )
-
-    # RTT with fallback
-    rtt_expr = (
-        f"{{% set r=states('{rtt_eid}') %}}"
-        "{% if r not in ['unknown','unavailable',''] %}"
-        "{{ r }}ms"
-        "{% else %}\u2014{% endif %}"
-    )
-
-    # IPv4 with fallback
-    ipv4_expr = (
-        f"{{{{ states('{ipv4_eid}')"
-        "|replace('unavailable','\u2014')"
-        f"|replace('unknown','\u2014') }}}}"
-    )
-
-    # MAC with fallback
-    mac_expr = (
-        f"{{{{ states('{mac_eid}')"
-        "|replace('unavailable','\u2014')"
-        f"|replace('unknown','\u2014') }}}}"
+    setup = (
+        f"{{% set _ic=states('{conn_eid}') %}}"
+        f"{{% set _is=states('{stack_eid}') %}}"
+        "{% set _ip='ipv4.' if _is=='ipv4-only' "
+        "else ('ipv6.' if _is=='ipv6-only' else '') %}"
     )
 
     # Status emoji
-    status_expr = (
-        f"{{% if is_state('{conn_eid}','on') %}}"
-        "\U0001f7e2"
-        f"{{% elif is_state('{conn_eid}','off') %}}"
-        "\U0001f534"
+    status = (
+        "{% if _ic=='on' %}\U0001f7e2"
+        "{% elif _ic=='off' %}\U0001f534"
         "{% else %}\u26ab{% endif %}"
     )
 
-    # Opacity based on connectivity state
-    opacity_expr = (
-        f"{{% if is_state('{conn_eid}','on') %}}1"
-        f"{{% elif is_state('{conn_eid}','off') %}}0.5"
+    # Stack compact
+    stack = (
+        "{% if _is=='dual-stack' %}4\u00b76"
+        "{% elif _is=='ipv4-only' %}4"
+        "{% elif _is=='ipv6-only' %}6"
+        "{% else %}\u2014{% endif %}"
+    )
+
+    # Interface name as link: <stack>.<iface>.<hostname>.<domain>
+    iface_link = (
+        f'<a href="http://{{{{ _ip }}}}{iface_fqdn}">'
+        f"{iface_name}</a>"
+    )
+
+    # IPv4 as link using DNS name (displayed as IP address)
+    ipv4_link = (
+        f"{{% set _v4=states('{ipv4_eid}') %}}"
+        "{% if _v4 not in ['unavailable','unknown'] %}"
+        f'<a href="http://{{{{ _ip }}}}{iface_fqdn}">'
+        "{{ _v4 }}</a>"
+        "{% else %}\u2014{% endif %}"
+    )
+
+    # MAC in monospace
+    mac_cell = (
+        f"{{% set _mac=states('{mac_eid}') %}}"
+        "{% if _mac not in ['unavailable','unknown'] %}"
+        "<code>{{ _mac }}</code>"
+        "{% else %}\u2014{% endif %}"
+    )
+
+    # RTT with fallback
+    rtt_cell = (
+        f"{{% set _rtt=states('{rtt_eid}') %}}"
+        "{% if _rtt not in ['unknown','unavailable',''] %}"
+        "{{ _rtt }}ms"
+        "{% else %}\u2014{% endif %}"
+    )
+
+    # Opacity based on interface connectivity
+    opacity = (
+        "{% if _ic=='on' %}1"
+        "{% elif _ic=='off' %}0.5"
         "{% else %}0.35{% endif %}"
     )
 
     return (
-        f'<tr style="opacity:{opacity_expr}">'
-        f"<td {td}>{status_expr}</td>"
-        f"<td {td}>{host_cell}</td>"
-        f"<td {td}>{iface_display}</td>"
-        f"<td {td}>{stack_expr}</td>"
-        f"<td {td}>{ipv4_expr}</td>"
+        f"{setup}"
+        f'<tr style="opacity:{opacity}">'
+        f"<td {td}>{status}</td>"
+        f"<td {td}>{iface_link}</td>"
+        f"<td {td}>{stack}</td>"
+        f"<td {td}>{ipv4_link}</td>"
         f"<td {td}>{ipv6_suf}</td>"
-        f"<td {td}>{mac_expr}</td>"
-        f"<td {td}>{rtt_expr}</td>"
-        f"<td {td}>{location}</td>"
-        f"<td {td}>{controller}</td>"
+        f"<td {td}>{mac_cell}</td>"
+        f"<td {td}>{rtt_cell}</td>"
         "</tr>"
+    )
+
+
+def _host_block(
+    host,
+    controls_map: dict[str, tuple[str, str]],
+    ipv6_prefix: str,
+    domain: str,
+    compact: bool = False,
+) -> str:
+    """Generate a block for one host.
+
+    When compact=False (default): a collapsible <details> block with
+    a <summary> showing host info and an interface table inside.
+
+    When compact=True (by-status view): just the host summary line
+    without the interface table, keeping template size small enough
+    to fit within HA's WebSocket message limit.
+
+    The hostname link uses a stack-dependent DNS prefix:
+      dual-stack -> hostname.domain
+      ipv4-only  -> ipv4.hostname.domain
+      ipv6-only  -> ipv6.hostname.domain
+    """
+    # Use hostname for node_id so BMCs get unique entity IDs
+    nid = _node_id(host.hostname)
+    fqdn = f"{host.hostname}.{domain}"
+
+    host_conn_eid = f"binary_sensor.gdoc2netcfg_{nid}_connectivity"
+    host_stack_eid = f"sensor.gdoc2netcfg_{nid}_stack_mode"
+
+    # Host-level Jinja2 setup
+    setup = (
+        f"{{% set _hc=states('{host_conn_eid}') %}}"
+        f"{{% set _hs=states('{host_stack_eid}') %}}"
+        "{% set _hp='ipv4.' if _hs=='ipv4-only' "
+        "else ('ipv6.' if _hs=='ipv6-only' else '') %}"
+    )
+
+    # Host status emoji
+    host_status = (
+        "{% if _hc=='on' %}\U0001f7e2"
+        "{% elif _hc=='off' %}\U0001f534"
+        "{% else %}\u26ab{% endif %}"
+    )
+
+    # Host stack compact
+    host_stack = (
+        " {% if _hs=='dual-stack' %}4\u00b76"
+        "{% elif _hs=='ipv4-only' %}4"
+        "{% elif _hs=='ipv6-only' %}6"
+        "{% else %}\u2014{% endif %}"
+    )
+
+    # Hostname link
+    hostname_link = (
+        f' <a href="http://{{{{ _hp }}}}{fqdn}">'
+        f"<b>{host.machine_name}</b></a>"
+    )
+
+    # Meta: location + controls
+    location = host.extra.get("Physical Location", "").strip()
+    ctrl_info = controls_map.get(host.machine_name)
+    meta_parts = []
+    if location:
+        meta_parts.append(location)
+    if ctrl_info:
+        ctrl_name, ctrl_hostname = ctrl_info
+        ctrl_fqdn = f"ipv4.{ctrl_hostname}.{domain}"
+        meta_parts.append(
+            f'\u26a1<a href="http://{ctrl_fqdn}">{ctrl_name}</a>'
+        )
+    meta = " \u00b7 ".join(meta_parts)
+    meta_html = f" \u2014 {meta}" if meta else ""
+
+    # Interface count
+    n_ifaces = len(host.virtual_interfaces)
+    iface_count = f" \u2014 {n_ifaces} iface{'s' if n_ifaces != 1 else ''}"
+
+    # Opacity on the details element based on host connectivity
+    opacity = (
+        "{% if _hc=='on' %}1"
+        "{% elif _hc=='off' %}0.5"
+        "{% else %}0.35{% endif %}"
+    )
+
+    # Summary line content (shared between compact and full)
+    summary_content = (
+        f"{host_status}{hostname_link}{host_stack}"
+        f"{iface_count}{meta_html}"
+    )
+
+    if compact:
+        # Compact mode (by-status view): just a styled div, no
+        # interface table.  Keeps template size ~3x smaller.
+        return (
+            f"{setup}"
+            f'<div style="opacity:{opacity};padding:4px 0;'
+            f'border-bottom:1px solid var(--divider-color,#e0e0e0)">'
+            f"{summary_content}"
+            f"</div>"
+        )
+
+    # Full mode: collapsible details with interface table
+    iface_lines = []
+    for vi in host.virtual_interfaces:
+        iface_lines.append(_iface_row(host, vi, ipv6_prefix, domain))
+
+    # Column header for interface table
+    th = 'style="padding:2px 6px;text-align:left;font-size:0.8em;' \
+         'border-bottom:1px solid var(--divider-color,#e0e0e0)"'
+    col_header = (
+        f"<tr><th {th}>St</th><th {th}>Iface</th><th {th}>Stack</th>"
+        f"<th {th}>IPv4</th><th {th}>IPv6</th>"
+        f"<th {th}>MAC</th><th {th}>RTT</th></tr>"
+    )
+
+    iface_table = (
+        '<table style="width:calc(100% - 24px);margin-left:24px;'
+        'border-collapse:collapse;font-size:0.85em">\n'
+        + col_header + "\n"
+        + "\n".join(iface_lines)
+        + "\n</table>"
+    )
+
+    return (
+        f"{setup}"
+        f'<details open style="opacity:{opacity}">\n'
+        f"<summary style=\"cursor:pointer;padding:4px 0;"
+        f'border-bottom:1px solid var(--divider-color,#e0e0e0)">'
+        f"{summary_content}"
+        f"</summary>\n"
+        f"{iface_table}\n"
+        f"</details>"
     )
 
 
@@ -369,16 +508,17 @@ def _build_network_table(
     subdomain: str,
     hosts: list,
     sort_key: str,
-    controls_map: dict[str, str],
+    controls_map: dict[str, tuple[str, str]],
     ipv6_prefix: str,
     rtt_cache: dict[str, float | None],
+    domain: str,
 ) -> dict:
-    """Generate a Lovelace markdown card for one network's table.
+    """Generate a Lovelace markdown card for one network.
 
-    Returns a card config dict with a Jinja2 HTML table template.
-    The row order depends on sort_key:
+    Returns a card config dict.  Each host is a collapsible <details>
+    block.  The row order depends on sort_key:
       by-name   — alphabetical by hostname
-      by-status — multi-pass: online rows, offline rows, unavailable rows
+      by-status — multi-pass: online hosts, offline, unavailable
       by-rtt    — sorted by last-known RTT from reachability cache
     """
     display_name = NETWORK_DISPLAY.get(subdomain, subdomain.title())
@@ -388,7 +528,7 @@ def _build_network_table(
     if ipv6_prefix:
         title += f" \u2014 IPv6: {ipv6_prefix}"
 
-    # Determine row order
+    # Determine host order
     if sort_key == "by-rtt":
         def _rtt_sort_key(h):
             rtt = rtt_cache.get(h.hostname)
@@ -397,54 +537,41 @@ def _build_network_table(
     else:
         ordered_hosts = sorted(hosts, key=lambda h: h.hostname)
 
-    # Build the HTML table
-    lines = [
-        '<table style="width:100%;border-collapse:collapse;font-size:0.85em">',
-        _table_header(sort_key),
-    ]
+    lines = [_sort_bar(sort_key)]
 
     if sort_key == "by-status":
-        # Multi-pass: emit each interface 3 times with guards so only
-        # the matching pass renders.  This achieves live status-based
-        # grouping within the Jinja2 template.
+        # Multi-pass: emit each host block 3 times with guards so
+        # only the matching pass renders.  Uses compact=True (summary
+        # only, no interface tables) to keep within HA's 4 MB limit.
         for condition in ("on", "off", "unavailable"):
             for host in ordered_hosts:
-                vis = host.virtual_interfaces
-                for vi_idx, vi in enumerate(vis):
-                    nid = _node_id(host.machine_name)
-                    slug = _iface_slug(vi)
-                    conn_eid = (
-                        f"binary_sensor.gdoc2netcfg_{nid}_{slug}_connectivity"
+                nid = _node_id(host.hostname)
+                host_conn_eid = (
+                    f"binary_sensor.gdoc2netcfg_{nid}_connectivity"
+                )
+                block = _host_block(
+                    host, controls_map, ipv6_prefix, domain,
+                    compact=True,
+                )
+                if condition in ("on", "off"):
+                    lines.append(
+                        f"{{% if is_state('{host_conn_eid}',"
+                        f"'{condition}') %}}"
+                        f"{block}"
+                        "{% endif %}"
                     )
-                    row = _row_template(
-                        host, vi, vi_idx == 0,
-                        controls_map, ipv6_prefix,
+                else:
+                    lines.append(
+                        f"{{% if not is_state('{host_conn_eid}','on') "
+                        f"and not is_state('{host_conn_eid}','off') %}}"
+                        f"{block}"
+                        "{% endif %}"
                     )
-                    if condition in ("on", "off"):
-                        lines.append(
-                            f"{{% if is_state('{conn_eid}','{condition}') %}}"
-                            f"{row}"
-                            "{% endif %}"
-                        )
-                    else:
-                        # "unavailable" catches anything not on/off
-                        lines.append(
-                            f"{{% if not is_state('{conn_eid}','on') "
-                            f"and not is_state('{conn_eid}','off') %}}"
-                            f"{row}"
-                            "{% endif %}"
-                        )
     else:
-        # Single pass: by-name or by-rtt
         for host in ordered_hosts:
-            vis = host.virtual_interfaces
-            for vi_idx, vi in enumerate(vis):
-                lines.append(_row_template(
-                    host, vi, vi_idx == 0,
-                    controls_map, ipv6_prefix,
-                ))
-
-    lines.append("</table>")
+            lines.append(_host_block(
+                host, controls_map, ipv6_prefix, domain,
+            ))
 
     return {
         "type": "markdown",
@@ -498,13 +625,14 @@ def _build_summary_template() -> str:
 
 def _build_dashboard_config(
     networks: dict[str, list],
-    controls_map: dict[str, str],
+    controls_map: dict[str, tuple[str, str]],
     ipv6_prefix: str,
     rtt_cache: dict[str, float | None],
+    domain: str,
 ) -> dict:
     """Build the Lovelace dashboard config with 3 sorted views.
 
-    Each view contains a summary card followed by one table card per
+    Each view contains a summary card followed by one card per
     network (VLAN subdomain), ordered by NETWORK_ORDER.  Unknown
     networks appear at the end.
     """
@@ -526,13 +654,13 @@ def _build_dashboard_config(
             },
         ]
 
-        # Per-network table cards in defined order
+        # Per-network cards in defined order
         for subdomain in NETWORK_ORDER:
             if subdomain not in networks:
                 continue
             cards.append(_build_network_table(
                 subdomain, networks[subdomain], sort_key,
-                controls_map, ipv6_prefix, rtt_cache,
+                controls_map, ipv6_prefix, rtt_cache, domain,
             ))
 
         # Any networks not in NETWORK_ORDER (e.g. "unknown")
@@ -540,12 +668,10 @@ def _build_dashboard_config(
             if subdomain not in NETWORK_ORDER:
                 cards.append(_build_network_table(
                     subdomain, networks[subdomain], sort_key,
-                    controls_map, ipv6_prefix, rtt_cache,
+                    controls_map, ipv6_prefix, rtt_cache, domain,
                 ))
 
-        # panel: true makes the single card fill the full viewport width.
-        # We wrap all cards in a vertical-stack so panel mode works with
-        # multiple cards.
+        # panel: true + vertical-stack for full viewport width
         views.append({
             "title": view_title,
             "path": sort_key,
@@ -563,7 +689,7 @@ def _build_dashboard_config(
 
 
 # ---------------------------------------------------------------------------
-# Push to HA (unchanged from original)
+# Push to HA (unchanged)
 # ---------------------------------------------------------------------------
 
 async def _push_dashboard(
@@ -693,11 +819,13 @@ def main():
     controls_map = _build_controls_map(hosts)
     ipv6_prefix = _ipv6_common_prefix(config.site)
     rtt_cache = _load_rtt_cache(config)
+    domain = config.site.domain
 
     print(
         f"  Controls: {len(controls_map)} hosts powered by Tasmota plugs"
     )
     print(f"  IPv6 prefix: {ipv6_prefix or '(none)'}")
+    print(f"  Domain: {domain}")
     print(
         f"  RTT cache: {sum(1 for v in rtt_cache.values() if v is not None)}"
         f"/{len(rtt_cache)} hosts with RTT data"
@@ -705,13 +833,15 @@ def main():
 
     print("Building dashboard config...")
     dashboard_config = _build_dashboard_config(
-        networks, controls_map, ipv6_prefix, rtt_cache,
+        networks, controls_map, ipv6_prefix, rtt_cache, domain,
     )
 
-    # Report template sizes
+    # Report template sizes per view (dig into vertical-stack)
     for view in dashboard_config["views"]:
-        total = sum(len(c.get("content", "")) for c in view["cards"])
-        print(f"  {view['path']}: {len(view['cards'])} cards, {total:,} bytes")
+        vstack = view["cards"][0]  # the vertical-stack wrapper
+        inner = vstack["cards"]
+        total = sum(len(c.get("content", "")) for c in inner)
+        print(f"  {view['path']}: {len(inner)} cards, {total:,} bytes")
 
     print("Pushing to Home Assistant...")
     asyncio.run(_push_dashboard(config, dashboard_config))

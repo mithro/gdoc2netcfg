@@ -310,7 +310,7 @@ def _host_row(
 
     hostname_link = (
         f'<a href="http://{{{{ _hp }}}}{fqdn}">'
-        f"<b>{host.machine_name}</b></a>"
+        f"<b>{host.hostname}</b></a>"
     )
 
     location = host.extra.get("Physical Location", "").strip() or "\u2014"

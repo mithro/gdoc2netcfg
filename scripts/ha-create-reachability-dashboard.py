@@ -172,17 +172,12 @@ def _build_controls_map(
             continue
         for controlled in host.tasmota_data.controls:
             ctrl_url = f"http://ipv4.{host.hostname}.{domain}"
-            # Try to find the HA switch entity for this plug
-            plug_eid = f"switch.{_node_id(host.hostname)}"
+            # Tasmota's HA integration creates switch entities using
+            # the MQTT topic (e.g. switch.au_plug_1), not our
+            # hostname-based node_id (au_plug_1_iot).
+            mqtt_topic = host.tasmota_data.mqtt_topic
+            plug_eid = f"switch.{_node_id(mqtt_topic)}"
             plug_state = state_by_eid.get(plug_eid, "")
-            if not plug_state:
-                # Try the connectivity entity as fallback
-                conn_eid = (
-                    f"binary_sensor.gdoc2netcfg_{_node_id(host.hostname)}"
-                    f"_connectivity"
-                )
-                conn = state_by_eid.get(conn_eid, "")
-                plug_state = "on" if conn == "on" else "off" if conn else ""
             controls_map.setdefault(controlled, []).append({
                 "name": host.machine_name,
                 "url": ctrl_url,

@@ -325,7 +325,11 @@ def _generate_html(
                 "hosts": hosts_data,
             })
 
-    data_json = json.dumps(network_data, separators=(",", ":"))
+    # Escape </ to <\/ so JSON strings can't break out of the
+    # <script> block (e.g. a location containing "</script>").
+    data_json = json.dumps(
+        network_data, separators=(",", ":"),
+    ).replace("</", r"<\/")
     template = _HTML_TEMPLATE_PATH.read_text()
     return template.replace("__DATA_JSON__", data_json).replace(
         "__IPV6_PREFIX__", _esc(ipv6_prefix),
@@ -338,8 +342,10 @@ def _generate_html(
 
 def _deploy_html(html_content: str) -> None:
     """Write the HTML file to HA's www directory via ssh + sudo tee."""
+    import shlex
     result = subprocess.run(
-        ["ssh", HA_HOST, f"sudo tee {HA_WWW_PATH} > /dev/null"],
+        ["ssh", HA_HOST,
+         f"sudo tee {shlex.quote(HA_WWW_PATH)} > /dev/null"],
         input=html_content, capture_output=True, text=True, timeout=30,
     )
     if result.returncode != 0:

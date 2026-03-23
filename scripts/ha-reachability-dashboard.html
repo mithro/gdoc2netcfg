@@ -74,7 +74,7 @@ var currentSort = "name";
 var sortDir = 1;
 
 function stackPrefix(s) {
-  return s === "v4" ? "ipv4." : s === "v6" ? "ipv6." : "";
+  return s === "v6" ? "ipv6." : "ipv4.";
 }
 
 function makeLink(href, text, bold) {
@@ -129,16 +129,34 @@ function sortVal(h, col) {
   }
 }
 
+function natCmp(a, b) {
+  // Natural sort: split into runs of digits vs non-digits,
+  // compare digit runs numerically so "plug-2" < "plug-10".
+  var ax = String(a).match(/(\d+|\D+)/g) || [];
+  var bx = String(b).match(/(\d+|\D+)/g) || [];
+  for (var i = 0; i < Math.min(ax.length, bx.length); i++) {
+    var an = parseInt(ax[i], 10), bn = parseInt(bx[i], 10);
+    var isNum = !isNaN(an) && !isNaN(bn);
+    var c = isNum ? an - bn : ax[i].localeCompare(bx[i]);
+    if (c !== 0) return c;
+  }
+  return ax.length - bx.length;
+}
+
 function sortHosts(hosts) {
   var col = currentSort;
   return hosts.slice().sort(function(a, b) {
     var va = sortVal(a, col), vb = sortVal(b, col);
-    if (va < vb) return -1 * sortDir;
-    if (va > vb) return 1 * sortDir;
-    // Stable secondary sort by hostname
-    if (a.hostname < b.hostname) return -1;
-    if (a.hostname > b.hostname) return 1;
-    return 0;
+    // Use numeric compare for numbers, natural sort for strings
+    var c;
+    if (typeof va === "number" && typeof vb === "number") {
+      c = va - vb;
+    } else {
+      c = natCmp(va, vb);
+    }
+    if (c !== 0) return c * sortDir;
+    // Stable secondary sort by hostname (natural)
+    return natCmp(a.hostname, b.hostname);
   });
 }
 

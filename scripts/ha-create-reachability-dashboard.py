@@ -428,12 +428,13 @@ def _single_row(
     )
 
     td = 'style="padding:4px 6px;white-space:nowrap"'
+    tde = 'style="padding:4px 6px"'
     return (
         f"{host_setup}{c['setup']}"
         f'<tr class="hr" style="opacity:{c["opacity"]};'
         f'border-top:2px solid var(--divider-color,#e0e0e0)">'
         f"<td {td}>{host_status}</td>"
-        f"<td {td}>{c['status']}</td>"
+        f"<td {tde}></td>"
         f"<td {td}>{hostname_link}</td>"
         f"<td {td}>{c['stack']}</td>"
         f"<td {td}>{c['ipv4_link']}</td>"
@@ -480,10 +481,10 @@ def _multi_host_row(
         "{% else %}\u2014{% endif %}"
     )
     hostname_link = (
-        '<span class="fi">\u25bc </span>'
         f'<a href="http://{{{{ _hp }}}}{fqdn}">'
         f"<b>{host.hostname}</b></a>"
     )
+    fold_indicator = '<span class="fi">\u25bc</span>'
     location, controls = _location_and_controls(host, controls_map, domain)
     opacity = (
         "{% if _hc=='on' %}1"
@@ -500,7 +501,7 @@ def _multi_host_row(
         f'style="cursor:pointer;opacity:{opacity};'
         f'border-top:2px solid var(--divider-color,#e0e0e0)">'
         f"<td {td}>{status}</td>"
-        f"<td {tde}></td>"
+        f"<td {td}>{fold_indicator}</td>"
         f"<td {td}>{hostname_link}</td>"
         f"<td {td}>{stack}</td>"
         f"<td {tde}></td>"

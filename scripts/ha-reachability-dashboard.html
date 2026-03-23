@@ -71,6 +71,7 @@ var ST_ICON = {on: "\u{1f7e2}", off: "\u{1f534}"};
 var STACK_LABEL = {dual: "4\xb76", v4: "4", v6: "6", down: "\u2014"};
 var states = {};  // entity_id -> state string
 var currentSort = "name", sortDir = 1;
+var openHosts = {};  // nid -> true for unfolded hosts
 
 // --- HA WebSocket ---
 
@@ -228,7 +229,10 @@ function sortHosts(hosts) {
 
 function toggleHost(ev) {
   var tr = ev.target.closest("tr");
+  var nid = tr.dataset.nid;
   var folded = tr.classList.toggle("folded");
+  if (folded) delete openHosts[nid];
+  else openHosts[nid] = true;
   var next = tr.nextElementSibling;
   while (next && next.classList.contains("iface-row")) {
     next.style.display = folded ? "none" : "";
@@ -331,8 +335,10 @@ function render() {
       var multi = h.interfaces.length > 1;
 
       if (multi) {
+        var isOpen = !!openHosts[h.nid];
         var tr = document.createElement("tr");
-        tr.className = "host-row folded" + (cls ? " " + cls : "");
+        tr.className = "host-row" + (isOpen ? "" : " folded") + (cls ? " " + cls : "");
+        tr.dataset.nid = h.nid;
         addCell(tr, ST_ICON[hs] || "\u26ab", "st");
         var foldTd = addCell(tr, null, "fold");
         foldTd.addEventListener("click", toggleHost);
@@ -348,7 +354,7 @@ function render() {
           var icls = fs === "off" ? "off" : fs !== "on" ? "down" : "";
           var itr = document.createElement("tr");
           itr.className = "iface-row" + (icls ? " " + icls : "");
-          itr.style.display = "none";
+          itr.style.display = isOpen ? "" : "none";
           addCell(itr, "");
           addCell(itr, ST_ICON[fs] || "\u26ab", "st");
           addCell(itr, makeLink(ifaceHref(f), f.name));

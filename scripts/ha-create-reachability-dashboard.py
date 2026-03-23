@@ -272,19 +272,6 @@ def _table_header(sort_key: str) -> str:
     )
 
 
-# JavaScript (no curly braces that conflict with Jinja2) to toggle
-# interface rows below a host row.  Walks nextElementSibling until
-# it hits another host row (class "hr").
-_TOGGLE_JS = (
-    "var o=this.dataset.open!=='0';"
-    "this.dataset.open=o?'0':'1';"
-    "this.querySelector('.fi').textContent=o?'\\u25b6 ':'\\u25bc ';"
-    "var r=this.nextElementSibling;"
-    "while(r&&r.className!=='hr')"
-    "{r.style.display=o?'none':'';r=r.nextElementSibling;}"
-)
-
-
 def _location_and_controls(
     host, controls_map: dict[str, tuple[str, str]], domain: str,
 ) -> tuple[str, str]:
@@ -447,16 +434,12 @@ def _single_row(
     )
 
 
-def _multi_host_row(
+def _status_host_row(
     host,
     controls_map: dict[str, tuple[str, str]],
     domain: str,
 ) -> str:
-    """Generate the host header row for a multi-interface host.
-
-    Includes a fold indicator (\u25bc) and onclick handler to toggle
-    visibility of the interface rows below.
-    """
+    """Generate a host-only row for the by-status view (no fold, no ifaces)."""
     nid = _node_id(host.hostname)
     fqdn = f"{host.hostname}.{domain}"
 
@@ -484,7 +467,6 @@ def _multi_host_row(
         f'<a href="http://{{{{ _hp }}}}{fqdn}">'
         f"<b>{host.hostname}</b></a>"
     )
-    fold_indicator = '<span class="fi">\u25bc</span>'
     location, controls = _location_and_controls(host, controls_map, domain)
     opacity = (
         "{% if _hc=='on' %}1"
@@ -497,11 +479,10 @@ def _multi_host_row(
 
     return (
         f"{setup}"
-        f'<tr class="hr" data-open="1" onclick="{_TOGGLE_JS}" '
-        f'style="cursor:pointer;opacity:{opacity};'
+        f'<tr class="hr" style="opacity:{opacity};'
         f'border-top:2px solid var(--divider-color,#e0e0e0)">'
         f"<td {td}>{status}</td>"
-        f"<td {td}>{fold_indicator}</td>"
+        f"<td {tde}></td>"
         f"<td {td}>{hostname_link}</td>"
         f"<td {td}>{stack}</td>"
         f"<td {tde}></td>"
@@ -515,12 +496,7 @@ def _multi_host_row(
 
 
 def _iface_row(host, vi, ipv6_prefix: str, domain: str) -> str:
-    """Generate a table row for one interface under a multi-interface host.
-
-    Interface rows fill the second St column and leave the first
-    (host St) empty.  Name is indented.  No class="hr" so the
-    toggle JS skips over these when walking siblings.
-    """
+    """Generate a table row for one interface under a multi-interface host."""
     c = _iface_cells(host, vi, ipv6_prefix, domain)
 
     td = 'style="padding:2px 6px;white-space:nowrap"'
@@ -528,7 +504,7 @@ def _iface_row(host, vi, ipv6_prefix: str, domain: str) -> str:
 
     return (
         f"{c['setup']}"
-        f'<tr style="opacity:{c["opacity"]}">'
+        f'<tr style="display:table-row;opacity:{c["opacity"]}">'
         f"<td {td}></td>"
         f"<td {td}>{c['status']}</td>"
         f"<td {tdi}>{c['iface_link']}</td>"
@@ -552,17 +528,86 @@ def _host_rows(
     """Generate all table rows for one host.
 
     Single-interface hosts get one combined row.  Multi-interface
-    hosts get a clickable host row (with fold toggle) plus
-    individual interface rows underneath.
+    hosts are wrapped in a <details style="display:contents"> so
+    the host row (<summary>) acts as a clickable fold toggle and
+    the interface rows collapse/expand.  The display:contents makes
+    the <details> transparent to the table layout so all rows
+    share the same column grid.
+
+    The fold indicator (▼/▶) lives in col 2 and is styled via CSS
+    on the <summary> element's ::marker or list-style.
     """
     vis = host.virtual_interfaces
     if len(vis) == 1:
         return [_single_row(host, vis[0], controls_map, ipv6_prefix, domain)]
 
-    rows = [_multi_host_row(host, controls_map, domain)]
+    nid = _node_id(host.hostname)
+    fqdn = f"{host.hostname}.{domain}"
+
+    host_conn_eid = f"binary_sensor.gdoc2netcfg_{nid}_connectivity"
+    host_stack_eid = f"sensor.gdoc2netcfg_{nid}_stack_mode"
+
+    setup = (
+        f"{{% set _hc=states('{host_conn_eid}') %}}"
+        f"{{% set _hs=states('{host_stack_eid}') %}}"
+        "{% set _hp='ipv4.' if _hs=='ipv4-only' "
+        "else ('ipv6.' if _hs=='ipv6-only' else '') %}"
+    )
+    status = (
+        "{% if _hc=='on' %}\U0001f7e2"
+        "{% elif _hc=='off' %}\U0001f534"
+        "{% else %}\u26ab{% endif %}"
+    )
+    stack = (
+        "{% if _hs=='dual-stack' %}4\u00b76"
+        "{% elif _hs=='ipv4-only' %}4"
+        "{% elif _hs=='ipv6-only' %}6"
+        "{% else %}\u2014{% endif %}"
+    )
+    hostname_link = (
+        f'<a href="http://{{{{ _hp }}}}{fqdn}">'
+        f"<b>{host.hostname}</b></a>"
+    )
+    location, controls = _location_and_controls(host, controls_map, domain)
+    opacity = (
+        "{% if _hc=='on' %}1"
+        "{% elif _hc=='off' %}0.5"
+        "{% else %}0.35{% endif %}"
+    )
+
+    td = 'style="padding:4px 6px;white-space:nowrap"'
+    tde = 'style="padding:4px 6px"'
+
+    # The <summary> uses display:table-row so it participates in
+    # the table column grid.  list-style:none hides the default
+    # disclosure triangle; we put our own ▼/▶ in col 2 via CSS.
+    summary_row = (
+        f'<summary style="display:table-row;cursor:pointer;'
+        f"opacity:{opacity};"
+        f'border-top:2px solid var(--divider-color,#e0e0e0)">'
+        f"<td {td}>{status}</td>"
+        f'<td {td} class="fold-arrow"></td>'
+        f"<td {td}>{hostname_link}</td>"
+        f"<td {td}>{stack}</td>"
+        f"<td {tde}></td>"
+        f"<td {tde}></td>"
+        f"<td {tde}></td>"
+        f"<td {tde}></td>"
+        f"<td {td}>{location}</td>"
+        f"<td {td}>{controls}</td>"
+        "</summary>"
+    )
+
+    iface_lines = []
     for vi in vis:
-        rows.append(_iface_row(host, vi, ipv6_prefix, domain))
-    return rows
+        iface_lines.append(_iface_row(host, vi, ipv6_prefix, domain))
+
+    return [
+        f'{setup}<details open style="display:contents">',
+        summary_row,
+        *iface_lines,
+        "</details>",
+    ]
 
 
 def _build_network_table(
@@ -597,7 +642,18 @@ def _build_network_table(
     else:
         ordered_hosts = sorted(hosts, key=lambda h: h.hostname)
 
+    # CSS for fold indicators: ▼ when open, ▶ when closed
+    fold_css = (
+        "<style>"
+        "details[open] > summary .fold-arrow::before { content: '\\25bc'; }"
+        "details:not([open]) > summary .fold-arrow::before { content: '\\25b6'; }"
+        "summary { list-style: none; }"
+        "summary::-webkit-details-marker { display: none; }"
+        "</style>"
+    )
+
     lines = [
+        fold_css,
         '<table style="width:100%;border-collapse:collapse;font-size:0.85em">',
         _table_header(sort_key),
     ]
@@ -618,7 +674,7 @@ def _build_network_table(
                         host, vis[0], controls_map, ipv6_prefix, domain,
                     )
                 else:
-                    block = _multi_host_row(
+                    block = _status_host_row(
                         host, controls_map, domain,
                     )
                 if condition in ("on", "off"):

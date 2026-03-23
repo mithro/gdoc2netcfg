@@ -170,7 +170,7 @@ def _build_controls_map(
             continue
         mqtt_topic = host.tasmota_data.mqtt_topic
         plug_eid = f"switch.{_node_id(mqtt_topic)}"
-        ctrl_url = f"https://ipv4.{host.hostname}.{domain}"
+        ctrl_url = f"http://ipv4.{host.hostname}.{domain}"
         for controlled in host.tasmota_data.controls:
             controls_map.setdefault(controlled, []).append({
                 "name": host.machine_name,

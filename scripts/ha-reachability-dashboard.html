@@ -172,15 +172,15 @@ function bestRtt(h) {
 function hostHref(h) {
   // Dual-stack: bare FQDN. Single-stack: ipv4./ipv6. prefix.
   var s = hostStack(h);
-  if (s === "v6") return "https://ipv6." + h.fqdn;
-  if (s === "v4") return "https://ipv4." + h.fqdn;
-  return "https://" + h.fqdn;
+  if (s === "v6") return "http://ipv6." + h.fqdn;
+  if (s === "v4") return "http://ipv4." + h.fqdn;
+  return "http://" + h.fqdn;
 }
 
 function ifaceHref(iface) {
   var s = ifaceStack(iface);
   var pfx = s === "v6" ? "ipv6." : "ipv4.";
-  return "https://" + pfx + iface.fqdn;
+  return "http://" + pfx + iface.fqdn;
 }
 
 // --- Sorting ---
@@ -354,8 +354,8 @@ function render() {
           addCell(itr, makeLink(ifaceHref(f), f.name));
           addCell(itr, STACK_LABEL[fk] || "\u2014", "stack");
           var v4 = ifaceIpv4(f);
-          addCell(itr, (v4 && v4 !== "unavailable" && v4 !== "unknown") ? makeLink("https://ipv4." + f.fqdn, v4) : "\u2014");
-          addCell(itr, f.ipv6_suffix ? makeLink("https://ipv6." + f.fqdn, f.ipv6_suffix) : "\u2014");
+          addCell(itr, (v4 && v4 !== "unavailable" && v4 !== "unknown") ? makeLink("http://ipv4." + f.fqdn, v4) : "\u2014");
+          addCell(itr, f.ipv6_suffix ? makeLink("http://ipv6." + f.fqdn, f.ipv6_suffix) : "\u2014");
           var mac = ifaceMac(f);
           addCodeCell(itr, (mac && mac !== "unavailable" && mac !== "unknown") ? mac : "");
           var rtt = ifaceRtt(f);
@@ -372,8 +372,8 @@ function render() {
         addCell(tr, makeLink(hostHref(h), h.hostname, true));
         addCell(tr, STACK_LABEL[fk] || "\u2014", "stack");
         var v4 = ifaceIpv4(f);
-        addCell(tr, (v4 && v4 !== "unavailable" && v4 !== "unknown") ? makeLink("https://ipv4." + f.fqdn, v4) : "\u2014");
-        addCell(tr, f.ipv6_suffix ? makeLink("https://ipv6." + f.fqdn, f.ipv6_suffix) : "\u2014");
+        addCell(tr, (v4 && v4 !== "unavailable" && v4 !== "unknown") ? makeLink("http://ipv4." + f.fqdn, v4) : "\u2014");
+        addCell(tr, f.ipv6_suffix ? makeLink("http://ipv6." + f.fqdn, f.ipv6_suffix) : "\u2014");
         var mac = ifaceMac(f);
         addCodeCell(tr, (mac && mac !== "unavailable" && mac !== "unknown") ? mac : "");
         var rtt = ifaceRtt(f);

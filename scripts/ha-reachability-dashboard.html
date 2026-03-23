@@ -6,32 +6,38 @@
 <meta http-equiv="refresh" content="300">
 <title>Network Reachability</title>
 <script>
-// Inherit HA's theme CSS variables from the parent frame.
-// HA sets --primary-background-color etc on :root via JS.
-// Since this iframe is same-origin (/local/), we can read them.
+// Detect HA's dark/light theme by checking the actual rendered
+// background color of the parent frame.  HA sets theme variables
+// inside shadow DOM elements (not on :root), so we can't read
+// CSS variables directly.  Instead we check the computed background
+// of the parent body — dark themes produce a luminance < 0.5.
 try {
-  var ps = window.parent.getComputedStyle(window.parent.document.documentElement);
-  var vars = [
-    "primary-color", "primary-background-color", "secondary-background-color",
-    "primary-text-color", "secondary-text-color", "divider-color",
-    "accent-color", "card-background-color",
-  ];
-  for (var i = 0; i < vars.length; i++) {
-    var v = ps.getPropertyValue("--" + vars[i]).trim();
-    if (v) document.documentElement.style.setProperty("--" + vars[i], v);
+  var bg = window.parent.getComputedStyle(window.parent.document.body).backgroundColor;
+  var m = bg.match(/(\d+)/g);
+  if (m && m.length >= 3) {
+    var lum = (0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2]) / 255;
+    if (lum > 0.5) document.documentElement.classList.add("light");
   }
-} catch(e) { /* cross-origin or standalone — use fallbacks in CSS */ }
+} catch(e) { /* cross-origin or standalone — stays dark */ }
 </script>
 <style>
 :root {
-  /* Fallbacks if parent frame vars aren't available */
+  /* Dark theme (default — matches HA's default dark) */
   --primary-background-color: #111111;
   --primary-text-color: #e1e1e1;
   --secondary-text-color: #9b9b9b;
   --secondary-background-color: #1c1c1c;
   --divider-color: #3a3a3a;
   --primary-color: #4fc3f7;
-  --accent-color: #4fc3f7;
+}
+:root.light {
+  /* Light theme */
+  --primary-background-color: #fafafa;
+  --primary-text-color: #212121;
+  --secondary-text-color: #727272;
+  --secondary-background-color: #f0f0f0;
+  --divider-color: #e0e0e0;
+  --primary-color: #03a9f4;
 }
 body {
   font-family: Roboto, Noto, sans-serif;

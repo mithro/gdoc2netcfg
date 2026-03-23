@@ -244,36 +244,27 @@ def _ipv6_suffix(vi, prefix: str) -> str:
 # Template generation
 # ---------------------------------------------------------------------------
 
-# CSS table layout uses <div> instead of <table>/<tr>/<td> so that
-# <details> can be a valid child (HTML tables reject non-table children).
-# display:table / table-row / table-cell give identical visual layout.
-_R = "display:table-row"  # row
-_C = "display:table-cell;padding:4px 6px;white-space:nowrap"  # cell
-_CE = "display:table-cell;padding:4px 6px"  # empty cell
-_CI = "display:table-cell;padding:2px 6px 2px 16px;white-space:nowrap"  # indented
-
-
 def _table_header(sort_key: str) -> str:
-    """Generate header row using CSS table-cell divs."""
+    """Generate HTML table header row."""
     def _col(label, target):
         if target == sort_key:
             return f"<b>{label}\u00a0\u25be</b>"
         return f'<a href="/network-reachability/{target}">{label}</a>'
 
-    h = f"{_C};font-weight:bold"
+    th = 'style="padding:4px 6px;text-align:left"'
     return (
-        f'<div style="{_R}">'
-        f'<div style="{h}">{_col("St", "by-status")}</div>'
-        f'<div style="{h}"></div>'
-        f'<div style="{h}">{_col("Name", "by-name")}</div>'
-        f'<div style="{h}">Stack</div>'
-        f'<div style="{h}">IPv4</div>'
-        f'<div style="{h}">IPv6</div>'
-        f'<div style="{h}">MAC</div>'
-        f'<div style="{h}">{_col("RTT", "by-rtt")}</div>'
-        f'<div style="{h}">Location</div>'
-        f'<div style="{h}">Controls</div>'
-        f"</div>"
+        f"<tr>"
+        f'<th {th}>{_col("St", "by-status")}</th>'
+        f'<th {th}></th>'
+        f'<th {th}>{_col("Name", "by-name")}</th>'
+        f'<th {th}>Stack</th>'
+        f'<th {th}>IPv4</th>'
+        f'<th {th}>IPv6</th>'
+        f'<th {th}>MAC</th>'
+        f'<th {th}>{_col("RTT", "by-rtt")}</th>'
+        f'<th {th}>Location</th>'
+        f'<th {th}>Controls</th>'
+        f"</tr>"
     )
 
 
@@ -419,30 +410,32 @@ def _single_row(
         f"<b>{host.hostname}</b></a>"
     )
 
+    td = 'style="padding:4px 6px;white-space:nowrap"'
+    tde = 'style="padding:4px 6px"'
     return (
         f"{host_setup}{c['setup']}"
-        f'<div style="{_R};opacity:{c["opacity"]};'
+        f'<tr style="opacity:{c["opacity"]};'
         f'border-top:2px solid var(--divider-color,#e0e0e0)">'
-        f'<div style="{_C}">{host_status}</div>'
-        f'<div style="{_CE}"></div>'
-        f'<div style="{_C}">{hostname_link}</div>'
-        f'<div style="{_C}">{c["stack"]}</div>'
-        f'<div style="{_C}">{c["ipv4_link"]}</div>'
-        f'<div style="{_C}">{c["ipv6_link"]}</div>'
-        f'<div style="{_C}">{c["mac_cell"]}</div>'
-        f'<div style="{_C}">{c["rtt_cell"]}</div>'
-        f'<div style="{_C}">{location}</div>'
-        f'<div style="{_C}">{controls}</div>'
-        "</div>"
+        f"<td {td}>{host_status}</td>"
+        f"<td {tde}></td>"
+        f"<td {td}>{hostname_link}</td>"
+        f"<td {td}>{c['stack']}</td>"
+        f"<td {td}>{c['ipv4_link']}</td>"
+        f"<td {td}>{c['ipv6_link']}</td>"
+        f"<td {td}>{c['mac_cell']}</td>"
+        f"<td {td}>{c['rtt_cell']}</td>"
+        f"<td {td}>{location}</td>"
+        f"<td {td}>{controls}</td>"
+        "</tr>"
     )
 
 
-def _status_host_row(
+def _host_only_row(
     host,
     controls_map: dict[str, tuple[str, str]],
     domain: str,
 ) -> str:
-    """Generate a host-only row for the by-status view (no fold, no ifaces)."""
+    """Generate a host-only row (no interface data) for multi-iface hosts."""
     nid = _node_id(host.hostname)
     fqdn = f"{host.hostname}.{domain}"
 
@@ -477,42 +470,48 @@ def _status_host_row(
         "{% else %}0.35{% endif %}"
     )
 
+    td = 'style="padding:4px 6px;white-space:nowrap"'
+    tde = 'style="padding:4px 6px"'
+
     return (
         f"{setup}"
-        f'<div style="{_R};opacity:{opacity};'
+        f'<tr style="opacity:{opacity};'
         f'border-top:2px solid var(--divider-color,#e0e0e0)">'
-        f'<div style="{_C}">{status}</div>'
-        f'<div style="{_CE}"></div>'
-        f'<div style="{_C}">{hostname_link}</div>'
-        f'<div style="{_C}">{stack}</div>'
-        f'<div style="{_CE}"></div>'
-        f'<div style="{_CE}"></div>'
-        f'<div style="{_CE}"></div>'
-        f'<div style="{_CE}"></div>'
-        f'<div style="{_C}">{location}</div>'
-        f'<div style="{_C}">{controls}</div>'
-        "</div>"
+        f"<td {td}>{status}</td>"
+        f"<td {tde}></td>"
+        f"<td {td}>{hostname_link}</td>"
+        f"<td {td}>{stack}</td>"
+        f"<td {tde}></td>"
+        f"<td {tde}></td>"
+        f"<td {tde}></td>"
+        f"<td {tde}></td>"
+        f"<td {td}>{location}</td>"
+        f"<td {td}>{controls}</td>"
+        "</tr>"
     )
 
 
 def _iface_row(host, vi, ipv6_prefix: str, domain: str) -> str:
-    """Generate a div-row for one interface under a multi-interface host."""
+    """Generate a table row for one interface under a multi-interface host."""
     c = _iface_cells(host, vi, ipv6_prefix, domain)
+
+    td = 'style="padding:2px 6px;white-space:nowrap"'
+    tdi = 'style="padding:2px 6px 2px 16px;white-space:nowrap"'
 
     return (
         f"{c['setup']}"
-        f'<div style="{_R};opacity:{c["opacity"]}">'
-        f'<div style="{_CE}"></div>'
-        f'<div style="{_C}">{c["status"]}</div>'
-        f'<div style="{_CI}">{c["iface_link"]}</div>'
-        f'<div style="{_C}">{c["stack"]}</div>'
-        f'<div style="{_C}">{c["ipv4_link"]}</div>'
-        f'<div style="{_C}">{c["ipv6_link"]}</div>'
-        f'<div style="{_C}">{c["mac_cell"]}</div>'
-        f'<div style="{_C}">{c["rtt_cell"]}</div>'
-        f'<div style="{_CE}"></div>'
-        f'<div style="{_CE}"></div>'
-        "</div>"
+        f'<tr style="opacity:{c["opacity"]}">'
+        f"<td {td}></td>"
+        f"<td {td}>{c['status']}</td>"
+        f"<td {tdi}>{c['iface_link']}</td>"
+        f"<td {td}>{c['stack']}</td>"
+        f"<td {td}>{c['ipv4_link']}</td>"
+        f"<td {td}>{c['ipv6_link']}</td>"
+        f"<td {td}>{c['mac_cell']}</td>"
+        f"<td {td}>{c['rtt_cell']}</td>"
+        f"<td {td}></td>"
+        f"<td {td}></td>"
+        "</tr>"
     )
 
 
@@ -525,84 +524,16 @@ def _host_rows(
     """Generate all table rows for one host.
 
     Single-interface hosts get one combined row.  Multi-interface
-    hosts are wrapped in a <details style="display:contents"> so
-    the host row (<summary>) acts as a clickable fold toggle and
-    the interface rows collapse/expand.  The display:contents makes
-    the <details> transparent to the table layout so all rows
-    share the same column grid.
-
-    The fold indicator (▼/▶) lives in col 2 and is styled via CSS
-    on the <summary> element's ::marker or list-style.
+    hosts get a host row plus interface rows (all visible).
     """
     vis = host.virtual_interfaces
     if len(vis) == 1:
         return [_single_row(host, vis[0], controls_map, ipv6_prefix, domain)]
 
-    # Multi-interface: <details> with display:contents so its children
-    # participate in the parent's CSS table grid.  <summary> is the
-    # host row (display:table-row); interface rows after <summary>
-    # are the collapsible content.
-    nid = _node_id(host.hostname)
-    fqdn = f"{host.hostname}.{domain}"
-
-    host_conn_eid = f"binary_sensor.gdoc2netcfg_{nid}_connectivity"
-    host_stack_eid = f"sensor.gdoc2netcfg_{nid}_stack_mode"
-
-    setup = (
-        f"{{% set _hc=states('{host_conn_eid}') %}}"
-        f"{{% set _hs=states('{host_stack_eid}') %}}"
-        "{% set _hp='ipv4.' if _hs=='ipv4-only' "
-        "else ('ipv6.' if _hs=='ipv6-only' else '') %}"
-    )
-    status = (
-        "{% if _hc=='on' %}\U0001f7e2"
-        "{% elif _hc=='off' %}\U0001f534"
-        "{% else %}\u26ab{% endif %}"
-    )
-    stack = (
-        "{% if _hs=='dual-stack' %}4\u00b76"
-        "{% elif _hs=='ipv4-only' %}4"
-        "{% elif _hs=='ipv6-only' %}6"
-        "{% else %}\u2014{% endif %}"
-    )
-    hostname_link = (
-        f'<a href="http://{{{{ _hp }}}}{fqdn}">'
-        f"<b>{host.hostname}</b></a>"
-    )
-    location, controls = _location_and_controls(host, controls_map, domain)
-    opacity = (
-        "{% if _hc=='on' %}1"
-        "{% elif _hc=='off' %}0.5"
-        "{% else %}0.35{% endif %}"
-    )
-
-    summary_row = (
-        f'<summary style="{_R};cursor:pointer;'
-        f"opacity:{opacity};"
-        f'border-top:2px solid var(--divider-color,#e0e0e0)">'
-        f'<div style="{_C}">{status}</div>'
-        f'<div style="{_C}" class="fold-arrow"></div>'
-        f'<div style="{_C}">{hostname_link}</div>'
-        f'<div style="{_C}">{stack}</div>'
-        f'<div style="{_CE}"></div>'
-        f'<div style="{_CE}"></div>'
-        f'<div style="{_CE}"></div>'
-        f'<div style="{_CE}"></div>'
-        f'<div style="{_C}">{location}</div>'
-        f'<div style="{_C}">{controls}</div>'
-        "</summary>"
-    )
-
-    iface_lines = []
+    rows = [_host_only_row(host, controls_map, domain)]
     for vi in vis:
-        iface_lines.append(_iface_row(host, vi, ipv6_prefix, domain))
-
-    return [
-        f'{setup}<details open style="display:contents">',
-        summary_row,
-        *iface_lines,
-        "</details>",
-    ]
+        rows.append(_iface_row(host, vi, ipv6_prefix, domain))
+    return rows
 
 
 def _build_network_table(
@@ -637,19 +568,8 @@ def _build_network_table(
     else:
         ordered_hosts = sorted(hosts, key=lambda h: h.hostname)
 
-    # CSS for fold indicators: ▼ when open, ▶ when closed
-    fold_css = (
-        "<style>"
-        "details[open] > summary .fold-arrow::before { content: '\\25bc'; }"
-        "details:not([open]) > summary .fold-arrow::before { content: '\\25b6'; }"
-        "summary { list-style: none; }"
-        "summary::-webkit-details-marker { display: none; }"
-        "</style>"
-    )
-
     lines = [
-        fold_css,
-        '<div style="display:table;width:100%;font-size:0.85em">',
+        '<table style="width:100%;border-collapse:collapse;font-size:0.85em">',
         _table_header(sort_key),
     ]
 
@@ -669,7 +589,7 @@ def _build_network_table(
                         host, vis[0], controls_map, ipv6_prefix, domain,
                     )
                 else:
-                    block = _status_host_row(
+                    block = _host_only_row(
                         host, controls_map, domain,
                     )
                 if condition in ("on", "off"):
@@ -692,7 +612,7 @@ def _build_network_table(
                 host, controls_map, ipv6_prefix, domain,
             ))
 
-    lines.append("</div>")
+    lines.append("</table>")
 
     return {
         "type": "markdown",

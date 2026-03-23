@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="300">
+<title>Network Reachability</title>
+<style>
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  margin: 16px;
+  background: #fafafa;
+  color: #212121;
+  font-size: 14px;
+}
+h2 {
+  margin: 24px 0 8px;
+  font-size: 1.1em;
+  border-bottom: 1px solid #e0e0e0;
+  padding-bottom: 4px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85em;
+  margin-bottom: 16px;
+}
+th {
+  text-align: left;
+  padding: 4px 6px;
+  border-bottom: 2px solid #e0e0e0;
+  cursor: pointer;
+  user-select: none;
+}
+th:hover { background: #f0f0f0; }
+td { padding: 3px 6px; white-space: nowrap; }
+tr.host-row { border-top: 2px solid #e0e0e0; }
+tr.iface-row td:nth-child(3) { padding-left: 20px; }
+tr.off { opacity: 0.5; }
+tr.down { opacity: 0.35; }
+code { font-size: 0.95em; }
+a { color: inherit; }
+.st { font-size: 1.1em; }
+.fold { cursor: pointer; user-select: none; font-size: 0.8em; }
+.fold::after { content: "\25bc"; }
+.folded .fold::after { content: "\25b6"; }
+.stack { font-weight: 600; }
+.sort-active { font-weight: bold; }
+</style>
+</head>
+<body>
+<div id="dashboard"></div>
+<script>
+// Placeholders replaced by the Python generator at build time.
+var DATA = __DATA_JSON__;
+var PREFIX = "__IPV6_PREFIX__";
+var DOMAIN = "__DOMAIN__";
+
+var ST = {on: "\u{1f7e2}", off: "\u{1f534}", down: "\u26ab"};
+var STACK_LABEL = {dual: "4\xb76", v4: "4", v6: "6", down: "\u2014"};
+
+var currentSort = "name";
+var sortDir = 1;
+
+function stackPrefix(s) {
+  return s === "v4" ? "ipv4." : s === "v6" ? "ipv6." : "";
+}
+
+function makeLink(href, text, bold) {
+  var a = document.createElement("a");
+  a.href = href;
+  if (bold) {
+    var b = document.createElement("b");
+    b.textContent = text;
+    a.appendChild(b);
+  } else {
+    a.textContent = text;
+  }
+  return a;
+}
+
+function sortHosts(hosts) {
+  return hosts.slice().sort(function(a, b) {
+    var va, vb;
+    if (currentSort === "status") {
+      var o = {on: 0, off: 1, down: 2};
+      va = o[a.status] !== undefined ? o[a.status] : 2;
+      vb = o[b.status] !== undefined ? o[b.status] : 2;
+    } else if (currentSort === "rtt") {
+      var br = function(h) {
+        var m = Infinity;
+        for (var i = 0; i < h.interfaces.length; i++)
+          if (h.interfaces[i].rtt !== null && h.interfaces[i].rtt < m) m = h.interfaces[i].rtt;
+        return m;
+      };
+      va = br(a); vb = br(b);
+    } else {
+      va = a.hostname; vb = b.hostname;
+    }
+    return va < vb ? -1 * sortDir : va > vb ? 1 * sortDir : 0;
+  });
+}
+
+function toggleHost(ev) {
+  var tr = ev.target.closest("tr");
+  var folded = tr.classList.toggle("folded");
+  var next = tr.nextElementSibling;
+  while (next && next.classList.contains("iface-row")) {
+    next.style.display = folded ? "none" : "";
+    next = next.nextElementSibling;
+  }
+}
+
+function setSort(col) {
+  if (currentSort === col) sortDir *= -1;
+  else { currentSort = col; sortDir = 1; }
+  render();
+}
+
+function addCell(tr, content, className) {
+  var td = document.createElement("td");
+  if (className) td.className = className;
+  if (typeof content === "string") td.textContent = content;
+  else if (content) td.appendChild(content);
+  return tr.appendChild(td);
+}
+
+function addCodeCell(tr, text) {
+  var td = document.createElement("td");
+  var code = document.createElement("code");
+  code.textContent = text || "\u2014";
+  td.appendChild(code);
+  return tr.appendChild(td);
+}
+
+function render() {
+  var root = document.getElementById("dashboard");
+  while (root.firstChild) root.removeChild(root.firstChild);
+
+  for (var ni = 0; ni < DATA.length; ni++) {
+    var net = DATA[ni];
+
+    var h2 = document.createElement("h2");
+    var txt = net.display_name + " (" + net.subdomain + ") \u2014 " + net.hosts.length + " hosts";
+    if (PREFIX) txt += " \u2014 IPv6: " + PREFIX;
+    h2.textContent = txt;
+    root.appendChild(h2);
+
+    var table = document.createElement("table");
+
+    // Header
+    var thead = document.createElement("thead");
+    var htr = document.createElement("tr");
+    var cols = [
+      ["St","status"],["",null],["Name","name"],["Stack",null],
+      ["IPv4",null],["IPv6",null],["MAC",null],["RTT","rtt"],
+      ["Location",null],["Controls",null]
+    ];
+    for (var ci = 0; ci < cols.length; ci++) {
+      var th = document.createElement("th");
+      var lbl = cols[ci][0], sk = cols[ci][1];
+      th.textContent = lbl;
+      if (sk) {
+        if (currentSort === sk) {
+          th.classList.add("sort-active");
+          th.textContent = lbl + (sortDir === 1 ? " \u25be" : " \u25b4");
+        }
+        (function(k){ th.addEventListener("click", function(){ setSort(k); }); })(sk);
+      }
+      htr.appendChild(th);
+    }
+    thead.appendChild(htr);
+    table.appendChild(thead);
+
+    // Body
+    var tbody = document.createElement("tbody");
+    var hosts = sortHosts(net.hosts);
+
+    for (var hi = 0; hi < hosts.length; hi++) {
+      var h = hosts[hi];
+      var cls = h.status === "off" ? "off" : h.status !== "on" ? "down" : "";
+      var multi = h.interfaces.length > 1;
+
+      if (multi) {
+        // Host header row
+        var tr = document.createElement("tr");
+        tr.className = "host-row" + (cls ? " " + cls : "");
+        addCell(tr, ST[h.status] || ST.down, "st");
+        var foldTd = addCell(tr, null, "fold");
+        foldTd.addEventListener("click", toggleHost);
+        addCell(tr, makeLink("http://" + stackPrefix(h.stack) + h.fqdn, h.hostname, true));
+        addCell(tr, STACK_LABEL[h.stack] || "\u2014", "stack");
+        addCell(tr, ""); addCell(tr, ""); addCell(tr, ""); addCell(tr, "");
+        addCell(tr, h.location || "\u2014");
+        addCell(tr, h.ctrl_name ? makeLink("http://" + h.ctrl_fqdn, h.ctrl_name) : "\u2014");
+        tbody.appendChild(tr);
+
+        // Interface rows
+        for (var ii = 0; ii < h.interfaces.length; ii++) {
+          var f = h.interfaces[ii];
+          var icls = f.status === "off" ? "off" : f.status !== "on" ? "down" : "";
+          var itr = document.createElement("tr");
+          itr.className = "iface-row" + (icls ? " " + icls : "");
+          addCell(itr, "");
+          addCell(itr, ST[f.status] || ST.down, "st");
+          addCell(itr, makeLink("http://" + stackPrefix(f.stack) + f.fqdn, f.name));
+          addCell(itr, STACK_LABEL[f.stack] || "\u2014", "stack");
+          addCell(itr, f.ipv4 ? makeLink("http://ipv4." + f.fqdn, f.ipv4) : "\u2014");
+          addCell(itr, f.ipv6_suffix ? makeLink("http://ipv6." + f.fqdn, f.ipv6_suffix) : "\u2014");
+          addCodeCell(itr, f.mac);
+          addCell(itr, f.rtt !== null ? f.rtt + "ms" : "\u2014");
+          addCell(itr, ""); addCell(itr, "");
+          tbody.appendChild(itr);
+        }
+      } else {
+        // Single combined row
+        var f = h.interfaces[0];
+        var tr = document.createElement("tr");
+        tr.className = "host-row" + (cls ? " " + cls : "");
+        addCell(tr, ST[h.status] || ST.down, "st");
+        addCell(tr, "");
+        addCell(tr, makeLink("http://" + stackPrefix(h.stack) + h.fqdn, h.hostname, true));
+        addCell(tr, STACK_LABEL[f.stack] || "\u2014", "stack");
+        addCell(tr, f.ipv4 ? makeLink("http://ipv4." + f.fqdn, f.ipv4) : "\u2014");
+        addCell(tr, f.ipv6_suffix ? makeLink("http://ipv6." + f.fqdn, f.ipv6_suffix) : "\u2014");
+        addCodeCell(tr, f.mac);
+        addCell(tr, f.rtt !== null ? f.rtt + "ms" : "\u2014");
+        addCell(tr, h.location || "\u2014");
+        addCell(tr, h.ctrl_name ? makeLink("http://" + h.ctrl_fqdn, h.ctrl_name) : "\u2014");
+        tbody.appendChild(tr);
+      }
+    }
+    table.appendChild(tbody);
+    root.appendChild(table);
+  }
+}
+
+render();
+</script>
+</body>
+</html>

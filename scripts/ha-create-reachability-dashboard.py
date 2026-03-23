@@ -802,8 +802,7 @@ def main():
     print("Pushing to Home Assistant...")
     asyncio.run(_push_dashboard(config, dashboard_config))
 
-    url = config.homeassistant.url.rstrip("/")
-    print(f"\nDashboard available at: {url}/network-reachability/by-name")
+    print(f"\nDashboard available at: https://ha.{domain}/network-reachability/by-name")
 
 
 if __name__ == "__main__":

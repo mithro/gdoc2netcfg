@@ -400,7 +400,9 @@ async def _ensure_iframe_dashboard(config) -> None:
                 return
             print("Created dashboard 'network-reachability'")
 
-        # Save the iframe config
+        # Save the iframe config with cache-busting query parameter
+        import time
+        bust = int(time.time())
         await ws.send(json.dumps({
             "id": msg_id,
             "type": "lovelace/config/save",
@@ -413,7 +415,7 @@ async def _ensure_iframe_dashboard(config) -> None:
                     "panel": True,
                     "cards": [{
                         "type": "iframe",
-                        "url": HA_PANEL_URL,
+                        "url": f"{HA_PANEL_URL}?v={bust}",
                         "aspect_ratio": "",
                     }],
                 }],

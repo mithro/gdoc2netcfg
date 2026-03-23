@@ -170,7 +170,7 @@ def _build_controls_map(
             continue
         mqtt_topic = host.tasmota_data.mqtt_topic
         plug_eid = f"switch.{_node_id(mqtt_topic)}"
-        ctrl_url = f"http://ipv4.{host.hostname}.{domain}"
+        ctrl_url = f"https://ipv4.{host.hostname}.{domain}"
         for controlled in host.tasmota_data.controls:
             controls_map.setdefault(controlled, []).append({
                 "name": host.machine_name,
@@ -288,13 +288,9 @@ def _generate_html(networks, controls_map, ipv6_prefix, domain, config):
         network_data, separators=(",", ":"),
     ).replace("</", r"<\/")
 
-    # WebSocket URL for the JS to connect to HA
-    ws_url = (
-        config.homeassistant.url.rstrip("/")
-        .replace("http://", "ws://")
-        .replace("https://", "wss://")
-        + "/api/websocket"
-    )
+    # WebSocket URL — use the public HTTPS endpoint so it works
+    # from pages loaded over HTTPS (avoids mixed content blocking).
+    ws_url = f"wss://ha.{domain}/api/websocket"
 
     template = _HTML_TEMPLATE_PATH.read_text()
     return (

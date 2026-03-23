@@ -246,32 +246,118 @@ def _ipv6_suffix(vi, prefix: str) -> str:
 # Template generation
 # ---------------------------------------------------------------------------
 
-def _sort_bar(sort_key: str) -> str:
-    """Generate sort navigation bar with links between views."""
-    def _item(label, target):
+def _table_header(sort_key: str) -> str:
+    """Generate HTML table header with sort-linked columns.
+
+    Two status columns: col 1 for host-level St, col 2 for
+    interface-level St.  Clickable headers navigate sort views.
+    """
+    def _col(label, target):
         if target == sort_key:
             return f"<b>{label}\u00a0\u25be</b>"
         return f'<a href="/network-reachability/{target}">{label}</a>'
 
+    th = 'style="padding:4px 6px;text-align:left"'
     return (
-        '<div style="font-size:0.9em;padding:4px 0;margin-bottom:4px;'
-        'border-bottom:1px solid var(--divider-color,#e0e0e0)">'
-        f'Sort: {_item("Host", "by-name")} · '
-        f'{_item("Status", "by-status")} · '
-        f'{_item("RTT", "by-rtt")}'
-        "</div>"
+        f"<tr>"
+        f'<th {th}>{_col("St", "by-status")}</th>'
+        f'<th {th}></th>'  # interface St (no header text)
+        f'<th {th}>{_col("Name", "by-name")}</th>'
+        f'<th {th}>Stack</th>'
+        f'<th {th}>IPv4</th>'
+        f'<th {th}>IPv6</th>'
+        f'<th {th}>MAC</th>'
+        f'<th {th}>{_col("RTT", "by-rtt")}</th>'
+        f'<th {th}>Location</th>'
+        f'<th {th}>Controls</th>'
+        f"</tr>"
+    )
+
+
+def _host_row(
+    host,
+    controls_map: dict[str, tuple[str, str]],
+    domain: str,
+) -> str:
+    """Generate a table row for a host (host-level status, name, meta).
+
+    Host rows fill the first St column and leave interface-specific
+    columns (IPv4, IPv6, MAC, RTT) empty.
+    """
+    nid = _node_id(host.hostname)
+    fqdn = f"{host.hostname}.{domain}"
+
+    host_conn_eid = f"binary_sensor.gdoc2netcfg_{nid}_connectivity"
+    host_stack_eid = f"sensor.gdoc2netcfg_{nid}_stack_mode"
+
+    setup = (
+        f"{{% set _hc=states('{host_conn_eid}') %}}"
+        f"{{% set _hs=states('{host_stack_eid}') %}}"
+        "{% set _hp='ipv4.' if _hs=='ipv4-only' "
+        "else ('ipv6.' if _hs=='ipv6-only' else '') %}"
+    )
+
+    status = (
+        "{% if _hc=='on' %}\U0001f7e2"
+        "{% elif _hc=='off' %}\U0001f534"
+        "{% else %}\u26ab{% endif %}"
+    )
+
+    stack = (
+        "{% if _hs=='dual-stack' %}4\u00b76"
+        "{% elif _hs=='ipv4-only' %}4"
+        "{% elif _hs=='ipv6-only' %}6"
+        "{% else %}\u2014{% endif %}"
+    )
+
+    hostname_link = (
+        f'<a href="http://{{{{ _hp }}}}{fqdn}">'
+        f"<b>{host.machine_name}</b></a>"
+    )
+
+    location = host.extra.get("Physical Location", "").strip() or "\u2014"
+
+    ctrl_info = controls_map.get(host.machine_name)
+    if ctrl_info:
+        ctrl_name, ctrl_hostname = ctrl_info
+        ctrl_fqdn = f"ipv4.{ctrl_hostname}.{domain}"
+        controls = f'<a href="http://{ctrl_fqdn}">{ctrl_name}</a>'
+    else:
+        controls = "\u2014"
+
+    opacity = (
+        "{% if _hc=='on' %}1"
+        "{% elif _hc=='off' %}0.5"
+        "{% else %}0.35{% endif %}"
+    )
+
+    td = 'style="padding:4px 6px;white-space:nowrap"'
+    tde = 'style="padding:4px 6px"'  # empty cells, no nowrap needed
+
+    return (
+        f"{setup}"
+        f'<tr style="opacity:{opacity};'
+        f'border-top:2px solid var(--divider-color,#e0e0e0)">'
+        f"<td {td}>{status}</td>"
+        f"<td {tde}></td>"
+        f"<td {td}>{hostname_link}</td>"
+        f"<td {td}>{stack}</td>"
+        f"<td {tde}></td>"
+        f"<td {tde}></td>"
+        f"<td {tde}></td>"
+        f"<td {tde}></td>"
+        f"<td {td}>{location}</td>"
+        f"<td {td}>{controls}</td>"
+        "</tr>"
     )
 
 
 def _iface_row(host, vi, ipv6_prefix: str, domain: str) -> str:
-    """Generate Jinja2 HTML table row for one interface.
+    """Generate a table row for one interface.
 
-    Each row uses Jinja2 for live data (status, stack, IPv4, MAC, RTT)
-    and baked-in static data (interface name, IPv6 suffix).  The
-    interface name and IPv4 display are links using DNS FQDNs with a
-    stack-dependent prefix (ipv4./ipv6./ or bare for dual).
+    Interface rows fill the second St column and leave the first
+    (host St) empty.  Name is indented with padding-left.
     """
-    # Use hostname for node_id so BMCs get unique entity IDs
     nid = _node_id(host.hostname)
     slug = _iface_slug(vi)
 
@@ -284,16 +370,12 @@ def _iface_row(host, vi, ipv6_prefix: str, domain: str) -> str:
     iface_name = vi.name or "default"
     ipv6_suf = _ipv6_suffix(vi, ipv6_prefix)
 
-    # FQDN for this interface
     fqdn = f"{host.hostname}.{domain}"
-    if vi.name:
-        iface_fqdn = f"{vi.name}.{fqdn}"
-    else:
-        iface_fqdn = fqdn
+    iface_fqdn = f"{vi.name}.{fqdn}" if vi.name else fqdn
 
     td = 'style="padding:2px 6px;white-space:nowrap"'
+    tdi = 'style="padding:2px 6px 2px 16px;white-space:nowrap"'  # indented name
 
-    # Setup: interface connectivity + stack + DNS prefix
     # NB: closing }} must be in an f-string (}}}} -> }}) not a plain
     # string where }}}} would be four literal braces.
     setup = (
@@ -303,14 +385,12 @@ def _iface_row(host, vi, ipv6_prefix: str, domain: str) -> str:
         "else ('ipv6.' if _is=='ipv6-only' else '') %}"
     )
 
-    # Status emoji
     status = (
         "{% if _ic=='on' %}\U0001f7e2"
         "{% elif _ic=='off' %}\U0001f534"
         "{% else %}\u26ab{% endif %}"
     )
 
-    # Stack compact
     stack = (
         "{% if _is=='dual-stack' %}4\u00b76"
         "{% elif _is=='ipv4-only' %}4"
@@ -318,13 +398,11 @@ def _iface_row(host, vi, ipv6_prefix: str, domain: str) -> str:
         "{% else %}\u2014{% endif %}"
     )
 
-    # Interface name as link: <stack>.<iface>.<hostname>.<domain>
     iface_link = (
         f'<a href="http://{{{{ _ip }}}}{iface_fqdn}">'
         f"{iface_name}</a>"
     )
 
-    # IPv4 as link using DNS name (displayed as IP address)
     ipv4_link = (
         f"{{% set _v4=states('{ipv4_eid}') %}}"
         "{% if _v4 not in ['unavailable','unknown'] %}"
@@ -333,7 +411,6 @@ def _iface_row(host, vi, ipv6_prefix: str, domain: str) -> str:
         "{% else %}\u2014{% endif %}"
     )
 
-    # MAC in monospace
     mac_cell = (
         f"{{% set _mac=states('{mac_eid}') %}}"
         "{% if _mac not in ['unavailable','unknown'] %}"
@@ -341,7 +418,6 @@ def _iface_row(host, vi, ipv6_prefix: str, domain: str) -> str:
         "{% else %}\u2014{% endif %}"
     )
 
-    # RTT with fallback
     rtt_cell = (
         f"{{% set _rtt=states('{rtt_eid}') %}}"
         "{% if _rtt not in ['unknown','unavailable',''] %}"
@@ -349,7 +425,6 @@ def _iface_row(host, vi, ipv6_prefix: str, domain: str) -> str:
         "{% else %}\u2014{% endif %}"
     )
 
-    # Opacity based on interface connectivity
     opacity = (
         "{% if _ic=='on' %}1"
         "{% elif _ic=='off' %}0.5"
@@ -359,149 +434,31 @@ def _iface_row(host, vi, ipv6_prefix: str, domain: str) -> str:
     return (
         f"{setup}"
         f'<tr style="opacity:{opacity}">'
-        f"<td {td}>{status}</td>"
-        f"<td {td}>{iface_link}</td>"
+        f"<td {td}></td>"         # empty host St
+        f"<td {td}>{status}</td>"  # interface St
+        f"<td {tdi}>{iface_link}</td>"
         f"<td {td}>{stack}</td>"
         f"<td {td}>{ipv4_link}</td>"
         f"<td {td}>{ipv6_suf}</td>"
         f"<td {td}>{mac_cell}</td>"
         f"<td {td}>{rtt_cell}</td>"
+        f"<td {td}></td>"         # empty location
+        f"<td {td}></td>"         # empty controls
         "</tr>"
     )
 
 
-def _host_block(
+def _host_rows(
     host,
     controls_map: dict[str, tuple[str, str]],
     ipv6_prefix: str,
     domain: str,
-    compact: bool = False,
-) -> str:
-    """Generate a block for one host.
-
-    When compact=False (default): a collapsible <details> block with
-    a <summary> showing host info and an interface table inside.
-
-    When compact=True (by-status view): just the host summary line
-    without the interface table, keeping template size small enough
-    to fit within HA's WebSocket message limit.
-
-    The hostname link uses a stack-dependent DNS prefix:
-      dual-stack -> hostname.domain
-      ipv4-only  -> ipv4.hostname.domain
-      ipv6-only  -> ipv6.hostname.domain
-    """
-    # Use hostname for node_id so BMCs get unique entity IDs
-    nid = _node_id(host.hostname)
-    fqdn = f"{host.hostname}.{domain}"
-
-    host_conn_eid = f"binary_sensor.gdoc2netcfg_{nid}_connectivity"
-    host_stack_eid = f"sensor.gdoc2netcfg_{nid}_stack_mode"
-
-    # Host-level Jinja2 setup
-    setup = (
-        f"{{% set _hc=states('{host_conn_eid}') %}}"
-        f"{{% set _hs=states('{host_stack_eid}') %}}"
-        "{% set _hp='ipv4.' if _hs=='ipv4-only' "
-        "else ('ipv6.' if _hs=='ipv6-only' else '') %}"
-    )
-
-    # Host status emoji
-    host_status = (
-        "{% if _hc=='on' %}\U0001f7e2"
-        "{% elif _hc=='off' %}\U0001f534"
-        "{% else %}\u26ab{% endif %}"
-    )
-
-    # Host stack compact
-    host_stack = (
-        " {% if _hs=='dual-stack' %}4\u00b76"
-        "{% elif _hs=='ipv4-only' %}4"
-        "{% elif _hs=='ipv6-only' %}6"
-        "{% else %}\u2014{% endif %}"
-    )
-
-    # Hostname link
-    hostname_link = (
-        f' <a href="http://{{{{ _hp }}}}{fqdn}">'
-        f"<b>{host.machine_name}</b></a>"
-    )
-
-    # Meta: location + controls
-    location = host.extra.get("Physical Location", "").strip()
-    ctrl_info = controls_map.get(host.machine_name)
-    meta_parts = []
-    if location:
-        meta_parts.append(location)
-    if ctrl_info:
-        ctrl_name, ctrl_hostname = ctrl_info
-        ctrl_fqdn = f"ipv4.{ctrl_hostname}.{domain}"
-        meta_parts.append(
-            f'\u26a1<a href="http://{ctrl_fqdn}">{ctrl_name}</a>'
-        )
-    meta = " \u00b7 ".join(meta_parts)
-    meta_html = f" \u2014 {meta}" if meta else ""
-
-    # Interface count
-    n_ifaces = len(host.virtual_interfaces)
-    iface_count = f" \u2014 {n_ifaces} iface{'s' if n_ifaces != 1 else ''}"
-
-    # Opacity on the details element based on host connectivity
-    opacity = (
-        "{% if _hc=='on' %}1"
-        "{% elif _hc=='off' %}0.5"
-        "{% else %}0.35{% endif %}"
-    )
-
-    # Summary line content (shared between compact and full)
-    summary_content = (
-        f"{host_status}{hostname_link}{host_stack}"
-        f"{iface_count}{meta_html}"
-    )
-
-    if compact:
-        # Compact mode (by-status view): just a styled div, no
-        # interface table.  Keeps template size ~3x smaller.
-        return (
-            f"{setup}"
-            f'<div style="opacity:{opacity};padding:4px 0;'
-            f'border-bottom:1px solid var(--divider-color,#e0e0e0)">'
-            f"{summary_content}"
-            f"</div>"
-        )
-
-    # Full mode: collapsible details with interface table
-    iface_lines = []
+) -> list[str]:
+    """Generate all table rows for one host: host row + interface rows."""
+    rows = [_host_row(host, controls_map, domain)]
     for vi in host.virtual_interfaces:
-        iface_lines.append(_iface_row(host, vi, ipv6_prefix, domain))
-
-    # Column header for interface table
-    th = 'style="padding:2px 6px;text-align:left;font-size:0.8em;' \
-         'border-bottom:1px solid var(--divider-color,#e0e0e0)"'
-    col_header = (
-        f"<tr><th {th}>St</th><th {th}>Iface</th><th {th}>Stack</th>"
-        f"<th {th}>IPv4</th><th {th}>IPv6</th>"
-        f"<th {th}>MAC</th><th {th}>RTT</th></tr>"
-    )
-
-    iface_table = (
-        '<table style="width:calc(100% - 24px);margin-left:24px;'
-        'border-collapse:collapse;font-size:0.85em">\n'
-        + col_header + "\n"
-        + "\n".join(iface_lines)
-        + "\n</table>"
-    )
-
-    return (
-        f"{setup}"
-        f'<details open style="opacity:{opacity}">\n'
-        f"<summary style=\"cursor:pointer;padding:4px 0;"
-        f'border-bottom:1px solid var(--divider-color,#e0e0e0)">'
-        f"{summary_content}"
-        f"</summary>\n"
-        f"{iface_table}\n"
-        f"</details>"
-    )
+        rows.append(_iface_row(host, vi, ipv6_prefix, domain))
+    return rows
 
 
 def _build_network_table(
@@ -513,13 +470,12 @@ def _build_network_table(
     rtt_cache: dict[str, float | None],
     domain: str,
 ) -> dict:
-    """Generate a Lovelace markdown card for one network.
+    """Generate a Lovelace markdown card with a single table per network.
 
-    Returns a card config dict.  Each host is a collapsible <details>
-    block.  The row order depends on sort_key:
-      by-name   — alphabetical by hostname
-      by-status — multi-pass: online hosts, offline, unavailable
-      by-rtt    — sorted by last-known RTT from reachability cache
+    Host rows and interface rows alternate in one table.  Host rows
+    use the first St column; interface rows use the second.  For
+    by-status, each host group (host row + interface rows) is wrapped
+    in a Jinja2 conditional for live status-based sorting.
     """
     display_name = NETWORK_DISPLAY.get(subdomain, subdomain.title())
     host_count = len(hosts)
@@ -537,22 +493,22 @@ def _build_network_table(
     else:
         ordered_hosts = sorted(hosts, key=lambda h: h.hostname)
 
-    lines = [_sort_bar(sort_key)]
+    lines = [
+        '<table style="width:100%;border-collapse:collapse;font-size:0.85em">',
+        _table_header(sort_key),
+    ]
 
     if sort_key == "by-status":
-        # Multi-pass: emit each host block 3 times with guards so
-        # only the matching pass renders.  Uses compact=True (summary
-        # only, no interface tables) to keep within HA's 4 MB limit.
+        # Multi-pass: host rows ONLY (no interface rows) to stay
+        # within HA's 4 MB WebSocket limit.  Users switch to
+        # by-name or by-rtt for full interface details.
         for condition in ("on", "off", "unavailable"):
             for host in ordered_hosts:
                 nid = _node_id(host.hostname)
                 host_conn_eid = (
                     f"binary_sensor.gdoc2netcfg_{nid}_connectivity"
                 )
-                block = _host_block(
-                    host, controls_map, ipv6_prefix, domain,
-                    compact=True,
-                )
+                block = _host_row(host, controls_map, domain)
                 if condition in ("on", "off"):
                     lines.append(
                         f"{{% if is_state('{host_conn_eid}',"
@@ -569,9 +525,11 @@ def _build_network_table(
                     )
     else:
         for host in ordered_hosts:
-            lines.append(_host_block(
+            lines.extend(_host_rows(
                 host, controls_map, ipv6_prefix, domain,
             ))
+
+    lines.append("</table>")
 
     return {
         "type": "markdown",

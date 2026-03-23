@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """Create a Network Reachability dashboard for Home Assistant.
 
-Generates a self-contained HTML file with host/interface reachability
-data and copies it to HA's /config/www/ directory for serving at
-/local/network-reachability.html.  Also registers an iframe panel
-in HA via the WebSocket API so it appears in the sidebar.
+Generates a self-contained HTML file with structural host/network
+data and deploys it to HA's /config/www/ directory.  The HTML
+connects to HA's WebSocket API at runtime for live entity states.
 
-The HTML is static (regenerated each daemon cycle) with client-side
-JavaScript for fold/unfold of multi-interface hosts, column sorting,
-and auto-refresh.
+The structural data (host list, entity IDs, network grouping, PoE
+mappings) is baked in at generation time.  Live data (connectivity,
+RTT, stack mode, plug/PoE state) comes from HA WebSocket.
 
 Usage:
     uv run scripts/ha-create-reachability-dashboard.py
@@ -21,6 +20,7 @@ import asyncio
 import html
 import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -61,7 +61,7 @@ HA_PANEL_URL = "/local/network-reachability.html"
 
 
 # ---------------------------------------------------------------------------
-# Entity ID helpers (must match mqtt_ha.py)
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _node_id(name: str) -> str:
@@ -73,6 +73,28 @@ def _iface_slug(vi) -> str:
     """Derive interface slug for entity IDs."""
     name = vi.name if vi.name else "default"
     return re.sub(r"[^a-zA-Z0-9]", "_", name).lower()
+
+
+def _esc(s: str) -> str:
+    """HTML-escape a string."""
+    return html.escape(s, quote=True)
+
+
+def _ipv6_common_prefix(site) -> str:
+    """Get the common IPv6 prefix for the site."""
+    prefixes = site.active_ipv6_prefixes
+    return prefixes[0].prefix if prefixes else ""
+
+
+def _ipv6_suffix(vi, prefix: str) -> str:
+    """Extract IPv6 suffix from a VirtualInterface."""
+    if not prefix:
+        return ""
+    for ip in vi.ip_addresses:
+        if isinstance(ip, IPv6Address):
+            addr = ip.address
+            return addr[len(prefix):] if addr.startswith(prefix) else addr
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -93,8 +115,7 @@ def _load_pipeline(config):
     for name, csv_text in csv_data:
         if name == "vlan_allocations":
             continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
+        all_records.extend(parse_csv(csv_text, name))
 
     if not all_records:
         raise RuntimeError("No device records found in any sheet.")
@@ -122,14 +143,184 @@ def _group_hosts_by_network(hosts, site):
             vlan_id = ip_to_vlan_id(first_ip, site)
             if vlan_id is not None and vlan_id in site.vlans:
                 subdomain = site.vlans[vlan_id].subdomain
-        if subdomain is None:
-            subdomain = "unknown"
-        networks.setdefault(subdomain, []).append(host)
+        networks.setdefault(subdomain or "unknown", []).append(host)
 
-    for network_hosts in networks.values():
-        network_hosts.sort(key=lambda h: h.hostname)
-
+    for v in networks.values():
+        v.sort(key=lambda h: h.hostname)
     return networks
+
+
+# ---------------------------------------------------------------------------
+# Controls (Tasmota + PoE) — structural mapping
+# ---------------------------------------------------------------------------
+
+def _build_controls_map(
+    hosts, config, ha_states: list[dict],
+) -> dict[str, list[dict]]:
+    """Build machine_name -> [{name, url, entity_id, type}, ...].
+
+    Entity states are fetched live by the JS, so we only store the
+    entity_id here (not the current state).
+    """
+    domain = config.site.domain
+    controls_map: dict[str, list[dict]] = {}
+
+    for host in hosts:
+        if host.tasmota_data is None:
+            continue
+        mqtt_topic = host.tasmota_data.mqtt_topic
+        plug_eid = f"switch.{_node_id(mqtt_topic)}"
+        ctrl_url = f"http://ipv4.{host.hostname}.{domain}"
+        for controlled in host.tasmota_data.controls:
+            controls_map.setdefault(controlled, []).append({
+                "name": host.machine_name,
+                "url": ctrl_url,
+                "entity_id": plug_eid,
+                "type": "plug",
+            })
+
+    # PoE port controls
+    desc_re = re.compile(r'^sensor\.(.+)_port_(\d+)_description$')
+    poe_re = re.compile(r'^sensor\.(.+)_port_(\d+)_poe_status$')
+    descriptions: dict[tuple[str, str], str] = {}
+    poe_statuses: dict[tuple[str, str], str] = {}
+    for e in ha_states:
+        m = desc_re.match(e["entity_id"])
+        if m and e["state"].strip():
+            descriptions[(m.group(1), m.group(2))] = e["state"].strip()
+        m2 = poe_re.match(e["entity_id"])
+        if m2:
+            poe_statuses[(m2.group(1), m2.group(2))] = e["state"]
+
+    iface_prefixes = ("eth0.", "eth1.", "eth2.", "eno1.", "enp", "lan.", "en")
+    for (sw, port), desc in descriptions.items():
+        poe_st = poe_statuses.get((sw, port), "")
+        if poe_st not in ("delivering", "searching"):
+            continue
+        hostname = desc
+        for pfx in iface_prefixes:
+            if hostname.startswith(pfx) and "." in hostname[len(pfx):]:
+                hostname = hostname.split(".", 1)[1]
+                break
+            elif hostname.startswith(pfx):
+                hostname = hostname[len(pfx):]
+                break
+        poe_eid = f"switch.{sw}_port_{port}_poe"
+        controls_map.setdefault(hostname, []).append({
+            "name": sw.replace("_", "-") + f" p{port}",
+            "url": "",
+            "entity_id": poe_eid,
+            "type": "poe",
+        })
+
+    return controls_map
+
+
+# ---------------------------------------------------------------------------
+# Structural data builder
+# ---------------------------------------------------------------------------
+
+def _build_host_data(host, controls_map, ipv6_prefix, domain):
+    """Build structural JSON for one host (no live state)."""
+    nid = _node_id(host.hostname)
+    fqdn = f"{host.hostname}.{domain}"
+
+    interfaces = []
+    for vi in host.virtual_interfaces:
+        slug = _iface_slug(vi)
+        iface_name = vi.name or "default"
+        iface_fqdn = f"{vi.name}.{fqdn}" if vi.name else fqdn
+        interfaces.append({
+            "name": iface_name,
+            "fqdn": iface_fqdn,
+            "slug": slug,
+            "ipv6_suffix": _ipv6_suffix(vi, ipv6_prefix),
+            # Entity ID prefix for this interface
+            "ep": f"gdoc2netcfg_{nid}_{slug}",
+        })
+
+    return {
+        "hostname": host.hostname,
+        "fqdn": fqdn,
+        "nid": nid,
+        # Entity ID prefix for host-level entities
+        "hp": f"gdoc2netcfg_{nid}",
+        "location": host.extra.get("Physical Location", "").strip(),
+        "controls": controls_map.get(host.machine_name, []),
+        "interfaces": interfaces,
+    }
+
+
+# ---------------------------------------------------------------------------
+# HTML generation
+# ---------------------------------------------------------------------------
+
+_HTML_TEMPLATE_PATH = Path(__file__).parent / "ha-reachability-dashboard.html"
+
+
+def _generate_html(networks, controls_map, ipv6_prefix, domain, config):
+    """Generate the complete HTML dashboard."""
+    network_data = []
+    for subdomain in NETWORK_ORDER:
+        if subdomain not in networks:
+            continue
+        network_data.append({
+            "subdomain": subdomain,
+            "display_name": NETWORK_DISPLAY.get(subdomain, subdomain.title()),
+            "hosts": [
+                _build_host_data(h, controls_map, ipv6_prefix, domain)
+                for h in networks[subdomain]
+            ],
+        })
+    for subdomain in sorted(networks.keys()):
+        if subdomain not in NETWORK_ORDER:
+            network_data.append({
+                "subdomain": subdomain,
+                "display_name": NETWORK_DISPLAY.get(subdomain, subdomain.title()),
+                "hosts": [
+                    _build_host_data(h, controls_map, ipv6_prefix, domain)
+                    for h in networks[subdomain]
+                ],
+            })
+
+    # Escape </ in JSON to prevent script tag breakout (XSS)
+    data_json = json.dumps(
+        network_data, separators=(",", ":"),
+    ).replace("</", r"<\/")
+
+    # WebSocket URL for the JS to connect to HA
+    ws_url = (
+        config.homeassistant.url.rstrip("/")
+        .replace("http://", "ws://")
+        .replace("https://", "wss://")
+        + "/api/websocket"
+    )
+
+    template = _HTML_TEMPLATE_PATH.read_text()
+    return (
+        template
+        .replace("__DATA_JSON__", data_json)
+        .replace("__IPV6_PREFIX__", _esc(ipv6_prefix))
+        .replace("__DOMAIN__", _esc(domain))
+        .replace("__HA_WS_URL__", _esc(ws_url))
+        .replace("__HA_TOKEN__", _esc(config.homeassistant.token))
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deploy
+# ---------------------------------------------------------------------------
+
+def _deploy_html(html_content: str) -> None:
+    """Write the HTML file to HA's www directory via ssh + sudo tee."""
+    result = subprocess.run(
+        ["ssh", HA_HOST,
+         f"sudo tee {shlex.quote(HA_WWW_PATH)} > /dev/null"],
+        input=html_content, capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Deploy failed: {result.stderr.strip()}")
+    print(f"Deployed to {HA_HOST}:{HA_WWW_PATH}")
 
 
 def _fetch_ha_states(config) -> list[dict]:
@@ -148,318 +339,10 @@ def _fetch_ha_states(config) -> list[dict]:
         return []
 
 
-def _build_controls_map(
-    hosts, config, ha_states: list[dict],
-) -> dict[str, list[dict]]:
-    """Build reverse mapping: machine_name -> [{name, url, state}, ...].
-
-    Combines Tasmota plug controls (from spreadsheet) with PoE port
-    controls (from HA switch port description entities).  Each host
-    can have multiple power sources.  State is fetched from HA.
-    """
-    domain = config.site.domain
-
-    # Index HA states by entity_id for fast lookup
-    state_by_eid: dict[str, str] = {}
-    for e in ha_states:
-        state_by_eid[e["entity_id"]] = e["state"]
-
-    controls_map: dict[str, list[dict]] = {}
-
-    # Tasmota plug controls
-    for host in hosts:
-        if host.tasmota_data is None:
-            continue
-        for controlled in host.tasmota_data.controls:
-            ctrl_url = f"http://ipv4.{host.hostname}.{domain}"
-            # Tasmota's HA integration creates switch entities using
-            # the MQTT topic (e.g. switch.au_plug_1), not our
-            # hostname-based node_id (au_plug_1_iot).
-            mqtt_topic = host.tasmota_data.mqtt_topic
-            plug_eid = f"switch.{_node_id(mqtt_topic)}"
-            plug_state = state_by_eid.get(plug_eid, "")
-            controls_map.setdefault(controlled, []).append({
-                "name": host.machine_name,
-                "url": ctrl_url,
-                "state": plug_state,
-                "type": "plug",
-            })
-
-    # PoE port controls from HA entities
-    poe_controls = _fetch_poe_controls(config, ha_states, state_by_eid)
-    for hostname, entries in poe_controls.items():
-        controls_map.setdefault(hostname, []).extend(entries)
-
-    return controls_map
-
-
-def _fetch_poe_controls(
-    config, ha_states: list[dict], state_by_eid: dict[str, str],
-) -> dict[str, list[dict]]:
-    """Fetch PoE port-to-host mappings from HA states.
-
-    Reads switch port description sensors to find which device is
-    connected to each port, and matches with PoE status sensors to
-    identify PoE-powered hosts.
-    """
-    desc_re = re.compile(r'^sensor\.(.+)_port_(\d+)_description$')
-    poe_re = re.compile(r'^sensor\.(.+)_port_(\d+)_poe_status$')
-
-    descriptions: dict[tuple[str, str], str] = {}
-    poe_statuses: dict[tuple[str, str], str] = {}
-    for e in ha_states:
-        m = desc_re.match(e["entity_id"])
-        if m and e["state"].strip():
-            descriptions[(m.group(1), m.group(2))] = e["state"].strip()
-        m2 = poe_re.match(e["entity_id"])
-        if m2:
-            poe_statuses[(m2.group(1), m2.group(2))] = e["state"]
-
-    result: dict[str, list[dict]] = {}
-    iface_prefixes = (
-        "eth0.", "eth1.", "eth2.", "eno1.", "enp", "lan.", "en",
-    )
-    for (sw, port), desc in descriptions.items():
-        poe_st = poe_statuses.get((sw, port), "")
-        if poe_st not in ("delivering", "searching"):
-            continue
-
-        # Extract hostname from description (strip interface prefix)
-        hostname = desc
-        for pfx in iface_prefixes:
-            if hostname.startswith(pfx) and "." in hostname[len(pfx):]:
-                hostname = hostname.split(".", 1)[1]
-                break
-            elif hostname.startswith(pfx):
-                hostname = hostname[len(pfx):]
-                break
-
-        sw_display = sw.replace("_", "-")
-        poe_entity = f"switch.{sw}_port_{port}_poe"
-        poe_switch_state = state_by_eid.get(poe_entity, "")
-
-        display = f"{sw_display} p{port}"
-        result.setdefault(hostname, []).append({
-            "name": display,
-            "url": "",  # PoE ports don't have a web UI to link to
-            "state": poe_switch_state,
-            "type": "poe",
-        })
-
-    return result
-
-
-def _ipv6_common_prefix(site) -> str:
-    """Get the common IPv6 prefix for the site."""
-    prefixes = site.active_ipv6_prefixes
-    if not prefixes:
-        return ""
-    return prefixes[0].prefix
-
-
-def _ipv6_suffix(vi, prefix: str) -> str:
-    """Extract IPv6 suffix from a VirtualInterface."""
-    if not prefix:
-        return ""
-    for ip in vi.ip_addresses:
-        if isinstance(ip, IPv6Address):
-            addr = ip.address
-            if addr.startswith(prefix):
-                return addr[len(prefix):]
-            return addr
-    return ""
-
-
-def _load_reachability(config) -> dict[str, dict]:
-    """Load reachability cache as raw JSON."""
-    cache_path = Path(config.cache.directory) / "reachability.json"
-    if not cache_path.exists():
-        return {}
-    try:
-        with open(cache_path) as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return {}
-    if not isinstance(data, dict) or data.get("version") != 2:
-        return {}
-    return data.get("hosts", {})
-
-
-# ---------------------------------------------------------------------------
-# Data building
-# ---------------------------------------------------------------------------
-
-def _esc(s: str) -> str:
-    """HTML-escape a string."""
-    return html.escape(s, quote=True)
-
-
-def _build_host_data(
-    host,
-    controls_map: dict[str, tuple[str, str]],
-    ipv6_prefix: str,
-    domain: str,
-    reachability: dict[str, dict],
-) -> dict:
-    """Build a JSON-serialisable dict for one host."""
-    fqdn = f"{host.hostname}.{domain}"
-
-    reach = reachability.get(host.hostname, {})
-    iface_reach = reach.get("interfaces", [])
-
-    any_up = False
-    has_v4 = False
-    has_v6 = False
-    for ir_pings in iface_reach:
-        for ping in ir_pings:
-            if ping.get("received", 0) > 0:
-                any_up = True
-                if ":" in ping.get("ip", ""):
-                    has_v6 = True
-                else:
-                    has_v4 = True
-
-    if not any_up:
-        host_status, host_stack = "off", "down"
-    elif has_v4 and has_v6:
-        host_status, host_stack = "on", "dual"
-    elif has_v4:
-        host_status, host_stack = "on", "v4"
-    elif has_v6:
-        host_status, host_stack = "on", "v6"
-    else:
-        host_status, host_stack = "off", "down"
-
-    location = host.extra.get("Physical Location", "").strip()
-    ctrl_list = controls_map.get(host.machine_name, [])
-
-    interfaces = []
-    for vi_idx, vi in enumerate(host.virtual_interfaces):
-        iface_name = vi.name or "default"
-        iface_fqdn = f"{vi.name}.{fqdn}" if vi.name else fqdn
-        ipv6_suf = _ipv6_suffix(vi, ipv6_prefix)
-
-        ir_pings = iface_reach[vi_idx] if vi_idx < len(iface_reach) else []
-        iface_up = False
-        iface_v4 = False
-        iface_v6 = False
-        best_rtt: float | None = None
-        for ping in ir_pings:
-            if ping.get("received", 0) > 0:
-                iface_up = True
-                if ":" in ping.get("ip", ""):
-                    iface_v6 = True
-                else:
-                    iface_v4 = True
-                rtt = ping.get("rtt_avg_ms")
-                if rtt is not None and (best_rtt is None or rtt < best_rtt):
-                    best_rtt = rtt
-
-        if not iface_up:
-            iface_status, iface_stack = "off", "down"
-        elif iface_v4 and iface_v6:
-            iface_status, iface_stack = "on", "dual"
-        elif iface_v4:
-            iface_status, iface_stack = "on", "v4"
-        elif iface_v6:
-            iface_status, iface_stack = "on", "v6"
-        else:
-            iface_status, iface_stack = "off", "down"
-
-        interfaces.append({
-            "name": iface_name,
-            "fqdn": iface_fqdn,
-            "ipv4": str(vi.ipv4),
-            "ipv6_suffix": ipv6_suf,
-            "mac": str(vi.macs[0]).lower() if vi.macs else "",
-            "status": iface_status,
-            "stack": iface_stack,
-            "rtt": round(best_rtt, 1) if best_rtt is not None else None,
-        })
-
-    return {
-        "hostname": host.hostname,
-        "fqdn": fqdn,
-        "status": host_status,
-        "stack": host_stack,
-        "location": location,
-        "controls": ctrl_list,
-        "interfaces": interfaces,
-    }
-
-
-# ---------------------------------------------------------------------------
-# HTML generation
-# ---------------------------------------------------------------------------
-
-_HTML_TEMPLATE_PATH = Path(__file__).parent / "ha-reachability-dashboard.html"
-
-
-def _generate_html(
-    networks: dict[str, list],
-    controls_map: dict[str, tuple[str, str]],
-    ipv6_prefix: str,
-    domain: str,
-    reachability: dict[str, dict],
-) -> str:
-    """Generate the complete HTML dashboard."""
-    network_data = []
-    for subdomain in NETWORK_ORDER:
-        if subdomain not in networks:
-            continue
-        hosts_data = [
-            _build_host_data(h, controls_map, ipv6_prefix, domain, reachability)
-            for h in networks[subdomain]
-        ]
-        network_data.append({
-            "subdomain": subdomain,
-            "display_name": NETWORK_DISPLAY.get(subdomain, subdomain.title()),
-            "hosts": hosts_data,
-        })
-    for subdomain in sorted(networks.keys()):
-        if subdomain not in NETWORK_ORDER:
-            hosts_data = [
-                _build_host_data(h, controls_map, ipv6_prefix, domain, reachability)
-                for h in networks[subdomain]
-            ]
-            network_data.append({
-                "subdomain": subdomain,
-                "display_name": NETWORK_DISPLAY.get(subdomain, subdomain.title()),
-                "hosts": hosts_data,
-            })
-
-    # Escape </ to <\/ so JSON strings can't break out of the
-    # <script> block (e.g. a location containing "</script>").
-    data_json = json.dumps(
-        network_data, separators=(",", ":"),
-    ).replace("</", r"<\/")
-    template = _HTML_TEMPLATE_PATH.read_text()
-    return template.replace("__DATA_JSON__", data_json).replace(
-        "__IPV6_PREFIX__", _esc(ipv6_prefix),
-    ).replace("__DOMAIN__", _esc(domain))
-
-
-# ---------------------------------------------------------------------------
-# Deploy
-# ---------------------------------------------------------------------------
-
-def _deploy_html(html_content: str) -> None:
-    """Write the HTML file to HA's www directory via ssh + sudo tee."""
-    import shlex
-    result = subprocess.run(
-        ["ssh", HA_HOST,
-         f"sudo tee {shlex.quote(HA_WWW_PATH)} > /dev/null"],
-        input=html_content, capture_output=True, text=True, timeout=30,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Deploy failed: {result.stderr.strip()}"
-        )
-    print(f"Deployed to {HA_HOST}:{HA_WWW_PATH}")
-
-
 async def _ensure_iframe_dashboard(config) -> None:
     """Create or update the Lovelace iframe dashboard in HA."""
+    import time
+
     import websockets
 
     ws_url = (
@@ -481,8 +364,7 @@ async def _ensure_iframe_dashboard(config) -> None:
 
         msg_id = 1
         await ws.send(json.dumps({
-            "id": msg_id,
-            "type": "lovelace/dashboards/list",
+            "id": msg_id, "type": "lovelace/dashboards/list",
         }))
         msg_id += 1
         resp = json.loads(await ws.recv())
@@ -503,14 +385,12 @@ async def _ensure_iframe_dashboard(config) -> None:
                 "show_in_sidebar": True,
             }))
             msg_id += 1
-            create_resp = json.loads(await ws.recv())
-            if not create_resp.get("success"):
-                print(f"Failed to create dashboard: {create_resp.get('error')}")
+            resp = json.loads(await ws.recv())
+            if not resp.get("success"):
+                print(f"Failed to create dashboard: {resp.get('error')}")
                 return
             print("Created dashboard 'network-reachability'")
 
-        # Save the iframe config with cache-busting query parameter
-        import time
         bust = int(time.time())
         await ws.send(json.dumps({
             "id": msg_id,
@@ -531,11 +411,11 @@ async def _ensure_iframe_dashboard(config) -> None:
             },
         }))
         msg_id += 1
-        save_resp = json.loads(await ws.recv())
-        if save_resp.get("success"):
+        resp = json.loads(await ws.recv())
+        if resp.get("success"):
             print("Dashboard iframe config saved")
         else:
-            print(f"Failed to save config: {save_resp.get('error')}")
+            print(f"Failed: {resp.get('error')}")
 
 
 # ---------------------------------------------------------------------------
@@ -544,18 +424,12 @@ async def _ensure_iframe_dashboard(config) -> None:
 
 def main():
     delete = "--delete" in sys.argv
-
     config = load_config()
     if not config.homeassistant.url or not config.homeassistant.token:
-        print(
-            "Error: [homeassistant] url and token must be configured",
-            file=sys.stderr,
-        )
+        print("Error: [homeassistant] url and token required", file=sys.stderr)
         sys.exit(1)
 
     if delete:
-        asyncio.run(_ensure_iframe_dashboard(config))  # reuse for delete path
-        # TODO: add actual delete support if needed
         return
 
     print("Loading pipeline data...")
@@ -564,37 +438,31 @@ def main():
 
     print("Grouping by network...")
     networks = _group_hosts_by_network(hosts, config.site)
-    for subdomain in NETWORK_ORDER:
-        if subdomain in networks:
-            print(f"  {subdomain}: {len(networks[subdomain])} hosts")
-    for subdomain in sorted(networks.keys()):
-        if subdomain not in NETWORK_ORDER:
-            print(f"  {subdomain}: {len(networks[subdomain])} hosts")
+    for sd in NETWORK_ORDER:
+        if sd in networks:
+            print(f"  {sd}: {len(networks[sd])} hosts")
+    for sd in sorted(networks.keys()):
+        if sd not in NETWORK_ORDER:
+            print(f"  {sd}: {len(networks[sd])} hosts")
 
-    print("Fetching HA entity states...")
+    print("Fetching HA states for PoE mappings...")
     ha_states = _fetch_ha_states(config)
     print(f"  {len(ha_states)} entities")
 
     controls_map = _build_controls_map(hosts, config, ha_states)
     ipv6_prefix = _ipv6_common_prefix(config.site)
     domain = config.site.domain
-    reachability = _load_reachability(config)
-
-    print(f"  Controls: {len(controls_map)} hosts powered by Tasmota plugs")
-    print(f"  IPv6 prefix: {ipv6_prefix or '(none)'}")
-    print(f"  Domain: {domain}")
-    print(f"  Reachability: {len(reachability)} hosts cached")
+    ctrl_count = sum(len(v) for v in controls_map.values())
+    print(f"  {ctrl_count} control entries for {len(controls_map)} hosts")
 
     print("Generating HTML...")
     html_content = _generate_html(
-        networks, controls_map, ipv6_prefix, domain, reachability,
+        networks, controls_map, ipv6_prefix, domain, config,
     )
     print(f"  {len(html_content):,} bytes")
 
     print("Deploying...")
     _deploy_html(html_content)
-
-    # Ensure the Lovelace iframe dashboard exists in HA
     asyncio.run(_ensure_iframe_dashboard(config))
 
     print(f"\nDashboard at: https://ha.{domain}/network-reachability/default")

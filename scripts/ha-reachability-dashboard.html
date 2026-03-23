@@ -3,148 +3,189 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="300">
 <title>Network Reachability</title>
+<script>
+// Detect HA dark/light from parent frame background
+try {
+  var bg = window.parent.getComputedStyle(window.parent.document.body).backgroundColor;
+  var m = bg.match(/(\d+)/g);
+  if (m && m.length >= 3) {
+    var lum = (0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2]) / 255;
+    if (lum > 0.5) document.documentElement.classList.add("light");
+  }
+} catch(e) {}
+// Retry after HA finishes theming
+setTimeout(function() {
+  try {
+    var bg = window.parent.getComputedStyle(window.parent.document.body).backgroundColor;
+    var m = bg.match(/(\d+)/g);
+    if (m && m.length >= 3) {
+      var lum = (0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2]) / 255;
+      if (lum > 0.5) document.documentElement.classList.add("light");
+      else document.documentElement.classList.remove("light");
+    }
+  } catch(e) {}
+}, 1000);
+</script>
 <style>
 :root {
-  /* Dark fallbacks — used if parent frame vars aren't available */
-  --primary-background-color: #111111;
-  --primary-text-color: #e1e1e1;
-  --secondary-text-color: #9b9b9b;
-  --secondary-background-color: #1c1c1c;
-  --divider-color: #3a3a3a;
-  --primary-color: #4fc3f7;
+  --bg: #111; --text: #e1e1e1; --text2: #9b9b9b;
+  --div: #3a3a3a; --hover: #2a2a2a; --link: #4fc3f7;
 }
-body {
-  font-family: Roboto, Noto, sans-serif;
-  margin: 16px;
-  background: var(--primary-background-color);
-  color: var(--primary-text-color);
-  font-size: 14px;
+:root.light {
+  --bg: #fafafa; --text: #212121; --text2: #727272;
+  --div: #e0e0e0; --hover: #f0f0f0; --link: #03a9f4;
 }
-h2 {
-  margin: 24px 0 8px;
-  font-size: 1.1em;
-  border-bottom: 1px solid var(--divider-color);
-  padding-bottom: 4px;
-}
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.85em;
-  margin-bottom: 16px;
-  table-layout: fixed;
-}
-/* Fixed column widths for alignment across tables */
-col.c-st    { width: 30px; }
-col.c-fold  { width: 20px; }
-col.c-name  { width: 18%; }
-col.c-stack { width: 40px; }
-col.c-ipv4  { width: 12%; }
-col.c-ipv6  { width: 10%; }
-col.c-mac   { width: 14%; }
-col.c-rtt   { width: 60px; }
-col.c-loc   { width: 14%; }
-col.c-ctrl  { /* remainder */ }
-th {
-  text-align: left;
-  padding: 4px 6px;
-  border-bottom: 2px solid var(--divider-color);
-  cursor: pointer;
-  user-select: none;
-  color: var(--secondary-text-color);
-}
-th:hover { background: var(--secondary-background-color); }
-td { padding: 3px 6px; white-space: nowrap; }
-tr.host-row { border-top: 2px solid var(--divider-color); }
+body { font-family: Roboto,Noto,sans-serif; margin: 16px; background: var(--bg); color: var(--text); font-size: 14px; }
+h2 { margin: 24px 0 8px; font-size: 1.1em; border-bottom: 1px solid var(--div); padding-bottom: 4px; }
+table { width: 100%; border-collapse: collapse; font-size: 0.85em; margin-bottom: 16px; table-layout: fixed; }
+col.c-st { width: 30px; } col.c-fold { width: 20px; } col.c-name { width: 18%; }
+col.c-stack { width: 40px; } col.c-ipv4 { width: 12%; } col.c-ipv6 { width: 10%; }
+col.c-mac { width: 14%; } col.c-rtt { width: 60px; } col.c-loc { width: 14%; }
+th { text-align: left; padding: 4px 6px; border-bottom: 2px solid var(--div); cursor: pointer; user-select: none; color: var(--text2); }
+th:hover { background: var(--hover); }
+td { padding: 3px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+tr.host-row { border-top: 2px solid var(--div); }
 tr.iface-row td:nth-child(3) { padding-left: 20px; }
-tr.off { opacity: 0.5; }
-tr.down { opacity: 0.35; }
-code { font-size: 0.95em; }
-a { color: var(--primary-color); }
-a:visited { color: var(--primary-color); }
+tr.off { opacity: 0.5; } tr.down { opacity: 0.35; }
+code { font-size: 0.95em; } a { color: var(--link); } a:visited { color: var(--link); }
 .st { font-size: 1.1em; }
-.fold { cursor: pointer; user-select: none; font-size: 0.8em; color: var(--secondary-text-color); }
+.fold { cursor: pointer; user-select: none; font-size: 0.8em; color: var(--text2); }
 .fold::after { content: "\25b6"; }
 tr.host-row:not(.folded) > .fold::after { content: "\25bc"; }
-.stack { font-weight: 600; }
-.sort-active { font-weight: bold; }
+.stack { font-weight: 600; } .sort-active { font-weight: bold; }
+#status-bar { font-size: 0.85em; color: var(--text2); padding: 4px 0; }
 </style>
 </head>
 <body>
+<div id="status-bar">Connecting...</div>
 <div id="dashboard"></div>
 <script>
-// Placeholders replaced by the Python generator at build time.
 var DATA = __DATA_JSON__;
 var PREFIX = "__IPV6_PREFIX__";
 var DOMAIN = "__DOMAIN__";
+var HA_WS = "__HA_WS_URL__";
+var HA_TOKEN = "__HA_TOKEN__";
 
-var ST = {on: "\u{1f7e2}", off: "\u{1f534}", down: "\u26ab"};
+var ST_ICON = {on: "\u{1f7e2}", off: "\u{1f534}"};
 var STACK_LABEL = {dual: "4\xb76", v4: "4", v6: "6", down: "\u2014"};
+var states = {};  // entity_id -> state string
+var currentSort = "name", sortDir = 1;
 
-var currentSort = "name";
-var sortDir = 1;
+// --- HA WebSocket ---
 
-function stackPrefix(s) {
-  return s === "v6" ? "ipv6." : "ipv4.";
+var ws, msgId = 1, connected = false;
+
+function haConnect() {
+  ws = new WebSocket(HA_WS);
+  ws.onopen = function() { setStatus("Authenticating..."); };
+  ws.onmessage = function(ev) {
+    var msg = JSON.parse(ev.data);
+    if (msg.type === "auth_required") {
+      ws.send(JSON.stringify({type: "auth", access_token: HA_TOKEN}));
+    } else if (msg.type === "auth_ok") {
+      connected = true;
+      setStatus("Fetching states...");
+      // Get all current states
+      ws.send(JSON.stringify({id: msgId++, type: "get_states"}));
+      // Subscribe to state changes
+      ws.send(JSON.stringify({id: msgId++, type: "subscribe_events", event_type: "state_changed"}));
+    } else if (msg.type === "auth_invalid") {
+      setStatus("Auth failed: " + (msg.message || "invalid token"));
+    } else if (msg.type === "result" && msg.success && Array.isArray(msg.result)) {
+      // Response to get_states
+      for (var i = 0; i < msg.result.length; i++) {
+        states[msg.result[i].entity_id] = msg.result[i].state;
+      }
+      setStatus("Live \u2014 " + Object.keys(states).length + " entities");
+      render();
+    } else if (msg.type === "event" && msg.event && msg.event.event_type === "state_changed") {
+      var d = msg.event.data;
+      if (d.new_state) {
+        states[d.entity_id] = d.new_state.state;
+        render();
+      }
+    }
+  };
+  ws.onclose = function() {
+    connected = false;
+    setStatus("Disconnected \u2014 reconnecting in 5s...");
+    setTimeout(haConnect, 5000);
+  };
+  ws.onerror = function() { ws.close(); };
 }
 
-function makeLink(href, text, bold) {
-  var a = document.createElement("a");
-  a.href = href;
-  if (bold) {
-    var b = document.createElement("b");
-    b.textContent = text;
-    a.appendChild(b);
-  } else {
-    a.textContent = text;
-  }
-  return a;
+function setStatus(txt) {
+  document.getElementById("status-bar").textContent = txt;
 }
 
-function bestIface(h) {
-  // Return the first interface (used for single-interface host sort values)
-  return h.interfaces[0] || {};
+function st(entityId) { return states[entityId] || "unavailable"; }
+
+// --- Derived values from live state ---
+
+function hostStatus(h) {
+  var s = st("binary_sensor." + h.hp + "_connectivity");
+  return s === "on" ? "on" : s === "off" ? "off" : "down";
+}
+
+function hostStack(h) {
+  var s = st("sensor." + h.hp + "_stack_mode");
+  if (s === "dual-stack") return "dual";
+  if (s === "ipv4-only") return "v4";
+  if (s === "ipv6-only") return "v6";
+  return "down";
+}
+
+function ifaceStatus(iface) {
+  var s = st("binary_sensor." + iface.ep + "_connectivity");
+  return s === "on" ? "on" : s === "off" ? "off" : "down";
+}
+
+function ifaceStack(iface) {
+  var s = st("sensor." + iface.ep + "_stack_mode");
+  if (s === "dual-stack") return "dual";
+  if (s === "ipv4-only") return "v4";
+  if (s === "ipv6-only") return "v6";
+  return "down";
+}
+
+function ifaceIpv4(iface) { return st("sensor." + iface.ep + "_ipv4"); }
+function ifaceMac(iface) { return st("sensor." + iface.ep + "_mac"); }
+
+function ifaceRtt(iface) {
+  var v = st("sensor." + iface.ep + "_rtt");
+  if (v && v !== "unavailable" && v !== "unknown" && v !== "") return parseFloat(v);
+  return null;
 }
 
 function bestRtt(h) {
-  var m = Infinity;
-  for (var i = 0; i < h.interfaces.length; i++)
-    if (h.interfaces[i].rtt !== null && h.interfaces[i].rtt < m) m = h.interfaces[i].rtt;
-  return m === Infinity ? null : m;
+  var best = Infinity;
+  for (var i = 0; i < h.interfaces.length; i++) {
+    var r = ifaceRtt(h.interfaces[i]);
+    if (r !== null && r < best) best = r;
+  }
+  return best === Infinity ? null : best;
 }
 
-function sortVal(h, col) {
-  var f = bestIface(h);
-  switch (col) {
-    case "status":
-      var o = {on: 0, off: 1, down: 2};
-      return o[h.status] !== undefined ? o[h.status] : 2;
-    case "name": return h.hostname;
-    case "stack":
-      var so = {dual: 0, v4: 1, v6: 2, down: 3};
-      return so[h.stack] !== undefined ? so[h.stack] : 3;
-    case "ipv4":
-      // Sort by numeric IP: convert "10.1.90.51" to a comparable number
-      var parts = (f.ipv4 || "").split(".");
-      return parts.length === 4
-        ? ((+parts[0]) * 16777216 + (+parts[1]) * 65536 + (+parts[2]) * 256 + (+parts[3]))
-        : 0;
-    case "ipv6": return f.ipv6_suffix || "";
-    case "mac": return f.mac || "";
-    case "rtt":
-      var r = bestRtt(h);
-      return r !== null ? r : Infinity;
-    case "location": return h.location || "";
-    case "controls":
-      return (h.controls && h.controls.length > 0) ? h.controls[0].name : "";
-    default: return h.hostname;
-  }
+// --- Links ---
+
+function hostHref(h) {
+  // Dual-stack: bare FQDN. Single-stack: ipv4./ipv6. prefix.
+  var s = hostStack(h);
+  if (s === "v6") return "http://ipv6." + h.fqdn;
+  if (s === "v4") return "http://ipv4." + h.fqdn;
+  return "http://" + h.fqdn;
 }
+
+function ifaceHref(iface) {
+  var s = ifaceStack(iface);
+  var pfx = s === "v6" ? "ipv6." : "ipv4.";
+  return "http://" + pfx + iface.fqdn;
+}
+
+// --- Sorting ---
 
 function natCmp(a, b) {
-  // Natural sort: split into runs of digits vs non-digits,
-  // compare digit runs numerically so "plug-2" < "plug-10".
   var ax = String(a).match(/(\d+|\D+)/g) || [];
   var bx = String(b).match(/(\d+|\D+)/g) || [];
   for (var i = 0; i < Math.min(ax.length, bx.length); i++) {
@@ -156,20 +197,32 @@ function natCmp(a, b) {
   return ax.length - bx.length;
 }
 
+function sortVal(h, col) {
+  var f = h.interfaces[0] || {};
+  switch (col) {
+    case "status": return {on:0,off:1,down:2}[hostStatus(h)] || 2;
+    case "name": return h.hostname;
+    case "stack": return {dual:0,v4:1,v6:2,down:3}[hostStack(h)] || 3;
+    case "ipv4":
+      var ip = ifaceIpv4(f);
+      if (!ip || ip === "unavailable" || ip === "unknown") return 0;
+      var p = ip.split(".");
+      return p.length === 4 ? (+p[0]*16777216 + +p[1]*65536 + +p[2]*256 + +p[3]) : 0;
+    case "ipv6": return f.ipv6_suffix || "";
+    case "mac": return ifaceMac(f) || "";
+    case "rtt": var r = bestRtt(h); return r !== null ? r : Infinity;
+    case "location": return h.location || "";
+    case "controls": return (h.controls && h.controls.length) ? h.controls[0].name : "";
+    default: return h.hostname;
+  }
+}
+
 function sortHosts(hosts) {
   var col = currentSort;
   return hosts.slice().sort(function(a, b) {
     var va = sortVal(a, col), vb = sortVal(b, col);
-    // Use numeric compare for numbers, natural sort for strings
-    var c;
-    if (typeof va === "number" && typeof vb === "number") {
-      c = va - vb;
-    } else {
-      c = natCmp(va, vb);
-    }
-    if (c !== 0) return c * sortDir;
-    // Stable secondary sort by hostname (natural)
-    return natCmp(a.hostname, b.hostname);
+    var c = (typeof va === "number" && typeof vb === "number") ? va - vb : natCmp(va, vb);
+    return c !== 0 ? c * sortDir : natCmp(a.hostname, b.hostname);
   });
 }
 
@@ -189,9 +242,19 @@ function setSort(col) {
   render();
 }
 
-function addCell(tr, content, className) {
+// --- DOM helpers ---
+
+function makeLink(href, text, bold) {
+  var a = document.createElement("a");
+  a.href = href;
+  if (bold) { var b = document.createElement("b"); b.textContent = text; a.appendChild(b); }
+  else a.textContent = text;
+  return a;
+}
+
+function addCell(tr, content, cls) {
   var td = document.createElement("td");
-  if (className) td.className = className;
+  if (cls) td.className = cls;
   if (typeof content === "string") td.textContent = content;
   else if (content) td.appendChild(content);
   return tr.appendChild(td);
@@ -199,40 +262,29 @@ function addCell(tr, content, className) {
 
 function addCodeCell(tr, text) {
   var td = document.createElement("td");
-  var code = document.createElement("code");
-  code.textContent = text || "\u2014";
-  td.appendChild(code);
+  var c = document.createElement("code");
+  c.textContent = text || "\u2014";
+  td.appendChild(c);
   return tr.appendChild(td);
 }
 
 function addCtrlCell(tr, h) {
   var td = document.createElement("td");
-  if (!h.controls || h.controls.length === 0) {
-    td.textContent = "\u2014";
-    tr.appendChild(td);
-    return;
-  }
+  if (!h.controls || !h.controls.length) { td.textContent = "\u2014"; tr.appendChild(td); return; }
   for (var i = 0; i < h.controls.length; i++) {
     if (i > 0) td.appendChild(document.createTextNode(", "));
     var c = h.controls[i];
-    // State indicator
-    var st = c.state === "on" ? "\u{1f7e2}" : c.state === "off" ? "\u{1f534}" : "\u26ab";
-    td.appendChild(document.createTextNode(st + " "));
-    // Type icon
-    var icon = c.type === "poe" ? "\u26a1" : "\u{1f50c}";
+    var cst = st(c.entity_id);
+    var icon = (cst === "on" ? "\u{1f7e2}" : cst === "off" ? "\u{1f534}" : "\u26ab");
+    icon += (c.type === "poe" ? "\u26a1" : "\u{1f50c}");
     td.appendChild(document.createTextNode(icon));
-    // Name (linked if URL available)
-    if (c.url) {
-      var a = document.createElement("a");
-      a.href = c.url;
-      a.textContent = c.name;
-      td.appendChild(a);
-    } else {
-      td.appendChild(document.createTextNode(c.name));
-    }
+    if (c.url) { var a = document.createElement("a"); a.href = c.url; a.textContent = c.name; td.appendChild(a); }
+    else td.appendChild(document.createTextNode(c.name));
   }
   tr.appendChild(td);
 }
+
+// --- Render ---
 
 function render() {
   var root = document.getElementById("dashboard");
@@ -240,7 +292,6 @@ function render() {
 
   for (var ni = 0; ni < DATA.length; ni++) {
     var net = DATA[ni];
-
     var h2 = document.createElement("h2");
     var txt = net.display_name + " (" + net.subdomain + ") \u2014 " + net.hosts.length + " hosts";
     if (PREFIX) txt += " \u2014 IPv6: " + PREFIX;
@@ -248,95 +299,85 @@ function render() {
     root.appendChild(h2);
 
     var table = document.createElement("table");
+    var cg = document.createElement("colgroup");
+    ["c-st","c-fold","c-name","c-stack","c-ipv4","c-ipv6","c-mac","c-rtt","c-loc","c-ctrl"].forEach(function(cn) {
+      var col = document.createElement("col"); col.className = cn; cg.appendChild(col);
+    });
+    table.appendChild(cg);
 
-    // Column widths for alignment across tables
-    var colgroup = document.createElement("colgroup");
-    var colClasses = ["c-st","c-fold","c-name","c-stack","c-ipv4","c-ipv6","c-mac","c-rtt","c-loc","c-ctrl"];
-    for (var ci2 = 0; ci2 < colClasses.length; ci2++) {
-      var col = document.createElement("col");
-      col.className = colClasses[ci2];
-      colgroup.appendChild(col);
-    }
-    table.appendChild(colgroup);
-
-    // Header
     var thead = document.createElement("thead");
     var htr = document.createElement("tr");
-    var cols = [
-      ["St","status"],["",null],["Name","name"],["Stack","stack"],
-      ["IPv4","ipv4"],["IPv6","ipv6"],["MAC","mac"],["RTT","rtt"],
-      ["Location","location"],["Controls","controls"]
-    ];
-    for (var ci = 0; ci < cols.length; ci++) {
+    [["St","status"],["",null],["Name","name"],["Stack","stack"],
+     ["IPv4","ipv4"],["IPv6","ipv6"],["MAC","mac"],["RTT","rtt"],
+     ["Location","location"],["Controls","controls"]].forEach(function(c) {
       var th = document.createElement("th");
-      var lbl = cols[ci][0], sk = cols[ci][1];
-      th.textContent = lbl;
-      if (sk) {
-        if (currentSort === sk) {
-          th.classList.add("sort-active");
-          th.textContent = lbl + (sortDir === 1 ? " \u25be" : " \u25b4");
-        }
-        (function(k){ th.addEventListener("click", function(){ setSort(k); }); })(sk);
+      th.textContent = c[0];
+      if (c[1]) {
+        if (currentSort === c[1]) { th.classList.add("sort-active"); th.textContent = c[0] + (sortDir === 1 ? " \u25be" : " \u25b4"); }
+        th.addEventListener("click", function(k) { return function() { setSort(k); }; }(c[1]));
       }
       htr.appendChild(th);
-    }
+    });
     thead.appendChild(htr);
     table.appendChild(thead);
 
-    // Body
     var tbody = document.createElement("tbody");
     var hosts = sortHosts(net.hosts);
 
     for (var hi = 0; hi < hosts.length; hi++) {
       var h = hosts[hi];
-      var cls = h.status === "off" ? "off" : h.status !== "on" ? "down" : "";
+      var hs = hostStatus(h), hk = hostStack(h);
+      var cls = hs === "off" ? "off" : hs !== "on" ? "down" : "";
       var multi = h.interfaces.length > 1;
 
       if (multi) {
-        // Host header row — folded by default
         var tr = document.createElement("tr");
         tr.className = "host-row folded" + (cls ? " " + cls : "");
-        addCell(tr, ST[h.status] || ST.down, "st");
+        addCell(tr, ST_ICON[hs] || "\u26ab", "st");
         var foldTd = addCell(tr, null, "fold");
         foldTd.addEventListener("click", toggleHost);
-        addCell(tr, makeLink("http://" + stackPrefix(h.stack) + h.fqdn, h.hostname, true));
-        addCell(tr, STACK_LABEL[h.stack] || "\u2014", "stack");
+        addCell(tr, makeLink(hostHref(h), h.hostname, true));
+        addCell(tr, STACK_LABEL[hk] || "\u2014", "stack");
         addCell(tr, ""); addCell(tr, ""); addCell(tr, ""); addCell(tr, "");
         addCell(tr, h.location || "\u2014");
         addCtrlCell(tr, h);
         tbody.appendChild(tr);
 
-        // Interface rows — hidden by default
         for (var ii = 0; ii < h.interfaces.length; ii++) {
-          var f = h.interfaces[ii];
-          var icls = f.status === "off" ? "off" : f.status !== "on" ? "down" : "";
+          var f = h.interfaces[ii], fs = ifaceStatus(f), fk = ifaceStack(f);
+          var icls = fs === "off" ? "off" : fs !== "on" ? "down" : "";
           var itr = document.createElement("tr");
           itr.className = "iface-row" + (icls ? " " + icls : "");
           itr.style.display = "none";
           addCell(itr, "");
-          addCell(itr, ST[f.status] || ST.down, "st");
-          addCell(itr, makeLink("http://" + stackPrefix(f.stack) + f.fqdn, f.name));
-          addCell(itr, STACK_LABEL[f.stack] || "\u2014", "stack");
-          addCell(itr, f.ipv4 ? makeLink("http://ipv4." + f.fqdn, f.ipv4) : "\u2014");
+          addCell(itr, ST_ICON[fs] || "\u26ab", "st");
+          addCell(itr, makeLink(ifaceHref(f), f.name));
+          addCell(itr, STACK_LABEL[fk] || "\u2014", "stack");
+          var v4 = ifaceIpv4(f);
+          addCell(itr, (v4 && v4 !== "unavailable" && v4 !== "unknown") ? makeLink("http://ipv4." + f.fqdn, v4) : "\u2014");
           addCell(itr, f.ipv6_suffix ? makeLink("http://ipv6." + f.fqdn, f.ipv6_suffix) : "\u2014");
-          addCodeCell(itr, f.mac);
-          addCell(itr, f.rtt !== null ? f.rtt + "ms" : "\u2014");
+          var mac = ifaceMac(f);
+          addCodeCell(itr, (mac && mac !== "unavailable" && mac !== "unknown") ? mac : "");
+          var rtt = ifaceRtt(f);
+          addCell(itr, rtt !== null ? rtt + "ms" : "\u2014");
           addCell(itr, ""); addCell(itr, "");
           tbody.appendChild(itr);
         }
       } else {
-        // Single combined row
-        var f = h.interfaces[0];
+        var f = h.interfaces[0], fs = ifaceStatus(f), fk = ifaceStack(f);
         var tr = document.createElement("tr");
         tr.className = "host-row" + (cls ? " " + cls : "");
-        addCell(tr, ST[h.status] || ST.down, "st");
+        addCell(tr, ST_ICON[hs] || "\u26ab", "st");
         addCell(tr, "");
-        addCell(tr, makeLink("http://" + stackPrefix(h.stack) + h.fqdn, h.hostname, true));
-        addCell(tr, STACK_LABEL[f.stack] || "\u2014", "stack");
-        addCell(tr, f.ipv4 ? makeLink("http://ipv4." + f.fqdn, f.ipv4) : "\u2014");
+        addCell(tr, makeLink(hostHref(h), h.hostname, true));
+        addCell(tr, STACK_LABEL[fk] || "\u2014", "stack");
+        var v4 = ifaceIpv4(f);
+        addCell(tr, (v4 && v4 !== "unavailable" && v4 !== "unknown") ? makeLink("http://ipv4." + f.fqdn, v4) : "\u2014");
         addCell(tr, f.ipv6_suffix ? makeLink("http://ipv6." + f.fqdn, f.ipv6_suffix) : "\u2014");
-        addCodeCell(tr, f.mac);
-        addCell(tr, f.rtt !== null ? f.rtt + "ms" : "\u2014");
+        var mac = ifaceMac(f);
+        addCodeCell(tr, (mac && mac !== "unavailable" && mac !== "unknown") ? mac : "");
+        var rtt = ifaceRtt(f);
+        addCell(tr, rtt !== null ? rtt + "ms" : "\u2014");
         addCell(tr, h.location || "\u2014");
         addCtrlCell(tr, h);
         tbody.appendChild(tr);
@@ -348,46 +389,7 @@ function render() {
 }
 
 render();
-
-// Inherit HA's theme CSS variables from the parent frame.
-// HA applies theme vars to document.documentElement via JS after
-// page load, so we read them here (after our own render) and also
-// retry after a short delay in case the parent hasn't finished.
-function applyParentTheme() {
-  try {
-    var root = document.documentElement;
-    var ps = window.parent.getComputedStyle(
-      window.parent.document.documentElement
-    );
-    var vars = [
-      "primary-color", "accent-color",
-      "primary-background-color", "secondary-background-color",
-      "card-background-color",
-      "primary-text-color", "secondary-text-color",
-      "text-primary-color",
-      "divider-color",
-      "disabled-text-color",
-      "app-header-background-color", "app-header-text-color",
-    ];
-    var applied = 0;
-    for (var i = 0; i < vars.length; i++) {
-      var v = ps.getPropertyValue("--" + vars[i]).trim();
-      if (v) {
-        root.style.setProperty("--" + vars[i], v);
-        applied++;
-      }
-    }
-    return applied;
-  } catch(e) {
-    return 0;  // cross-origin or no parent
-  }
-}
-
-// Try immediately, then retry after delays to catch late theme application
-applyParentTheme();
-setTimeout(applyParentTheme, 100);
-setTimeout(applyParentTheme, 500);
-setTimeout(applyParentTheme, 2000);
+haConnect();
 </script>
 </body>
 </html>

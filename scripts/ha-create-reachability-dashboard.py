@@ -272,49 +272,24 @@ def _table_header(sort_key: str) -> str:
     )
 
 
-def _host_row(
-    host,
-    controls_map: dict[str, tuple[str, str]],
-    domain: str,
-) -> str:
-    """Generate a table row for a host (host-level status, name, meta).
+# JavaScript (no curly braces that conflict with Jinja2) to toggle
+# interface rows below a host row.  Walks nextElementSibling until
+# it hits another host row (class "hr").
+_TOGGLE_JS = (
+    "var o=this.dataset.open!=='0';"
+    "this.dataset.open=o?'0':'1';"
+    "this.querySelector('.fi').textContent=o?'\\u25b6 ':'\\u25bc ';"
+    "var r=this.nextElementSibling;"
+    "while(r&&r.className!=='hr')"
+    "{r.style.display=o?'none':'';r=r.nextElementSibling;}"
+)
 
-    Host rows fill the first St column and leave interface-specific
-    columns (IPv4, IPv6, MAC, RTT) empty.
-    """
-    nid = _node_id(host.hostname)
-    fqdn = f"{host.hostname}.{domain}"
 
-    host_conn_eid = f"binary_sensor.gdoc2netcfg_{nid}_connectivity"
-    host_stack_eid = f"sensor.gdoc2netcfg_{nid}_stack_mode"
-
-    setup = (
-        f"{{% set _hc=states('{host_conn_eid}') %}}"
-        f"{{% set _hs=states('{host_stack_eid}') %}}"
-        "{% set _hp='ipv4.' if _hs=='ipv4-only' "
-        "else ('ipv6.' if _hs=='ipv6-only' else '') %}"
-    )
-
-    status = (
-        "{% if _hc=='on' %}\U0001f7e2"
-        "{% elif _hc=='off' %}\U0001f534"
-        "{% else %}\u26ab{% endif %}"
-    )
-
-    stack = (
-        "{% if _hs=='dual-stack' %}4\u00b76"
-        "{% elif _hs=='ipv4-only' %}4"
-        "{% elif _hs=='ipv6-only' %}6"
-        "{% else %}\u2014{% endif %}"
-    )
-
-    hostname_link = (
-        f'<a href="http://{{{{ _hp }}}}{fqdn}">'
-        f"<b>{host.hostname}</b></a>"
-    )
-
+def _location_and_controls(
+    host, controls_map: dict[str, tuple[str, str]], domain: str,
+) -> tuple[str, str]:
+    """Return (location_html, controls_html) for a host."""
     location = host.extra.get("Physical Location", "").strip() or "\u2014"
-
     ctrl_info = controls_map.get(host.machine_name)
     if ctrl_info:
         ctrl_name, ctrl_hostname = ctrl_info
@@ -322,39 +297,14 @@ def _host_row(
         controls = f'<a href="http://{ctrl_fqdn}">{ctrl_name}</a>'
     else:
         controls = "\u2014"
-
-    opacity = (
-        "{% if _hc=='on' %}1"
-        "{% elif _hc=='off' %}0.5"
-        "{% else %}0.35{% endif %}"
-    )
-
-    td = 'style="padding:4px 6px;white-space:nowrap"'
-    tde = 'style="padding:4px 6px"'  # empty cells, no nowrap needed
-
-    return (
-        f"{setup}"
-        f'<tr style="opacity:{opacity};'
-        f'border-top:2px solid var(--divider-color,#e0e0e0)">'
-        f"<td {td}>{status}</td>"
-        f"<td {tde}></td>"
-        f"<td {td}>{hostname_link}</td>"
-        f"<td {td}>{stack}</td>"
-        f"<td {tde}></td>"
-        f"<td {tde}></td>"
-        f"<td {tde}></td>"
-        f"<td {tde}></td>"
-        f"<td {td}>{location}</td>"
-        f"<td {td}>{controls}</td>"
-        "</tr>"
-    )
+    return location, controls
 
 
-def _iface_row(host, vi, ipv6_prefix: str, domain: str) -> str:
-    """Generate a table row for one interface.
+def _iface_cells(host, vi, ipv6_prefix: str, domain: str) -> dict:
+    """Compute Jinja2 expressions and static data for one interface.
 
-    Interface rows fill the second St column and leave the first
-    (host St) empty.  Name is indented with padding-left.
+    Returns a dict with keys: setup, status, stack, iface_link,
+    ipv4_link, ipv6_link, mac_cell, rtt_cell, opacity, conn_eid.
     """
     nid = _node_id(host.hostname)
     slug = _iface_slug(vi)
@@ -371,16 +321,9 @@ def _iface_row(host, vi, ipv6_prefix: str, domain: str) -> str:
     fqdn = f"{host.hostname}.{domain}"
     iface_fqdn = f"{vi.name}.{fqdn}" if vi.name else fqdn
 
-    td = 'style="padding:2px 6px;white-space:nowrap"'
-    tdi = 'style="padding:2px 6px 2px 16px;white-space:nowrap"'  # indented name
-
-    # NB: closing }} must be in an f-string (}}}} -> }}) not a plain
-    # string where }}}} would be four literal braces.
     setup = (
         f"{{% set _ic=states('{conn_eid}') %}}"
         f"{{% set _is=states('{stack_eid}') %}}"
-        "{% set _ip='ipv4.' if _is=='ipv4-only' "
-        "else ('ipv6.' if _is=='ipv6-only' else '') %}"
     )
 
     status = (
@@ -396,18 +339,28 @@ def _iface_row(host, vi, ipv6_prefix: str, domain: str) -> str:
         "{% else %}\u2014{% endif %}"
     )
 
+    # Interface name link: stack-dependent prefix
     iface_link = (
+        "{% set _ip='ipv4.' if _is=='ipv4-only' "
+        "else ('ipv6.' if _is=='ipv6-only' else '') %}"
         f'<a href="http://{{{{ _ip }}}}{iface_fqdn}">'
         f"{iface_name}</a>"
     )
 
+    # IPv4 always links to ipv4.<iface>.<host>.<domain>
     ipv4_link = (
         f"{{% set _v4=states('{ipv4_eid}') %}}"
         "{% if _v4 not in ['unavailable','unknown'] %}"
-        f'<a href="http://{{{{ _ip }}}}{iface_fqdn}">'
+        f'<a href="http://ipv4.{iface_fqdn}">'
         "{{ _v4 }}</a>"
         "{% else %}\u2014{% endif %}"
     )
+
+    # IPv6 links to ipv6.<iface>.<host>.<domain>
+    if ipv6_suf != "\u2014":
+        ipv6_link = f'<a href="http://ipv6.{iface_fqdn}">{ipv6_suf}</a>'
+    else:
+        ipv6_link = "\u2014"
 
     mac_cell = (
         f"{{% set _mac=states('{mac_eid}') %}}"
@@ -429,19 +382,162 @@ def _iface_row(host, vi, ipv6_prefix: str, domain: str) -> str:
         "{% else %}0.35{% endif %}"
     )
 
+    return {
+        "setup": setup, "status": status, "stack": stack,
+        "iface_link": iface_link, "ipv4_link": ipv4_link,
+        "ipv6_link": ipv6_link, "mac_cell": mac_cell,
+        "rtt_cell": rtt_cell, "opacity": opacity,
+        "conn_eid": conn_eid,
+    }
+
+
+def _single_row(
+    host,
+    vi,
+    controls_map: dict[str, tuple[str, str]],
+    ipv6_prefix: str,
+    domain: str,
+) -> str:
+    """Generate a combined host+interface row for single-interface hosts.
+
+    Shows host status in col 1, interface status in col 2, hostname,
+    then all interface data on one line.
+    """
+    nid = _node_id(host.hostname)
+    fqdn = f"{host.hostname}.{domain}"
+    host_conn_eid = f"binary_sensor.gdoc2netcfg_{nid}_connectivity"
+    host_stack_eid = f"sensor.gdoc2netcfg_{nid}_stack_mode"
+
+    c = _iface_cells(host, vi, ipv6_prefix, domain)
+    location, controls = _location_and_controls(host, controls_map, domain)
+
+    host_setup = (
+        f"{{% set _hc=states('{host_conn_eid}') %}}"
+        f"{{% set _hs=states('{host_stack_eid}') %}}"
+        "{% set _hp='ipv4.' if _hs=='ipv4-only' "
+        "else ('ipv6.' if _hs=='ipv6-only' else '') %}"
+    )
+    host_status = (
+        "{% if _hc=='on' %}\U0001f7e2"
+        "{% elif _hc=='off' %}\U0001f534"
+        "{% else %}\u26ab{% endif %}"
+    )
+    hostname_link = (
+        f'<a href="http://{{{{ _hp }}}}{fqdn}">'
+        f"<b>{host.hostname}</b></a>"
+    )
+
+    td = 'style="padding:4px 6px;white-space:nowrap"'
+    return (
+        f"{host_setup}{c['setup']}"
+        f'<tr class="hr" style="opacity:{c["opacity"]};'
+        f'border-top:2px solid var(--divider-color,#e0e0e0)">'
+        f"<td {td}>{host_status}</td>"
+        f"<td {td}>{c['status']}</td>"
+        f"<td {td}>{hostname_link}</td>"
+        f"<td {td}>{c['stack']}</td>"
+        f"<td {td}>{c['ipv4_link']}</td>"
+        f"<td {td}>{c['ipv6_link']}</td>"
+        f"<td {td}>{c['mac_cell']}</td>"
+        f"<td {td}>{c['rtt_cell']}</td>"
+        f"<td {td}>{location}</td>"
+        f"<td {td}>{controls}</td>"
+        "</tr>"
+    )
+
+
+def _multi_host_row(
+    host,
+    controls_map: dict[str, tuple[str, str]],
+    domain: str,
+) -> str:
+    """Generate the host header row for a multi-interface host.
+
+    Includes a fold indicator (\u25bc) and onclick handler to toggle
+    visibility of the interface rows below.
+    """
+    nid = _node_id(host.hostname)
+    fqdn = f"{host.hostname}.{domain}"
+
+    host_conn_eid = f"binary_sensor.gdoc2netcfg_{nid}_connectivity"
+    host_stack_eid = f"sensor.gdoc2netcfg_{nid}_stack_mode"
+
+    setup = (
+        f"{{% set _hc=states('{host_conn_eid}') %}}"
+        f"{{% set _hs=states('{host_stack_eid}') %}}"
+        "{% set _hp='ipv4.' if _hs=='ipv4-only' "
+        "else ('ipv6.' if _hs=='ipv6-only' else '') %}"
+    )
+    status = (
+        "{% if _hc=='on' %}\U0001f7e2"
+        "{% elif _hc=='off' %}\U0001f534"
+        "{% else %}\u26ab{% endif %}"
+    )
+    stack = (
+        "{% if _hs=='dual-stack' %}4\u00b76"
+        "{% elif _hs=='ipv4-only' %}4"
+        "{% elif _hs=='ipv6-only' %}6"
+        "{% else %}\u2014{% endif %}"
+    )
+    hostname_link = (
+        '<span class="fi">\u25bc </span>'
+        f'<a href="http://{{{{ _hp }}}}{fqdn}">'
+        f"<b>{host.hostname}</b></a>"
+    )
+    location, controls = _location_and_controls(host, controls_map, domain)
+    opacity = (
+        "{% if _hc=='on' %}1"
+        "{% elif _hc=='off' %}0.5"
+        "{% else %}0.35{% endif %}"
+    )
+
+    td = 'style="padding:4px 6px;white-space:nowrap"'
+    tde = 'style="padding:4px 6px"'
+
     return (
         f"{setup}"
-        f'<tr style="opacity:{opacity}">'
-        f"<td {td}></td>"         # empty host St
-        f"<td {td}>{status}</td>"  # interface St
-        f"<td {tdi}>{iface_link}</td>"
+        f'<tr class="hr" data-open="1" onclick="{_TOGGLE_JS}" '
+        f'style="cursor:pointer;opacity:{opacity};'
+        f'border-top:2px solid var(--divider-color,#e0e0e0)">'
+        f"<td {td}>{status}</td>"
+        f"<td {tde}></td>"
+        f"<td {td}>{hostname_link}</td>"
         f"<td {td}>{stack}</td>"
-        f"<td {td}>{ipv4_link}</td>"
-        f"<td {td}>{ipv6_suf}</td>"
-        f"<td {td}>{mac_cell}</td>"
-        f"<td {td}>{rtt_cell}</td>"
-        f"<td {td}></td>"         # empty location
-        f"<td {td}></td>"         # empty controls
+        f"<td {tde}></td>"
+        f"<td {tde}></td>"
+        f"<td {tde}></td>"
+        f"<td {tde}></td>"
+        f"<td {td}>{location}</td>"
+        f"<td {td}>{controls}</td>"
+        "</tr>"
+    )
+
+
+def _iface_row(host, vi, ipv6_prefix: str, domain: str) -> str:
+    """Generate a table row for one interface under a multi-interface host.
+
+    Interface rows fill the second St column and leave the first
+    (host St) empty.  Name is indented.  No class="hr" so the
+    toggle JS skips over these when walking siblings.
+    """
+    c = _iface_cells(host, vi, ipv6_prefix, domain)
+
+    td = 'style="padding:2px 6px;white-space:nowrap"'
+    tdi = 'style="padding:2px 6px 2px 16px;white-space:nowrap"'
+
+    return (
+        f"{c['setup']}"
+        f'<tr style="opacity:{c["opacity"]}">'
+        f"<td {td}></td>"
+        f"<td {td}>{c['status']}</td>"
+        f"<td {tdi}>{c['iface_link']}</td>"
+        f"<td {td}>{c['stack']}</td>"
+        f"<td {td}>{c['ipv4_link']}</td>"
+        f"<td {td}>{c['ipv6_link']}</td>"
+        f"<td {td}>{c['mac_cell']}</td>"
+        f"<td {td}>{c['rtt_cell']}</td>"
+        f"<td {td}></td>"
+        f"<td {td}></td>"
         "</tr>"
     )
 
@@ -452,9 +548,18 @@ def _host_rows(
     ipv6_prefix: str,
     domain: str,
 ) -> list[str]:
-    """Generate all table rows for one host: host row + interface rows."""
-    rows = [_host_row(host, controls_map, domain)]
-    for vi in host.virtual_interfaces:
+    """Generate all table rows for one host.
+
+    Single-interface hosts get one combined row.  Multi-interface
+    hosts get a clickable host row (with fold toggle) plus
+    individual interface rows underneath.
+    """
+    vis = host.virtual_interfaces
+    if len(vis) == 1:
+        return [_single_row(host, vis[0], controls_map, ipv6_prefix, domain)]
+
+    rows = [_multi_host_row(host, controls_map, domain)]
+    for vi in vis:
         rows.append(_iface_row(host, vi, ipv6_prefix, domain))
     return rows
 
@@ -497,16 +602,24 @@ def _build_network_table(
     ]
 
     if sort_key == "by-status":
-        # Multi-pass: host rows ONLY (no interface rows) to stay
-        # within HA's 4 MB WebSocket limit.  Users switch to
-        # by-name or by-rtt for full interface details.
+        # Multi-pass: single-interface hosts get full row, multi-
+        # interface hosts get host-only row (no interface rows) to
+        # stay within HA's 4 MB WebSocket limit.
         for condition in ("on", "off", "unavailable"):
             for host in ordered_hosts:
                 nid = _node_id(host.hostname)
                 host_conn_eid = (
                     f"binary_sensor.gdoc2netcfg_{nid}_connectivity"
                 )
-                block = _host_row(host, controls_map, domain)
+                vis = host.virtual_interfaces
+                if len(vis) == 1:
+                    block = _single_row(
+                        host, vis[0], controls_map, ipv6_prefix, domain,
+                    )
+                else:
+                    block = _multi_host_row(
+                        host, controls_map, domain,
+                    )
                 if condition in ("on", "off"):
                     lines.append(
                         f"{{% if is_state('{host_conn_eid}',"

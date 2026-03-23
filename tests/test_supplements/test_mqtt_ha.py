@@ -187,7 +187,7 @@ class TestDeviceDict:
         host = _make_host()
         d = _device_dict(host)
         assert d["identifiers"] == ["gdoc2netcfg_big_storage"]
-        assert d["name"] == "big-storage"
+        assert d["name"] == "big-storage"  # hostname == machine_name in this fixture
         assert d["connections"] == [["mac", "aa:bb:cc:dd:ee:ff"]]
         assert d["configuration_url"] == "http://10.1.5.10"
 
@@ -207,6 +207,45 @@ class TestDeviceDict:
         assert len(d["connections"]) == 2
         assert d["connections"][0] == ["mac", "aa:bb:cc:00:00:01"]
         assert d["connections"][1] == ["mac", "aa:bb:cc:00:00:02"]
+
+    def test_bmc_gets_unique_identifiers(self):
+        """BMC host must get different identifiers from its parent.
+
+        BMC hosts share machine_name with their parent (both are
+        "big-storage"), but have different hostnames ("bmc.big-storage"
+        vs "big-storage").  Using hostname for node_id avoids collision.
+        """
+        parent = _make_host(
+            machine_name="big-storage",
+            hostname="big-storage",
+            ip="10.1.10.1",
+        )
+        bmc = _make_host(
+            machine_name="big-storage",  # same machine_name!
+            hostname="bmc.big-storage",  # different hostname
+            ip="10.1.5.150",
+            mac="11:22:33:44:55:66",
+        )
+
+        parent_d = _device_dict(parent)
+        bmc_d = _device_dict(bmc)
+
+        assert parent_d["identifiers"] == ["gdoc2netcfg_big_storage"]
+        assert bmc_d["identifiers"] == ["gdoc2netcfg_bmc_big_storage"]
+        assert parent_d["identifiers"] != bmc_d["identifiers"]
+
+        assert parent_d["name"] == "big-storage"
+        assert bmc_d["name"] == "bmc.big-storage"
+
+    def test_hostname_with_subdomain(self):
+        """Hosts with VLAN subdomain in hostname get correct node_id."""
+        host = _make_host(
+            machine_name="au-plug-1",
+            hostname="au-plug-1.iot",
+        )
+        d = _device_dict(host)
+        assert d["identifiers"] == ["gdoc2netcfg_au_plug_1_iot"]
+        assert d["name"] == "au-plug-1.iot"
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +318,7 @@ class TestDiscoveryPayload:
         host = _make_host()
         dev = _device_dict(host)
         avail, mode = _availability_list(host)
-        nid = _node_id(host.machine_name)
+        nid = _node_id(host.hostname)
         state_topic = f"{STATE_PREFIX}/{nid}/connectivity/state"
 
         payload = discovery_payload(
@@ -304,7 +343,7 @@ class TestDiscoveryPayload:
         host = _make_host()
         dev = _device_dict(host)
         avail, mode = _availability_list(host)
-        nid = _node_id(host.machine_name)
+        nid = _node_id(host.hostname)
 
         payload = discovery_payload(
             HOST_TRACKER, nid, dev, avail, mode,
@@ -325,7 +364,7 @@ class TestDiscoveryPayload:
         host = _make_host()
         dev = _device_dict(host)
         avail, mode = _availability_list(host)
-        nid = _node_id(host.machine_name)
+        nid = _node_id(host.hostname)
 
         payload = discovery_payload(
             HOST_STACK_MODE, nid, dev, avail, mode,
@@ -345,7 +384,7 @@ class TestDiscoveryPayload:
         host = _make_host()
         dev = _device_dict(host)
         avail, mode = _availability_list(host)
-        nid = _node_id(host.machine_name)
+        nid = _node_id(host.hostname)
 
         payload = discovery_payload(
             rtt, nid, dev, avail, mode,
@@ -368,7 +407,7 @@ class TestDiscoveryPayload:
             {"topic": "stat/plug/POWER", "payload_available": "ON",
              "payload_not_available": "OFF"},
         ]
-        nid = _node_id(host.machine_name)
+        nid = _node_id(host.hostname)
 
         payload = discovery_payload(
             HOST_CONNECTIVITY, nid, dev, avail, "all",
@@ -414,7 +453,7 @@ class TestBuildHostState:
         hr = _make_reachability()
         states = build_host_state(host, hr)
 
-        nid = _node_id(host.machine_name)
+        nid = _node_id(host.hostname)
         assert states[f"{STATE_PREFIX}/{nid}/connectivity/state"] == "ON"
         assert states[f"{STATE_PREFIX}/{nid}/tracker/state"] == "home"
         assert states[f"{STATE_PREFIX}/{nid}/stack_mode/state"] == "dual-stack"
@@ -424,7 +463,7 @@ class TestBuildHostState:
         hr = _make_reachability(received_v4=0, received_v6=0, rtt_v4=None, rtt_v6=None)
         states = build_host_state(host, hr)
 
-        nid = _node_id(host.machine_name)
+        nid = _node_id(host.hostname)
         assert states[f"{STATE_PREFIX}/{nid}/connectivity/state"] == "OFF"
         assert states[f"{STATE_PREFIX}/{nid}/tracker/state"] == "not_home"
         assert states[f"{STATE_PREFIX}/{nid}/stack_mode/state"] == "unreachable"
@@ -434,7 +473,7 @@ class TestBuildHostState:
         hr = _make_reachability(received_v6=0, rtt_v6=None)
         states = build_host_state(host, hr)
 
-        nid = _node_id(host.machine_name)
+        nid = _node_id(host.hostname)
         assert states[f"{STATE_PREFIX}/{nid}/stack_mode/state"] == "ipv4-only"
 
     def test_tracker_attributes_json(self):
@@ -442,7 +481,7 @@ class TestBuildHostState:
         hr = _make_reachability()
         states = build_host_state(host, hr)
 
-        nid = _node_id(host.machine_name)
+        nid = _node_id(host.hostname)
         attrs_json = states[f"{STATE_PREFIX}/{nid}/tracker/attributes"]
         attrs = json.loads(attrs_json)
         assert attrs["host_name"] == "big-storage"
@@ -461,7 +500,7 @@ class TestBuildInterfaceState:
 
         states = build_interface_state(host, vi, ir)
 
-        nid = _node_id(host.machine_name)
+        nid = _node_id(host.hostname)
         assert states[f"{STATE_PREFIX}/{nid}/eth0/connectivity/state"] == "ON"
         assert states[f"{STATE_PREFIX}/{nid}/eth0/stack_mode/state"] == "dual-stack"
         assert states[f"{STATE_PREFIX}/{nid}/eth0/ipv4/state"] == "10.1.5.10"
@@ -479,7 +518,7 @@ class TestBuildInterfaceState:
 
         states = build_interface_state(host, vi, ir)
 
-        nid = _node_id(host.machine_name)
+        nid = _node_id(host.hostname)
         assert states[f"{STATE_PREFIX}/{nid}/eth0/connectivity/state"] == "OFF"
         assert states[f"{STATE_PREFIX}/{nid}/eth0/rtt/state"] == ""
 
@@ -492,7 +531,7 @@ class TestBuildInterfaceState:
 
         states = build_interface_state(host, vi, ir)
 
-        nid = _node_id(host.machine_name)
+        nid = _node_id(host.hostname)
         attrs = json.loads(states[f"{STATE_PREFIX}/{nid}/eth0/rtt/attributes"])
         assert "10.1.5.10" in attrs
         assert attrs["10.1.5.10"]["transmitted"] == 10

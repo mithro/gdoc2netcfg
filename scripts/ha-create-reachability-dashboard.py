@@ -62,16 +62,14 @@ SORT_VIEWS = ["by-name", "by-status", "by-rtt"]
 # ---------------------------------------------------------------------------
 
 def _node_id(name: str) -> str:
-    """Derive MQTT node_id from a name.
+    """Derive MQTT node_id from a host's hostname.
 
     Replaces non-alphanumeric characters with underscores.
-    Example: "big-storage" -> "big_storage"
+    Must match mqtt_ha.py's _node_id() — both use host.hostname.
 
-    Note: mqtt_ha.py uses machine_name here.  For BMC hosts the
-    machine_name collides with the parent (both are "big-storage"),
-    so the dashboard uses hostname instead (e.g. "bmc.big-storage"
-    -> "bmc_big_storage").  This mismatch means BMC entity IDs in
-    the dashboard won't resolve until mqtt_ha.py is also updated.
+    Example: "big-storage" -> "big_storage"
+    Example: "bmc.big-storage" -> "bmc_big_storage"
+    Example: "au-plug-1.iot" -> "au_plug_1_iot"
     """
     return re.sub(r"[^a-zA-Z0-9]", "_", name).lower()
 

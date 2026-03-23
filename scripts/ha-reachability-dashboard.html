@@ -90,25 +90,55 @@ function makeLink(href, text, bold) {
   return a;
 }
 
-function sortHosts(hosts) {
-  return hosts.slice().sort(function(a, b) {
-    var va, vb;
-    if (currentSort === "status") {
+function bestIface(h) {
+  // Return the first interface (used for single-interface host sort values)
+  return h.interfaces[0] || {};
+}
+
+function bestRtt(h) {
+  var m = Infinity;
+  for (var i = 0; i < h.interfaces.length; i++)
+    if (h.interfaces[i].rtt !== null && h.interfaces[i].rtt < m) m = h.interfaces[i].rtt;
+  return m === Infinity ? null : m;
+}
+
+function sortVal(h, col) {
+  var f = bestIface(h);
+  switch (col) {
+    case "status":
       var o = {on: 0, off: 1, down: 2};
-      va = o[a.status] !== undefined ? o[a.status] : 2;
-      vb = o[b.status] !== undefined ? o[b.status] : 2;
-    } else if (currentSort === "rtt") {
-      var br = function(h) {
-        var m = Infinity;
-        for (var i = 0; i < h.interfaces.length; i++)
-          if (h.interfaces[i].rtt !== null && h.interfaces[i].rtt < m) m = h.interfaces[i].rtt;
-        return m;
-      };
-      va = br(a); vb = br(b);
-    } else {
-      va = a.hostname; vb = b.hostname;
-    }
-    return va < vb ? -1 * sortDir : va > vb ? 1 * sortDir : 0;
+      return o[h.status] !== undefined ? o[h.status] : 2;
+    case "name": return h.hostname;
+    case "stack":
+      var so = {dual: 0, v4: 1, v6: 2, down: 3};
+      return so[h.stack] !== undefined ? so[h.stack] : 3;
+    case "ipv4":
+      // Sort by numeric IP: convert "10.1.90.51" to a comparable number
+      var parts = (f.ipv4 || "").split(".");
+      return parts.length === 4
+        ? ((+parts[0]) * 16777216 + (+parts[1]) * 65536 + (+parts[2]) * 256 + (+parts[3]))
+        : 0;
+    case "ipv6": return f.ipv6_suffix || "";
+    case "mac": return f.mac || "";
+    case "rtt":
+      var r = bestRtt(h);
+      return r !== null ? r : Infinity;
+    case "location": return h.location || "";
+    case "controls": return h.ctrl_name || "";
+    default: return h.hostname;
+  }
+}
+
+function sortHosts(hosts) {
+  var col = currentSort;
+  return hosts.slice().sort(function(a, b) {
+    var va = sortVal(a, col), vb = sortVal(b, col);
+    if (va < vb) return -1 * sortDir;
+    if (va > vb) return 1 * sortDir;
+    // Stable secondary sort by hostname
+    if (a.hostname < b.hostname) return -1;
+    if (a.hostname > b.hostname) return 1;
+    return 0;
   });
 }
 
@@ -163,9 +193,9 @@ function render() {
     var thead = document.createElement("thead");
     var htr = document.createElement("tr");
     var cols = [
-      ["St","status"],["",null],["Name","name"],["Stack",null],
-      ["IPv4",null],["IPv6",null],["MAC",null],["RTT","rtt"],
-      ["Location",null],["Controls",null]
+      ["St","status"],["",null],["Name","name"],["Stack","stack"],
+      ["IPv4","ipv4"],["IPv6","ipv6"],["MAC","mac"],["RTT","rtt"],
+      ["Location","location"],["Controls","controls"]
     ];
     for (var ci = 0; ci < cols.length; ci++) {
       var th = document.createElement("th");

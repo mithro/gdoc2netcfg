@@ -543,11 +543,20 @@ def _build_dashboard_config(
                     controls_map, ipv6_prefix, rtt_cache,
                 ))
 
+        # panel: true makes the single card fill the full viewport width.
+        # We wrap all cards in a vertical-stack so panel mode works with
+        # multiple cards.
         views.append({
             "title": view_title,
             "path": sort_key,
             "icon": icon,
-            "cards": cards,
+            "panel": True,
+            "cards": [
+                {
+                    "type": "vertical-stack",
+                    "cards": cards,
+                },
+            ],
         })
 
     return {"views": views}

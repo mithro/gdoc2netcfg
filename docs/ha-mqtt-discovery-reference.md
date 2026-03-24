@@ -525,6 +525,35 @@ When the plug is OFF, Device B's entities become unavailable. This is a conventi
 does not natively understand "powers" relationships, but the availability system can model
 the practical effect.
 
+### Why gdoc2netcfg Does NOT Use Plug-in-Availability
+
+gdoc2netcfg intentionally does NOT link Tasmota plug POWER topics to entity availability.
+There are three problems with the pattern above in practice:
+
+1. **Retained message gap:** The Tasmota `stat/{topic}/POWER` topic is not always retained.
+   On HA restart, if the broker has no retained POWER message, HA never receives the
+   "available" payload and marks the entity as permanently "unavailable" — even when the
+   device is reachable.
+
+2. **State collapse:** HA's availability is binary (available/unavailable).  Linking power
+   to availability collapses "device is powered off" and "device is actually broken" into
+   the same "unavailable" state.  Network operators need to distinguish these cases.
+
+3. **Limited scope:** The pattern only works for Tasmota plugs.  PoE-powered devices
+   (controlled via HA switch entities on managed switches) use a different topic structure
+   and cannot be linked the same way.
+
+Instead, gdoc2netcfg uses bridge-only availability (the MQTT publisher's own online/offline
+topic) and implements power-aware status in the dashboard JavaScript.  The dashboard has
+live WebSocket access to both connectivity AND plug/PoE state, enabling a four-state model:
+
+| Reachable | Power | Status | Icon | Meaning |
+|-----------|-------|--------|------|---------|
+| Yes | On/Unknown | on | green | Normal operation |
+| Yes | Off | misconfigured | orange | Warning — plug says off but device responds |
+| No | On/Unknown | off | red | Down — needs attention |
+| No | Off | powered-off | white | Expected — device powered down |
+
 
 ## 5. Device Tracker vs Binary Sensor for Presence
 

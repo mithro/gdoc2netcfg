@@ -358,7 +358,8 @@ function render() {
     for (var hi = 0; hi < hosts.length; hi++) {
       var h = hosts[hi];
       var hs = hostStatus(h), hk = hostStack(h);
-      var cls = {on:"", off:"off", "powered-off":"powered-off", misconfigured:"misconfigured"}[hs] || "down";
+      var CLS_MAP = {on:"", off:"off", "powered-off":"powered-off", misconfigured:"misconfigured"};
+      var cls = hs in CLS_MAP ? CLS_MAP[hs] : "down";
       var multi = h.interfaces.length > 1;
 
       if (multi) {

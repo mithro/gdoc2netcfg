@@ -179,28 +179,29 @@ def _build_controls_map(
                 "type": "plug",
             })
 
-    # PoE port controls
-    desc_re = re.compile(r'^sensor\.(.+)_port_(\d+)_description$')
-    poe_re = re.compile(r'^sensor\.(.+)_port_(\d+)_poe_status$')
-    descriptions: dict[tuple[str, str], str] = {}
-    poe_statuses: dict[tuple[str, str], str] = {}
+    # Switch port controls — link status, speed, PoE
+    # Collect all per-port entity data from HA, keyed by (switch, port).
+    # The JS reads live state via WebSocket using a port prefix to
+    # construct entity_ids (sensor.{pp}_link, sensor.{pp}_speed, etc.).
+    port_re = re.compile(
+        r"^(?:sensor|switch|button)\.(.+)_port_(\d+)_(.+)$",
+    )
+    port_data: dict[tuple[str, str], dict[str, str]] = {}
     for e in ha_states:
-        m = desc_re.match(e["entity_id"])
-        if m and e["state"].strip():
-            descriptions[(m.group(1), m.group(2))] = e["state"].strip()
-        m2 = poe_re.match(e["entity_id"])
-        if m2:
-            poe_statuses[(m2.group(1), m2.group(2))] = e["state"]
+        m = port_re.match(e["entity_id"])
+        if m:
+            sw, port, suffix = m.groups()
+            port_data.setdefault((sw, port), {})[suffix] = e["state"]
 
     iface_prefixes = ("eth0.", "eth1.", "eth2.", "eno1.", "enp", "lan.", "en")
-    for (sw, port), desc in descriptions.items():
-        poe_st = poe_statuses.get((sw, port), "")
-        # Include ALL PoE ports that have a status, regardless of current
-        # PoE state.  The dashboard JS reads the live PoE switch entity
-        # state via WebSocket — it doesn't need the generation-time status.
-        # Only skip ports with no PoE status data at all (no sensor entity).
-        if not poe_st:
+    for (sw, port), data in port_data.items():
+        desc = data.get("description", "").strip()
+        if not desc:
             continue
+        # Must have link or PoE data to be useful
+        if "link" not in data and "poe_force" not in data:
+            continue
+
         hostname = desc
         for pfx in iface_prefixes:
             if hostname.startswith(pfx) and "." in hostname[len(pfx):]:
@@ -209,13 +210,19 @@ def _build_controls_map(
             elif hostname.startswith(pfx):
                 hostname = hostname[len(pfx):]
                 break
-        poe_eid = f"switch.{sw}_port_{port}_poe"
-        controls_map.setdefault(hostname, []).append({
+
+        has_poe = "poe_force" in data
+        entry: dict = {
             "name": sw.replace("_", "-") + f" p{port}",
             "url": "",
-            "entity_id": poe_eid,
-            "type": "poe",
-        })
+            "type": "port",
+            "pp": f"{sw}_port_{port}",
+        }
+        # entity_id is the PoE control for getPowerState(); empty if no PoE
+        entry["entity_id"] = (
+            f"switch.{sw}_port_{port}_poe_force" if has_poe else ""
+        )
+        controls_map.setdefault(hostname, []).append(entry)
 
     return controls_map
 

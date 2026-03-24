@@ -53,6 +53,7 @@ tr.misconfigured { background: rgba(255,165,0,0.12); }
 code { font-size: 0.95em; } a { color: var(--link); } a:visited { color: var(--link); }
 .st { font-size: 1.1em; }
 .fold { cursor: pointer; user-select: none; font-size: 0.8em; color: var(--text2); }
+.poe-toggle { cursor: pointer; user-select: none; } .poe-toggle:hover { filter: brightness(1.3); }
 .fold::after { content: "\25b6"; }
 tr.host-row:not(.folded) > .fold::after { content: "\25bc"; }
 .stack { font-weight: 600; } .sort-active { font-weight: bold; }
@@ -124,20 +125,38 @@ function setStatus(txt) {
 
 function st(entityId) { return states[entityId] || "unavailable"; }
 
+function fmtSpeed(v) {
+  if (!v || v === "unavailable" || v === "unknown" || v === "0") return "";
+  var n = parseInt(v, 10);
+  if (isNaN(n) || n <= 0) return "";
+  if (n >= 1000) return (n / 1000) + "G";
+  return n + "M";
+}
+
+function callService(domain, service, entityId) {
+  if (!connected || !ws) return;
+  ws.send(JSON.stringify({id: msgId++, type: "call_service", domain: domain, service: service, target: {entity_id: entityId}}));
+}
+
 // --- Derived values from live state ---
 
 function getPowerState(h) {
   // Check all control entity_ids for this host.
+  // Skip controls without entity_id (non-PoE port controls).
   // Any "on" → power is on (any single source keeps device running).
   // All "off" → power is off (all sources confirmed off).
   // Otherwise → unknown (no controls, or state not yet received).
   if (!h.controls || !h.controls.length) return "unknown";
-  var anyOn = false, allOff = true;
+  var anyOn = false, allOff = true, hasPower = false;
   for (var i = 0; i < h.controls.length; i++) {
-    var cst = st(h.controls[i].entity_id);
+    var eid = h.controls[i].entity_id;
+    if (!eid) continue;
+    hasPower = true;
+    var cst = st(eid);
     if (cst === "on") anyOn = true;
     if (cst !== "off") allOff = false;
   }
+  if (!hasPower) return "unknown";
   if (anyOn) return "on";
   if (allOff) return "off";
   return "unknown";
@@ -305,12 +324,45 @@ function addCtrlCell(tr, h) {
   for (var i = 0; i < h.controls.length; i++) {
     if (i > 0) td.appendChild(document.createTextNode(", "));
     var c = h.controls[i];
-    var cst = st(c.entity_id);
-    var icon = (cst === "on" ? "\u{1f7e2}" : cst === "off" ? "\u{1f534}" : "\u26ab");
-    icon += (c.type === "poe" ? "\u26a1" : "\u{1f50c}");
-    td.appendChild(document.createTextNode(icon));
-    if (c.url) { var a = document.createElement("a"); a.href = c.url; a.textContent = c.name; td.appendChild(a); }
-    else td.appendChild(document.createTextNode(c.name));
+    if (c.type === "plug") {
+      // Tasmota plug: 🟢🔌name or 🔴🔌name
+      var cst = st(c.entity_id);
+      var icon = (cst === "on" ? "\u{1f7e2}" : cst === "off" ? "\u{1f534}" : "\u26ab") + "\u{1f50c}";
+      td.appendChild(document.createTextNode(icon));
+      if (c.url) { var a = document.createElement("a"); a.href = c.url; a.textContent = c.name; td.appendChild(a); }
+      else td.appendChild(document.createTextNode(c.name));
+    } else if (c.type === "port") {
+      // Switch port: link icon + speed + PoE icon + power + name
+      var pp = c.pp;
+      var lnk = st("sensor." + pp + "_link");
+      var spd = fmtSpeed(st("sensor." + pp + "_speed"));
+      td.appendChild(document.createTextNode(lnk === "up" ? "\u{1f7e2}" : lnk === "down" ? "\u{1f534}" : "\u26ab"));
+      if (spd) { var s = document.createElement("small"); s.textContent = spd; td.appendChild(s); }
+      if (c.entity_id) {
+        var poeSt = st(c.entity_id);
+        var poe = document.createElement("span");
+        poe.className = "poe-toggle";
+        poe.textContent = "\u26a1";
+        poe.title = (poeSt === "on" ? "PoE on" : "PoE off") + " \u2014 click to toggle";
+        if (poeSt !== "on") poe.style.opacity = "0.4";
+        poe.addEventListener("click", (function(eid) {
+          return function(ev) { ev.stopPropagation(); callService("switch", "toggle", eid); };
+        })(c.entity_id));
+        td.appendChild(poe);
+        var pw = st("sensor." + pp + "_poe_power");
+        if (pw && pw !== "unavailable" && pw !== "unknown" && parseFloat(pw) > 0) {
+          var pwSpn = document.createElement("small");
+          pwSpn.textContent = parseFloat(pw).toFixed(1) + "W";
+          td.appendChild(pwSpn);
+        }
+      }
+      td.appendChild(document.createTextNode(" " + c.name));
+    } else {
+      // Legacy fallback
+      var cst = st(c.entity_id);
+      var icon = (cst === "on" ? "\u{1f7e2}" : cst === "off" ? "\u{1f534}" : "\u26ab") + "\u26a1";
+      td.appendChild(document.createTextNode(icon + c.name));
+    }
   }
   tr.appendChild(td);
 }

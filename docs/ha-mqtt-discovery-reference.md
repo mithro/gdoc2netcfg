@@ -143,9 +143,16 @@ device declares `"connections": [["mac", "aa:bb:cc:dd:ee:ff"]]` and a different 
 (e.g., UniFi) also knows a device with that MAC, HA may merge them into one device page.
 
 **Recommendation for network monitoring:** Use both. Set `identifiers` to a namespaced
-string like `"gdoc2netcfg_{machine_name}"` for guaranteed MQTT-internal grouping. Add
+string like `"gdoc2netcfg_{node_id}"` for guaranteed MQTT-internal grouping. Add
 `connections` with the MAC address if you want cross-integration device merging (e.g.,
 merging with Fritz!Box or UniFi device tracker entries for the same physical device).
+
+> **Implementation note:** `node_id` is derived from `host.hostname` (not
+> `host.machine_name`) via `_node_id()` which replaces non-alphanumeric chars with
+> underscores. This is critical because BMC hosts share `machine_name` with their parent
+> (e.g. both `big-storage` and `bmc.big-storage` have `machine_name="big-storage"`).
+> Using `hostname` ensures unique entity IDs. Entity IDs include the VLAN subdomain,
+> e.g. `gdoc2netcfg_au_plug_1_iot` not `gdoc2netcfg_au_plug_1`.
 
 ```json
 {
@@ -604,8 +611,11 @@ stable across config changes.
 ### The Solution
 
 1. **Set `unique_id` to a permanent, never-changing identifier.** Base it on something
-   immutable like `{integration_name}_{machine_name}_{entity_type}`. Example:
-   `"gdoc2netcfg_big-storage_connectivity"`
+   immutable like `{integration_name}_{node_id}_{entity_type}` where `node_id` is
+   derived from `host.hostname`. Example:
+   `"gdoc2netcfg_big_storage_connectivity"` (host `big-storage`),
+   `"gdoc2netcfg_bmc_big_storage_connectivity"` (host `bmc.big-storage`),
+   `"gdoc2netcfg_au_plug_1_iot_connectivity"` (host `au-plug-1.iot`)
 
 2. **Keep `unique_id` the same forever.** Even if the device display name changes, the
    `unique_id` anchors the entity in the registry.

@@ -1825,6 +1825,9 @@ def cmd_tasmota_show(args: argparse.Namespace) -> int:
         print(f"  MQTT Port:    {data.get('mqtt_port', '?')}")
         print(f"  MQTT Topic:   {data.get('mqtt_topic', '?')}")
         print(f"  MQTT Client:  {data.get('mqtt_client', '?')}")
+        mqtt_count = data.get("mqtt_count", 0)
+        mqtt_warn = "  ** MQTT DISCONNECTED **" if mqtt_count == 0 else ""
+        print(f"  MQTT Count:   {mqtt_count}{mqtt_warn}")
 
     if unknown:
         print(f"\n{'='*60}")

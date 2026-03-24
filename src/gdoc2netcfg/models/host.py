@@ -282,6 +282,9 @@ class TasmotaData:
         wifi_signal: WiFi signal strength in dBm.
         uptime: Device uptime string (e.g. "3T12:34:56").
         module: Hardware module type string.
+        mqtt_count: Number of successful MQTT connections since boot.
+            Zero means the device has never connected to the MQTT broker,
+            indicating a configuration problem (e.g. wrong credentials).
         controls: Hostnames this device controls, parsed from spreadsheet.
     """
 
@@ -301,6 +304,7 @@ class TasmotaData:
     wifi_signal: int = 0
     uptime: str = ""
     module: str = ""
+    mqtt_count: int = 0
     controls: tuple[str, ...] = ()
 
 

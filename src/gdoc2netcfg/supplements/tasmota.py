@@ -70,7 +70,7 @@ def _parse_tasmota_status(data: dict) -> dict:
       StatusNET.Hostname, StatusNET.Mac, StatusNET.IPAddress
       StatusMQT.MqttHost, MqttPort, MqttClient, MqttUser
       StatusFWR.Version
-      StatusSTS.UptimeSec, Uptime
+      StatusSTS.UptimeSec, Uptime, MqttCount
       StatusSTS.Wifi.SSId, RSSI, Signal
 
     Args:
@@ -108,6 +108,7 @@ def _parse_tasmota_status(data: dict) -> dict:
         "wifi_signal": wifi.get("Signal", 0),
         "uptime": sts.get("Uptime", ""),
         "module": status.get("Module", ""),
+        "mqtt_count": sts.get("MqttCount", 0),
     }
 
 
@@ -297,6 +298,7 @@ def enrich_hosts_with_tasmota(
             wifi_signal=info.get("wifi_signal", 0),
             uptime=info.get("uptime", ""),
             module=info.get("module", ""),
+            mqtt_count=info.get("mqtt_count", 0),
             controls=controls,
         )
 

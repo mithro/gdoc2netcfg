@@ -372,7 +372,9 @@ function render() {
         foldTd.addEventListener("click", toggleHost);
         addCell(tr, makeLink(hostHref(h), h.hostname, true));
         addCell(tr, STACK_LABEL[hk] || "\u2014", "stack");
-        addCell(tr, ""); addCell(tr, ""); addCell(tr, ""); addCell(tr, "");
+        addCell(tr, makeLink("http://ipv4." + h.fqdn, "ipv4." + h.hostname));
+        addCell(tr, makeLink("http://ipv6." + h.fqdn, "ipv6." + h.hostname));
+        addCell(tr, ""); addCell(tr, "");
         addCell(tr, h.location || "\u2014");
         addCtrlCell(tr, h);
         tbody.appendChild(tr);

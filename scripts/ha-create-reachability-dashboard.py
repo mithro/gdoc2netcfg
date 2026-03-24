@@ -193,22 +193,7 @@ def _build_controls_map(
             sw, port, suffix = m.groups()
             port_data.setdefault((sw, port), {})[suffix] = e["state"]
 
-    # Regex to strip interface-name prefixes from port descriptions.
-    # Matches technical interface names (eth0, 10g1, oob2, 1/0/49,
-    # gi27, lag, eth-local, etc.) but NOT hostname components like
-    # bmc, openmesh, or device names.
-    _iface_pfx_re = re.compile(
-        r"^(?:"
-        r"eth\d+|eth-\w+"               # eth0, eth9, eth-local, eth-uplink
-        r"|eno\d+|enp\w+|en\d+"         # eno1, enp3s0, en1
-        r"|lan\d*"                       # lan, lan0
-        r"|(?:10|25|40|100)g\d+"         # 10g1, 25g1, 40g1, 100g1
-        r"|oob\d+"                       # oob1, oob2
-        r"|gi\d+|te\d+|xe\d+|fo\d+"     # gi27, te1 (Cisco/Juniper)
-        r"|lag\d*"                       # lag, lag1
-        r"|\d+/\d+(?:/\d+)*"            # 1/0/49 (slot/port)
-        r")\.",                          # followed by dot
-    )
+    iface_prefixes = ("eth0.", "eth1.", "eth2.", "eno1.", "enp", "lan.", "en")
     for (sw, port), data in port_data.items():
         desc = data.get("description", "").strip()
         if not desc:
@@ -217,8 +202,14 @@ def _build_controls_map(
         if "link" not in data and "poe_force" not in data:
             continue
 
-        m = _iface_pfx_re.match(desc)
-        hostname = desc[m.end():] if m else desc
+        hostname = desc
+        for pfx in iface_prefixes:
+            if hostname.startswith(pfx) and "." in hostname[len(pfx):]:
+                hostname = hostname.split(".", 1)[1]
+                break
+            elif hostname.startswith(pfx):
+                hostname = hostname[len(pfx):]
+                break
 
         has_poe = "poe_force" in data
         entry: dict = {

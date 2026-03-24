@@ -154,8 +154,14 @@ def check_ha_status(
                 )
             else:
                 expected = f"switch.{slug}"
+                hint = ""
+                if (
+                    host.tasmota_data is not None
+                    and host.tasmota_data.mqtt_count == 0
+                ):
+                    hint = "  (MqttCount=0: device not connected to MQTT)"
                 print(
-                    f"  {host.hostname:30s}  {expected:40s}  NOT FOUND",
+                    f"  {host.hostname:30s}  {expected:40s}  NOT FOUND{hint}",
                     file=sys.stderr,
                 )
 

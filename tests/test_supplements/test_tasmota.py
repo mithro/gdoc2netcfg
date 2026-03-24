@@ -1425,6 +1425,34 @@ class TestCheckHAStatus:
         assert results["au-plug-10"]["exists"] is False
 
     @patch("gdoc2netcfg.supplements.tasmota_ha._fetch_all_states")
+    def test_missing_entity_mqtt_disconnected_hint(self, mock_fetch, capsys):
+        """NOT FOUND with MqttCount=0 should include MQTT hint in verbose output."""
+        mock_fetch.return_value = []
+
+        host = _make_host(hostname="au-plug-10")
+        host.tasmota_data = _make_tasmota_data(mqtt_topic="au-plug-10", mqtt_count=0)
+        ha_config = HomeAssistantConfig(url="http://ha:8123", token="test")
+
+        check_ha_status([host], ha_config, verbose=True)
+        captured = capsys.readouterr()
+        assert "NOT FOUND" in captured.err
+        assert "MqttCount=0" in captured.err
+
+    @patch("gdoc2netcfg.supplements.tasmota_ha._fetch_all_states")
+    def test_missing_entity_mqtt_connected_no_hint(self, mock_fetch, capsys):
+        """NOT FOUND with MqttCount > 0 should not include MQTT hint."""
+        mock_fetch.return_value = []
+
+        host = _make_host(hostname="au-plug-10")
+        host.tasmota_data = _make_tasmota_data(mqtt_topic="au-plug-10", mqtt_count=3)
+        ha_config = HomeAssistantConfig(url="http://ha:8123", token="test")
+
+        check_ha_status([host], ha_config, verbose=True)
+        captured = capsys.readouterr()
+        assert "NOT FOUND" in captured.err
+        assert "MqttCount" not in captured.err
+
+    @patch("gdoc2netcfg.supplements.tasmota_ha._fetch_all_states")
     def test_skips_hosts_without_tasmota_data(self, mock_fetch):
         host = _make_host(hostname="au-plug-10")
         # No tasmota_data

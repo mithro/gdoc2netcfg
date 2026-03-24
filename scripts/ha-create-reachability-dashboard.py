@@ -195,7 +195,11 @@ def _build_controls_map(
     iface_prefixes = ("eth0.", "eth1.", "eth2.", "eno1.", "enp", "lan.", "en")
     for (sw, port), desc in descriptions.items():
         poe_st = poe_statuses.get((sw, port), "")
-        if poe_st not in ("delivering", "searching"):
+        # Include ALL PoE ports that have a status, regardless of current
+        # PoE state.  The dashboard JS reads the live PoE switch entity
+        # state via WebSocket — it doesn't need the generation-time status.
+        # Only skip ports with no PoE status data at all (no sensor entity).
+        if not poe_st:
             continue
         hostname = desc
         for pfx in iface_prefixes:

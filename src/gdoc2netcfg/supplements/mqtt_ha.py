@@ -258,17 +258,21 @@ def _device_dict(host: Host) -> dict:
 
 def _availability_list(
     host: Host,
-    hosts_by_name: dict[str, Host] | None = None,
 ) -> tuple[list[dict], str | None]:
     """Build availability list for an entity.
 
     Returns (availability_list, availability_mode).
-    The base availability is always the bridge topic.
-    If the host is controlled by a Tasmota plug, adds the plug's
-    power state topic so HA shows "unavailable" when plug is off.
+    The availability list contains only the bridge topic.
 
-    Hosts that ARE Tasmota plugs (have a Controls column) are skipped
-    for the reverse lookup — they control others, they aren't controlled.
+    We intentionally do NOT link Tasmota plug POWER topics here.
+    The POWER topic isn't always retained, so HA can't determine
+    availability on restart, marking controlled hosts as permanently
+    "unavailable".  It also collapses "powered off" and "actually
+    broken" into HA's single "unavailable" state.  Power-aware
+    status is instead handled in the dashboard JS, which has live
+    access to both connectivity AND plug/PoE state via HA WebSocket
+    and can distinguish a four-state model (on, off, powered-off,
+    misconfigured).
     """
     avail: list[dict] = [
         {
@@ -277,28 +281,8 @@ def _availability_list(
             "payload_not_available": "offline",
         },
     ]
-    mode = None
 
-    # Only look for a controlling plug if this host doesn't have a Controls
-    # entry itself (plugs control other devices, they aren't controlled).
-    has_controls = bool(host.extra.get("Controls", "").strip())
-    if not has_controls and hosts_by_name:
-        # Check if any Tasmota device lists this host in its controls
-        for other_host in hosts_by_name.values():
-            if other_host.tasmota_data is None:
-                continue
-            if host.machine_name in other_host.tasmota_data.controls:
-                # This host is powered by other_host's Tasmota plug
-                mqtt_topic = other_host.tasmota_data.mqtt_topic
-                avail.append({
-                    "topic": f"stat/{mqtt_topic}/POWER",
-                    "payload_available": "ON",
-                    "payload_not_available": "OFF",
-                })
-                mode = "all"
-                break
-
-    return avail, mode
+    return avail, None
 
 
 def discovery_payload(
@@ -485,7 +469,6 @@ def _publish_hosts_to_client(
     client: mqtt.Client,
     hosts: list[Host],
     reachability: dict[str, HostReachability],
-    hosts_by_name: dict[str, Host],
     verbose: bool = False,
 ) -> tuple[int, int, int]:
     """Publish discovery + state for all hosts to an MQTT client.
@@ -529,7 +512,7 @@ def _publish_hosts_to_client(
         nid = _node_id(host.hostname)
         hr = reachability[host.hostname]
         dev_dict = _device_dict(host)
-        avail_list, avail_mode = _availability_list(host, hosts_by_name)
+        avail_list, avail_mode = _availability_list(host)
 
         # Host-level discovery
         for entity in [HOST_CONNECTIVITY, HOST_TRACKER, HOST_STACK_MODE]:
@@ -617,8 +600,6 @@ def publish_all_hosts(
 
     Returns the number of hosts published.
     """
-    hosts_by_name = {h.machine_name: h for h in hosts}
-
     client = mqtt.Client(
         mqtt.CallbackAPIVersion.VERSION2,
         client_id="gdoc2netcfg-reachability",
@@ -639,7 +620,7 @@ def publish_all_hosts(
 
     try:
         published, discovery_count, state_count = _publish_hosts_to_client(
-            client, hosts, reachability, hosts_by_name,
+            client, hosts, reachability,
             verbose=verbose,
         )
 
@@ -720,7 +701,6 @@ def run_daemon(
 
     try:
         _, hosts, _inventory, _result = _build_pipeline(config)
-        hosts_by_name = {h.machine_name: h for h in hosts}
         cache_path = Path(config.cache.directory) / "reachability.json"
 
         cycle = 0
@@ -742,7 +722,7 @@ def run_daemon(
 
             # Publish discovery + state using shared helper
             published, disc, state = _publish_hosts_to_client(
-                client, hosts, reachability, hosts_by_name,
+                client, hosts, reachability,
                 verbose=verbose,
             )
 

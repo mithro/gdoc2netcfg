@@ -176,6 +176,7 @@ HOST_STACK_MODE = EntityDef(
     name="Stack mode",
     entity_category="diagnostic",
     icon="mdi:ip-network",
+    expire_after=600,
 )
 
 
@@ -198,6 +199,7 @@ def _iface_entities(iface_slug: str, iface_name: str | None) -> list[EntityDef]:
             name=f"{display} stack mode",
             entity_category="diagnostic",
             icon="mdi:ip-network",
+            expire_after=600,
         ),
         EntityDef(
             component="sensor",
@@ -205,6 +207,7 @@ def _iface_entities(iface_slug: str, iface_name: str | None) -> list[EntityDef]:
             name=f"{display} IPv4",
             entity_category="diagnostic",
             icon="mdi:ip-network",
+            expire_after=600,
         ),
         EntityDef(
             component="sensor",
@@ -212,6 +215,7 @@ def _iface_entities(iface_slug: str, iface_name: str | None) -> list[EntityDef]:
             name=f"{display} MAC",
             entity_category="diagnostic",
             icon="mdi:ethernet",
+            expire_after=600,
         ),
         EntityDef(
             component="sensor",
@@ -222,6 +226,7 @@ def _iface_entities(iface_slug: str, iface_name: str | None) -> list[EntityDef]:
             unit="ms",
             entity_category="diagnostic",
             suggested_display_precision=1,
+            expire_after=600,
         ),
     ]
 

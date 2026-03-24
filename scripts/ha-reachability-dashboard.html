@@ -48,6 +48,8 @@ td { padding: 3px 6px; white-space: nowrap; overflow: hidden; text-overflow: ell
 tr.host-row { border-top: 2px solid var(--div); }
 tr.iface-row td:nth-child(3) { padding-left: 20px; }
 tr.off { opacity: 0.5; } tr.down { opacity: 0.35; }
+tr.powered-off { opacity: 0.45; }
+tr.misconfigured { background: rgba(255,165,0,0.12); }
 code { font-size: 0.95em; } a { color: var(--link); } a:visited { color: var(--link); }
 .st { font-size: 1.1em; }
 .fold { cursor: pointer; user-select: none; font-size: 0.8em; color: var(--text2); }
@@ -67,7 +69,7 @@ var DOMAIN = "__DOMAIN__";
 var HA_WS = "__HA_WS_URL__";
 var HA_TOKEN = "__HA_TOKEN__";
 
-var ST_ICON = {on: "\u{1f7e2}", off: "\u{1f534}"};
+var ST_ICON = {on: "\u{1f7e2}", off: "\u{1f534}", "powered-off": "\u26aa", misconfigured: "\u{1f7e0}"};
 var STACK_LABEL = {dual: "4\xb76", v4: "4", v6: "6", down: "\u2014"};
 var states = {};  // entity_id -> state string
 var currentSort = "name", sortDir = 1;
@@ -124,9 +126,34 @@ function st(entityId) { return states[entityId] || "unavailable"; }
 
 // --- Derived values from live state ---
 
+function getPowerState(h) {
+  // Check all control entity_ids for this host.
+  // Any "on" → power is on (any single source keeps device running).
+  // All "off" → power is off (all sources confirmed off).
+  // Otherwise → unknown (no controls, or state not yet received).
+  if (!h.controls || !h.controls.length) return "unknown";
+  var anyOn = false, allOff = true;
+  for (var i = 0; i < h.controls.length; i++) {
+    var cst = st(h.controls[i].entity_id);
+    if (cst === "on") anyOn = true;
+    if (cst !== "off") allOff = false;
+  }
+  if (anyOn) return "on";
+  if (allOff) return "off";
+  return "unknown";
+}
+
 function hostStatus(h) {
-  var s = st("binary_sensor." + h.hp + "_connectivity");
-  return s === "on" ? "on" : s === "off" ? "off" : "down";
+  var reachable = st("binary_sensor." + h.hp + "_connectivity") === "on";
+  var power = getPowerState(h);
+  // Note: after a plug is turned off, the connectivity binary_sensor
+  // retains "on" for up to 600s (expire_after).  During this window,
+  // reachable=true + power=off → "misconfigured" is a transient false
+  // positive.  It resolves to "powered-off" once expire_after triggers.
+  if (reachable && power === "off") return "misconfigured";
+  if (reachable) return "on";
+  if (!reachable && power === "off") return "powered-off";
+  return "off";
 }
 
 function hostStack(h) {
@@ -201,7 +228,7 @@ function natCmp(a, b) {
 function sortVal(h, col) {
   var f = h.interfaces[0] || {};
   switch (col) {
-    case "status": return {on:0,off:1,down:2}[hostStatus(h)] || 2;
+    case "status": return {on:0,misconfigured:1,off:2,"powered-off":3}[hostStatus(h)] || 2;
     case "name": return h.hostname;
     case "stack": return {dual:0,v4:1,v6:2,down:3}[hostStack(h)] || 3;
     case "ipv4":
@@ -331,7 +358,7 @@ function render() {
     for (var hi = 0; hi < hosts.length; hi++) {
       var h = hosts[hi];
       var hs = hostStatus(h), hk = hostStack(h);
-      var cls = hs === "off" ? "off" : hs !== "on" ? "down" : "";
+      var cls = {on:"", off:"off", "powered-off":"powered-off", misconfigured:"misconfigured"}[hs] || "down";
       var multi = h.interfaces.length > 1;
 
       if (multi) {

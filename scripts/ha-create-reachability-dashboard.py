@@ -187,42 +187,94 @@ def _build_controls_map(
         r"^(?:sensor|switch|button)\.(.+)_port_(\d+)_(.+)$",
     )
     port_data: dict[tuple[str, str], dict[str, str]] = {}
+    # Track actual entity_ids for PoE control (suffix varies per switch model)
+    port_eids: dict[tuple[str, str], dict[str, str]] = {}
     for e in ha_states:
         m = port_re.match(e["entity_id"])
         if m:
             sw, port, suffix = m.groups()
-            port_data.setdefault((sw, port), {})[suffix] = e["state"]
+            key = (sw, port)
+            port_data.setdefault(key, {})[suffix] = e["state"]
+            port_eids.setdefault(key, {})[suffix] = e["entity_id"]
 
-    iface_prefixes = ("eth0.", "eth1.", "eth2.", "eno1.", "enp", "lan.", "en")
+    # Regex to strip interface-name prefixes from port descriptions.
+    # Matches technical interface names (eth0, 10g1, oob2, 1/0/49,
+    # gi27, lag, eth-local, etc.) but NOT hostname components like
+    # bmc, openmesh, or device names.
+    _iface_pfx_re = re.compile(
+        r"^(?:"
+        r"eth\d+|eth-\w+"               # eth0, eth9, eth-local, eth-uplink
+        r"|eno\d+|enp\w+|en\d+"         # eno1, enp3s0, en1
+        r"|lan\d*"                       # lan, lan0
+        r"|(?:10|25|40|100)g\d+"         # 10g1, 25g1, 40g1, 100g1
+        r"|oob\d+"                       # oob1, oob2
+        r"|gi\d+|te\d+|xe\d+|fo\d+"     # gi27, te1 (Cisco/Juniper)
+        r"|lag\d*"                       # lag, lag1
+        r"|\d+(?:/[\w]+)+"              # 1/0/49, 1/xg51 (slot/port)
+        r")\.",                          # followed by dot
+    )
+
+    # Reverse lookup: map all known host identifiers to machine_name
+    # so port descriptions like "bmc.big-storage" (hostname) match
+    # machine_name "big-storage".
+    name_to_machine: dict[str, str] = {}
+    for host in hosts:
+        name_to_machine[host.machine_name] = host.machine_name
+        name_to_machine[host.hostname] = host.machine_name
+
     for (sw, port), data in port_data.items():
         desc = data.get("description", "").strip()
         if not desc:
             continue
         # Must have link or PoE data to be useful
-        if "link" not in data and "poe_force" not in data:
+        if "link" not in data and not any(
+            s.startswith("poe") for s in data if s != "poe_status"
+            and s != "poe_admin" and s != "poe_power"
+        ):
             continue
 
-        hostname = desc
-        for pfx in iface_prefixes:
-            if hostname.startswith(pfx) and "." in hostname[len(pfx):]:
-                hostname = hostname.split(".", 1)[1]
-                break
-            elif hostname.startswith(pfx):
-                hostname = hostname[len(pfx):]
-                break
+        m = _iface_pfx_re.match(desc)
+        stripped = desc[m.end():] if m else desc
 
-        has_poe = "poe_force" in data
-        entry: dict = {
+        # Resolve to machine_name via reverse lookup
+        machine = name_to_machine.get(stripped)
+        if machine is None and "." in stripped:
+            # Try without subdomain (e.g. "openmesh.wifi" -> "openmesh")
+            machine = name_to_machine.get(stripped.split(".")[0])
+        if machine is None:
+            continue
+
+        pp = f"{sw}_port_{port}"
+        eids = port_eids.get((sw, port), {})
+
+        # Find PoE control entity_id from actual HA entities.
+        # Per-device monitors append device name to suffix
+        # (e.g. "poe_rpi5_pmod" not "poe"), so we can't construct
+        # the entity_id — we must look it up.
+        # Prefer exact "poe" over "poe_force" (more reliable state).
+        poe_eid = ""
+        for sfx, eid in eids.items():
+            if not eid.startswith("switch."):
+                continue
+            if sfx == "poe":
+                poe_eid = eid
+                break
+            if sfx.startswith("poe") and "force" not in sfx and "admin" not in sfx:
+                poe_eid = eid
+                break
+        if not poe_eid:
+            for sfx, eid in eids.items():
+                if eid.startswith("switch.") and sfx.startswith("poe_force"):
+                    poe_eid = eid
+                    break
+
+        controls_map.setdefault(machine, []).append({
             "name": sw.replace("_", "-") + f" p{port}",
             "url": "",
+            "entity_id": poe_eid,
+            "pp": pp,
             "type": "port",
-            "pp": f"{sw}_port_{port}",
-        }
-        # entity_id is the PoE control for getPowerState(); empty if no PoE
-        entry["entity_id"] = (
-            f"switch.{sw}_port_{port}_poe_force" if has_poe else ""
-        )
-        controls_map.setdefault(hostname, []).append(entry)
+        })
 
     return controls_map
 

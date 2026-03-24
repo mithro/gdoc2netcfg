@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gdoc2netcfg.models.addressing import IPv4Address, IPv6Address, MACAddress
-from gdoc2netcfg.models.host import Host, NetworkInterface, TasmotaData
+from gdoc2netcfg.models.host import Host, NetworkInterface
 from gdoc2netcfg.supplements.mqtt_ha import (
     BRIDGE_AVAIL_TOPIC,
     DISCOVERY_PREFIX,
@@ -260,51 +260,26 @@ class TestAvailabilityList:
         assert avail[0]["topic"] == BRIDGE_AVAIL_TOPIC
         assert mode is None
 
-    def test_power_plug_linkage(self):
-        """When a Tasmota device controls this host, add plug's POWER topic."""
+    def test_no_power_plug_linkage(self):
+        """Plug POWER topics must NOT appear in availability.
+
+        Power-aware status is handled in the dashboard JS, not via
+        MQTT availability, because the POWER topic isn't reliably
+        retained and collapses "powered off" / "broken" into one state.
+        """
         controlled_host = _make_host(machine_name="server1", hostname="server1")
+        avail, mode = _availability_list(controlled_host)
+        assert len(avail) == 1
+        assert avail[0]["topic"] == BRIDGE_AVAIL_TOPIC
+        assert mode is None
+        # No plug topic should appear
+        topics = [a["topic"] for a in avail]
+        assert not any("POWER" in t for t in topics)
 
-        plug_host = Host(
-            machine_name="au-plug-17",
-            hostname="au-plug-17.iot",
-            interfaces=[
-                NetworkInterface(
-                    name=None,
-                    mac=MACAddress("11:22:33:44:55:66"),
-                    ip_addresses=(IPv4Address("10.1.30.17"),),
-                ),
-            ],
-            tasmota_data=TasmotaData(
-                device_name="au-plug-17",
-                friendly_name="au-plug-17",
-                hostname="au-plug-17",
-                firmware_version="14.4.1",
-                mqtt_host="ha.welland.mithis.com",
-                mqtt_port=1883,
-                mqtt_topic="au-plug-17",
-                mqtt_client="au-plug-17",
-                mac="11:22:33:44:55:66",
-                ip="10.1.30.17",
-                controls=("server1",),
-            ),
-        )
-
-        hosts_by_name = {
-            "server1": controlled_host,
-            "au-plug-17": plug_host,
-        }
-
-        avail, mode = _availability_list(controlled_host, hosts_by_name)
-        assert len(avail) == 2
-        assert avail[1]["topic"] == "stat/au-plug-17/POWER"
-        assert avail[1]["payload_available"] == "ON"
-        assert mode == "all"
-
-    def test_no_linkage_without_tasmota(self):
+    def test_bridge_only_availability(self):
+        """All hosts get bridge-only availability regardless of Tasmota."""
         host = _make_host()
-        other = _make_host(machine_name="other", hostname="other", ip="10.1.5.11")
-        hosts_by_name = {"big-storage": host, "other": other}
-        avail, mode = _availability_list(host, hosts_by_name)
+        avail, mode = _availability_list(host)
         assert len(avail) == 1
         assert mode is None
 
@@ -399,12 +374,19 @@ class TestDiscoveryPayload:
         assert payload["entity_category"] == "diagnostic"
 
     def test_availability_mode_included_when_set(self):
+        """Test that discovery_payload() includes availability_mode when set.
+
+        This tests the generic availability_mode parameter on
+        discovery_payload(), not the removed plug linkage.
+        _availability_list() no longer produces multi-topic availability,
+        but the discovery_payload() function still supports it.
+        """
         host = _make_host()
         dev = _device_dict(host)
         avail = [
             {"topic": BRIDGE_AVAIL_TOPIC, "payload_available": "online",
              "payload_not_available": "offline"},
-            {"topic": "stat/plug/POWER", "payload_available": "ON",
+            {"topic": "some/other/topic", "payload_available": "ON",
              "payload_not_available": "OFF"},
         ]
         nid = _node_id(host.hostname)

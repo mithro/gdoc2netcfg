@@ -259,17 +259,13 @@ def configure_tasmota_device(
     if force:
         drifts_to_apply = drifts  # All drifts including warned ones
 
-    # Apply drifted fields + MQTT credentials.
-    # MqttPassword can't be read back to detect drift, so always push it
-    # when there are other drifts.  When MqttCount == 0, also push
-    # MqttUser + MqttPassword unconditionally — wrong credentials are the
-    # most common cause of a device that looks correctly configured but
-    # can't connect to the broker.
+    # Apply drifted fields.  When MqttCount == 0, also push MqttUser +
+    # MqttPassword — wrong credentials are the most common cause of a
+    # device that looks correctly configured but can't connect to the
+    # broker, and MqttPassword can't be read back to detect drift.
     all_ok = True
     desired = compute_desired_config(host, tasmota_config)
     fields_to_push = {d.field: d.desired for d in drifts_to_apply}
-    if "MqttPassword" in desired:
-        fields_to_push["MqttPassword"] = desired["MqttPassword"]
     if mqtt_disconnected:
         fields_to_push["MqttUser"] = desired["MqttUser"]
         fields_to_push["MqttPassword"] = desired["MqttPassword"]

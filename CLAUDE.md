@@ -39,6 +39,9 @@ uv run gdoc2netcfg tasmota show            # Show cached Tasmota device data
 uv run gdoc2netcfg tasmota configure --dry-run --all  # Preview config changes
 uv run gdoc2netcfg tasmota configure <host>      # Push config to a specific device
 uv run gdoc2netcfg tasmota ha-status       # Check Home Assistant integration
+uv run gdoc2netcfg reachability publish --force    # One-shot MQTT publish
+uv run gdoc2netcfg reachability publish --daemon   # MQTT daemon (5min interval)
+uv run scripts/ha-create-reachability-dashboard.py # Generate & deploy HA dashboard
 ```
 
 Always use `uv run` to execute Python commands. Never use bare `python` or `pip`.
@@ -151,6 +154,45 @@ The topology generator (`topology.py`) produces a Graphviz DOT diagram of the ph
 
 `src/nsdp/` is a standalone pure-Python implementation of the Netgear Switch Discovery Protocol (NSDP). It has no external dependencies. The `supplements/nsdp.py` module bridges this library into the gdoc2netcfg supplement pipeline. See `docs/nsdp-protocol.md` for the protocol specification.
 
+### MQTT Reachability Publishing
+
+`src/gdoc2netcfg/supplements/mqtt_ha.py` publishes host reachability data to Home Assistant via MQTT discovery. Each host becomes an HA device with connectivity, presence, stack mode, and per-interface diagnostic entities (IPv4, MAC, RTT).
+
+**Entity ID scheme**: Uses `_node_id(host.hostname)` (not `machine_name`) to derive entity IDs. This ensures BMC hosts get unique IDs — BMCs share `machine_name` with their parent (e.g. both `big-storage` and `bmc.big-storage` have `machine_name="big-storage"`), but have distinct hostnames. Entity IDs include the VLAN subdomain (e.g. `gdoc2netcfg_au_plug_1_iot_connectivity` not `gdoc2netcfg_au_plug_1_connectivity`).
+
+**Discovery payloads** are published with `retain=True` so HA rediscovers entities on restart. **State messages** are NOT retained — `expire_after` (600s) handles staleness. Bridge availability uses LWT for automatic offline marking.
+
+**Daemon mode**: `uv run gdoc2netcfg reachability publish --daemon --interval 300` runs as a persistent service, scanning reachability every 5 minutes and publishing discovery + state to MQTT. Managed by `gdoc2netcfg-reachability.service` systemd unit. After deploying code changes that affect MQTT publishing, the daemon must be restarted: `sudo systemctl restart gdoc2netcfg-reachability.service`.
+
+**One-shot mode**: `uv run gdoc2netcfg reachability publish --force` runs a single scan and publishes.
+
+### Network Reachability Dashboard
+
+`scripts/ha-create-reachability-dashboard.py` generates a self-contained HTML dashboard and deploys it to HA's `/config/www/` directory via SSH. The dashboard is embedded in HA as a Lovelace iframe panel at `/network-reachability/default`.
+
+**Architecture**: The Python script bakes STRUCTURAL data (host list, network grouping, entity ID prefixes, FQDNs, PoE port mappings) into the HTML as JSON. The HTML's JavaScript connects to HA's WebSocket API at runtime for LIVE entity states (connectivity, RTT, stack mode, plug/PoE on/off). No periodic regeneration is needed for status updates — data updates in real-time via WebSocket subscription.
+
+**Regeneration**: Only needed when the network STRUCTURE changes (new hosts added, PoE ports remapped, VLAN changes). Run from the dev repo:
+
+```bash
+uv run scripts/ha-create-reachability-dashboard.py
+```
+
+This fetches PoE port mappings from HA, generates the HTML, SCPs it to HA, and updates the iframe dashboard config with a cache-busting URL.
+
+**Features**:
+- Hosts grouped by network (VLAN subdomain) in sortable tables
+- All columns sortable with natural sort (click headers)
+- Multi-interface hosts fold/unfold (click ▶/▼ in col 2)
+- Single-interface hosts show on one row
+- Host links use stack-dependent DNS prefix (bare FQDN for dual-stack, `ipv4.`/`ipv6.` for single-stack)
+- Controls column shows Tasmota plugs (🔌) and PoE ports (⚡) with live on/off state
+- Dark/light theme detection from HA parent frame
+
+**Files**:
+- `scripts/ha-create-reachability-dashboard.py` — generator + deployer
+- `scripts/ha-reachability-dashboard.html` — HTML template with JS/CSS
+
 ## Production Deployment
 
 Deployed on two sites, both at `/opt/gdoc2netcfg/`:
@@ -175,7 +217,13 @@ ssh -o ControlPath=none -o ForwardAgent=yes tim@10.255.0.2 \
   "cd /opt/gdoc2netcfg && sudo -E git pull"
 ```
 
-`git pull` is clean on both sites — `gdoc2netcfg.toml` is gitignored, so each site's local config is never touched by pulls. If a site doesn't have a local config yet, create one after pulling:
+`git pull` is clean on both sites — `gdoc2netcfg.toml` is gitignored, so each site's local config is never touched by pulls. After pulling changes that affect MQTT publishing (`mqtt_ha.py`), restart the reachability daemon:
+
+```bash
+sudo systemctl restart gdoc2netcfg-reachability.service
+```
+
+If a site doesn't have a local config yet, create one after pulling:
 
 ```bash
 cp gdoc2netcfg.toml.example gdoc2netcfg.toml

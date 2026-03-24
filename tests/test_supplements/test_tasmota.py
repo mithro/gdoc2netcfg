@@ -74,6 +74,7 @@ def _make_tasmota_data(**overrides):
         "wifi_signal": -58,
         "uptime": "3T12:34:56",
         "module": "Sonoff Basic",
+        "mqtt_count": 1,
     }
     defaults.update(overrides)
     return TasmotaData(**defaults)
@@ -276,6 +277,12 @@ class TestParseTasmotaStatus:
         assert result["wifi_rssi"] == 72
         assert result["wifi_signal"] == -58
         assert result["uptime"] == "3T12:34:56"
+        assert result["mqtt_count"] == 1
+
+    def test_mqtt_count_missing_defaults_to_zero(self):
+        """Missing MqttCount (e.g. older firmware) should default to 0."""
+        result = _parse_tasmota_status({})
+        assert result["mqtt_count"] == 0
 
     def test_friendly_name_as_string(self):
         """Some firmware versions return FriendlyName as a string."""
@@ -498,6 +505,19 @@ class TestEnrichHostsWithTasmota:
         assert host.tasmota_data.wifi_rssi == 0
         assert host.tasmota_data.uptime == ""
         assert host.tasmota_data.module == ""
+        assert host.tasmota_data.mqtt_count == 0
+
+    def test_enrich_mqtt_count_from_cache(self):
+        """mqtt_count should be populated from cache when present."""
+        host = _make_host()
+        cache = {
+            "au-plug-10": {
+                **_min_cache_entry(),
+                "mqtt_count": 7,
+            },
+        }
+        enrich_hosts_with_tasmota([host], cache)
+        assert host.tasmota_data.mqtt_count == 7
 
     def test_multiple_hosts(self):
         h1 = _make_host(hostname="plug-1", ip="10.1.90.1", mac="aa:bb:cc:dd:ee:01")
@@ -1199,6 +1219,111 @@ class TestConfigureTasmotaDevice:
 
         sent_fields = [call.args[1].split(" ")[0] for call in mock_send.call_args_list]
         assert "Topic" in sent_fields
+
+
+# ---------------------------------------------------------------------------
+# MqttCount diagnostic in configure
+# ---------------------------------------------------------------------------
+
+class TestConfigureMqttCountDiagnostic:
+    """Tests for MqttCount == 0 diagnostic handling in configure."""
+
+    def test_mqtt_disconnected_no_drift_pushes_credentials(self):
+        """MqttCount=0 with no config drift should still push MqttUser + MqttPassword."""
+        host = _make_host(hostname="au-plug-10")
+        host.tasmota_data = _make_tasmota_data(
+            device_name="au-plug-10",
+            friendly_name="au-plug-10",
+            hostname="au-plug-10",
+            mqtt_topic="au-plug-10",
+            mqtt_host="ha.welland.mithis.com",
+            mqtt_port=1883,
+            mqtt_count=0,
+        )
+        config = _make_tasmota_config()
+
+        with patch("gdoc2netcfg.supplements.tasmota_configure._send_tasmota_command") as mock_send:
+            mock_send.return_value = {}
+            result = configure_tasmota_device(host, config)
+            assert result is True
+
+            sent_fields = [call.args[1].split(" ")[0] for call in mock_send.call_args_list]
+            assert "MqttUser" in sent_fields
+            assert "MqttPassword" in sent_fields
+
+    def test_mqtt_disconnected_no_drift_dry_run_returns_false(self):
+        """MqttCount=0 in dry-run should signal that something needs fixing."""
+        host = _make_host(hostname="au-plug-10")
+        host.tasmota_data = _make_tasmota_data(
+            device_name="au-plug-10",
+            friendly_name="au-plug-10",
+            hostname="au-plug-10",
+            mqtt_topic="au-plug-10",
+            mqtt_host="ha.welland.mithis.com",
+            mqtt_port=1883,
+            mqtt_count=0,
+        )
+        config = _make_tasmota_config()
+        result = configure_tasmota_device(host, config, dry_run=True)
+        assert result is False
+
+    def test_mqtt_disconnected_with_drift_pushes_credentials(self):
+        """MqttCount=0 with other drifts should push credentials along with fixes."""
+        host = _make_host(hostname="au-plug-10")
+        host.tasmota_data = _make_tasmota_data(
+            device_name="wrong-name",
+            friendly_name="au-plug-10",
+            hostname="au-plug-10",
+            mqtt_topic="au-plug-10",
+            mqtt_host="ha.welland.mithis.com",
+            mqtt_port=1883,
+            mqtt_count=0,
+        )
+        config = _make_tasmota_config()
+
+        with patch("gdoc2netcfg.supplements.tasmota_configure._send_tasmota_command") as mock_send:
+            mock_send.return_value = {}
+            result = configure_tasmota_device(host, config)
+            assert result is True
+
+            sent_fields = [call.args[1].split(" ")[0] for call in mock_send.call_args_list]
+            assert "DeviceName" in sent_fields
+            assert "MqttUser" in sent_fields
+            assert "MqttPassword" in sent_fields
+
+    def test_mqtt_connected_no_drift_does_not_push(self):
+        """MqttCount > 0 with no drift should not push anything."""
+        host = _make_host(hostname="au-plug-10")
+        host.tasmota_data = _make_tasmota_data(
+            device_name="au-plug-10",
+            friendly_name="au-plug-10",
+            hostname="au-plug-10",
+            mqtt_topic="au-plug-10",
+            mqtt_host="ha.welland.mithis.com",
+            mqtt_port=1883,
+            mqtt_count=5,
+        )
+        config = _make_tasmota_config()
+        result = configure_tasmota_device(host, config)
+        assert result is True
+
+    def test_mqtt_disconnected_verbose_shows_warning(self, capsys):
+        """MqttCount=0 should produce a visible warning in verbose output."""
+        host = _make_host(hostname="au-plug-10")
+        host.tasmota_data = _make_tasmota_data(
+            device_name="au-plug-10",
+            friendly_name="au-plug-10",
+            hostname="au-plug-10",
+            mqtt_topic="au-plug-10",
+            mqtt_host="ha.welland.mithis.com",
+            mqtt_port=1883,
+            mqtt_count=0,
+        )
+        config = _make_tasmota_config()
+        configure_tasmota_device(host, config, dry_run=True, verbose=True)
+        captured = capsys.readouterr()
+        assert "MqttCount=0" in captured.err
+        assert "never connected" in captured.err.lower()
 
 
 # ---------------------------------------------------------------------------

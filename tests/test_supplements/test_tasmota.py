@@ -1256,8 +1256,8 @@ class TestConfigureMqttCountDiagnostic:
             assert "MqttUser" in sent_fields
             assert "MqttPassword" in sent_fields
 
-    def test_mqtt_disconnected_no_drift_dry_run_returns_false(self):
-        """MqttCount=0 in dry-run should signal that something needs fixing."""
+    def test_mqtt_disconnected_no_drift_dry_run_shows_warning(self, capsys):
+        """MqttCount=0 in dry-run should show warning but return True (no commands sent)."""
         host = _make_host(hostname="au-plug-10")
         host.tasmota_data = _make_tasmota_data(
             device_name="au-plug-10",
@@ -1269,8 +1269,10 @@ class TestConfigureMqttCountDiagnostic:
             mqtt_count=0,
         )
         config = _make_tasmota_config()
-        result = configure_tasmota_device(host, config, dry_run=True)
-        assert result is False
+        result = configure_tasmota_device(host, config, dry_run=True, verbose=True)
+        assert result is True
+        captured = capsys.readouterr()
+        assert "MqttCount=0" in captured.err
 
     def test_mqtt_disconnected_with_drift_pushes_credentials(self):
         """MqttCount=0 with other drifts should push credentials along with fixes."""
@@ -1311,6 +1313,32 @@ class TestConfigureMqttCountDiagnostic:
         config = _make_tasmota_config()
         result = configure_tasmota_device(host, config)
         assert result is True
+
+    @patch("gdoc2netcfg.supplements.tasmota_configure._send_tasmota_command")
+    def test_mqtt_disconnected_warned_drift_pushes_only_credentials(self, mock_send):
+        """MqttCount=0 + warned Topic drift (no --force): push credentials, skip Topic."""
+        host = _make_host(hostname="au-plug-10")
+        host.tasmota_data = _make_tasmota_data(
+            device_name="au-plug-10",
+            friendly_name="au-plug-10",
+            hostname="au-plug-10",
+            mqtt_topic="old-topic",
+            mqtt_host="ha.welland.mithis.com",
+            mqtt_port=1883,
+            mqtt_count=0,
+        )
+        config = _make_tasmota_config()
+        mock_send.return_value = {}
+
+        result = configure_tasmota_device(host, config)
+        assert result is True
+
+        sent_fields = [call.args[1].split(" ")[0] for call in mock_send.call_args_list]
+        # Credentials pushed because MqttCount=0
+        assert "MqttUser" in sent_fields
+        assert "MqttPassword" in sent_fields
+        # Topic NOT pushed — it's a warned drift and --force was not given
+        assert "Topic" not in sent_fields
 
     def test_mqtt_disconnected_verbose_shows_warning(self, capsys):
         """MqttCount=0 should produce a visible warning in verbose output."""

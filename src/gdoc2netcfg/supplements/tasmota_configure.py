@@ -250,7 +250,7 @@ def configure_tasmota_device(
             )
 
     if dry_run:
-        return not mqtt_disconnected
+        return True
 
     # Determine which drifts to actually apply.
     # Skipped (warned) drifts are not counted as failures — they are

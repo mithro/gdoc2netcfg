@@ -39,9 +39,10 @@ setTimeout(function() {
 body { font-family: Roboto,Noto,sans-serif; margin: 16px; background: var(--bg); color: var(--text); font-size: 14px; }
 h2 { margin: 24px 0 8px; font-size: 1.1em; border-bottom: 1px solid var(--div); padding-bottom: 4px; }
 table { width: 100%; border-collapse: collapse; font-size: 0.85em; margin-bottom: 16px; table-layout: fixed; }
-col.c-st { width: 30px; } col.c-fold { width: 20px; } col.c-name { width: 18%; }
-col.c-stack { width: 40px; } col.c-ipv4 { width: 12%; } col.c-ipv6 { width: 10%; }
-col.c-mac { width: 14%; } col.c-rtt { width: 60px; } col.c-loc { width: 14%; }
+col.c-st { width: 30px; } col.c-fold { width: 20px; } col.c-name { width: 16%; }
+col.c-stack { width: 40px; } col.c-ipv4 { width: 11%; } col.c-ipv6 { width: 9%; }
+col.c-mac { width: 13%; } col.c-rtt { width: 55px; } col.c-link { width: 35px; }
+col.c-speed { width: 45px; } col.c-loc { width: 12%; }
 th { text-align: left; padding: 4px 6px; border-bottom: 2px solid var(--div); cursor: pointer; user-select: none; color: var(--text2); }
 th:hover { background: var(--hover); }
 td { padding: 3px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -136,6 +137,31 @@ function fmtSpeed(v) {
 function callService(domain, service, entityId) {
   if (!connected || !ws) return;
   ws.send(JSON.stringify({id: msgId++, type: "call_service", domain: domain, service: service, target: {entity_id: entityId}}));
+}
+
+function hostLinkStatus(h) {
+  // Aggregate link status across all port controls.
+  // Any port up → "up"; all ports down → "down"; no ports → null.
+  if (!h.controls) return null;
+  var hasPort = false;
+  for (var i = 0; i < h.controls.length; i++) {
+    if (h.controls[i].type !== "port") continue;
+    hasPort = true;
+    if (st("sensor." + h.controls[i].pp + "_link") === "up") return "up";
+  }
+  return hasPort ? "down" : null;
+}
+
+function hostLinkSpeed(h) {
+  // Best (highest) link speed across all port controls.
+  if (!h.controls) return "";
+  var best = 0;
+  for (var i = 0; i < h.controls.length; i++) {
+    if (h.controls[i].type !== "port") continue;
+    var v = parseInt(st("sensor." + h.controls[i].pp + "_speed"), 10);
+    if (v > best) best = v;
+  }
+  return fmtSpeed(String(best));
 }
 
 // --- Derived values from live state ---
@@ -258,6 +284,8 @@ function sortVal(h, col) {
     case "ipv6": return f.ipv6_suffix || "";
     case "mac": return ifaceMac(f) || "";
     case "rtt": var r = bestRtt(h); return r !== null ? r : Infinity;
+    case "link": return {up:0,down:1}[hostLinkStatus(h)] || 2;
+    case "speed": return parseInt(hostLinkSpeed(h),10) || 0;
     case "location": return h.location || "";
     case "controls": return (h.controls && h.controls.length) ? h.controls[0].name : "";
     default: return h.hostname;
@@ -332,36 +360,25 @@ function addCtrlCell(tr, h) {
       if (c.url) { var a = document.createElement("a"); a.href = c.url; a.textContent = c.name; td.appendChild(a); }
       else td.appendChild(document.createTextNode(c.name));
     } else if (c.type === "port") {
-      // Switch port: link icon + speed + PoE icon + power + name
-      var pp = c.pp;
-      var lnk = st("sensor." + pp + "_link");
-      var spd = fmtSpeed(st("sensor." + pp + "_speed"));
-      td.appendChild(document.createTextNode(lnk === "up" ? "\u{1f7e2}" : lnk === "down" ? "\u{1f534}" : "\u26ab"));
-      if (spd) { var s = document.createElement("small"); s.textContent = spd; td.appendChild(s); }
+      // Switch port: PoE toggle + power + name
       if (c.entity_id) {
         var poeSt = st(c.entity_id);
         var poe = document.createElement("span");
         poe.className = "poe-toggle";
-        poe.textContent = "\u26a1";
+        poe.textContent = (poeSt === "on" ? "\u{1f7e2}" : poeSt === "off" ? "\u{1f534}" : "\u26ab") + "\u26a1";
         poe.title = (poeSt === "on" ? "PoE on" : "PoE off") + " \u2014 click to toggle";
-        if (poeSt !== "on") poe.style.opacity = "0.4";
         poe.addEventListener("click", (function(eid) {
           return function(ev) { ev.stopPropagation(); callService("switch", "toggle", eid); };
         })(c.entity_id));
         td.appendChild(poe);
-        var pw = st("sensor." + pp + "_poe_power");
+        var pw = st("sensor." + c.pp + "_poe_power");
         if (pw && pw !== "unavailable" && pw !== "unknown" && parseFloat(pw) > 0) {
           var pwSpn = document.createElement("small");
-          pwSpn.textContent = parseFloat(pw).toFixed(1) + "W";
+          pwSpn.textContent = (parseFloat(pw) / 1000).toFixed(1) + "W";
           td.appendChild(pwSpn);
         }
       }
       td.appendChild(document.createTextNode(" " + c.name));
-    } else {
-      // Legacy fallback
-      var cst = st(c.entity_id);
-      var icon = (cst === "on" ? "\u{1f7e2}" : cst === "off" ? "\u{1f534}" : "\u26ab") + "\u26a1";
-      td.appendChild(document.createTextNode(icon + c.name));
     }
   }
   tr.appendChild(td);
@@ -383,7 +400,7 @@ function render() {
 
     var table = document.createElement("table");
     var cg = document.createElement("colgroup");
-    ["c-st","c-fold","c-name","c-stack","c-ipv4","c-ipv6","c-mac","c-rtt","c-loc","c-ctrl"].forEach(function(cn) {
+    ["c-st","c-fold","c-name","c-stack","c-ipv4","c-ipv6","c-mac","c-rtt","c-link","c-speed","c-loc","c-ctrl"].forEach(function(cn) {
       var col = document.createElement("col"); col.className = cn; cg.appendChild(col);
     });
     table.appendChild(cg);
@@ -392,6 +409,7 @@ function render() {
     var htr = document.createElement("tr");
     [["St","status"],["",null],["Name","name"],["Stack","stack"],
      ["IPv4","ipv4"],["IPv6","ipv6"],["MAC","mac"],["RTT","rtt"],
+     ["Link","link"],["Speed","speed"],
      ["Location","location"],["Controls","controls"]].forEach(function(c) {
       var th = document.createElement("th");
       th.textContent = c[0];
@@ -427,6 +445,9 @@ function render() {
         addCell(tr, makeLink("http://ipv4." + h.fqdn, "ipv4." + h.hostname));
         addCell(tr, makeLink("http://ipv6." + h.fqdn, "ipv6." + h.hostname));
         addCell(tr, ""); addCell(tr, "");
+        var lnk = hostLinkStatus(h);
+        addCell(tr, lnk === "up" ? "\u{1f7e2}" : lnk === "down" ? "\u{1f534}" : "\u2014");
+        addCell(tr, hostLinkSpeed(h) || "\u2014");
         addCell(tr, h.location || "\u2014");
         addCtrlCell(tr, h);
         tbody.appendChild(tr);
@@ -449,6 +470,7 @@ function render() {
           var rtt = ifaceRtt(f);
           addCell(itr, rtt !== null ? rtt + "ms" : "\u2014");
           addCell(itr, ""); addCell(itr, "");
+          addCell(itr, ""); addCell(itr, "");
           tbody.appendChild(itr);
         }
       } else {
@@ -466,6 +488,9 @@ function render() {
         addCodeCell(tr, (mac && mac !== "unavailable" && mac !== "unknown") ? mac : "");
         var rtt = ifaceRtt(f);
         addCell(tr, rtt !== null ? rtt + "ms" : "\u2014");
+        var lnk = hostLinkStatus(h);
+        addCell(tr, lnk === "up" ? "\u{1f7e2}" : lnk === "down" ? "\u{1f534}" : "\u2014");
+        addCell(tr, hostLinkSpeed(h) || "\u2014");
         addCell(tr, h.location || "\u2014");
         addCtrlCell(tr, h);
         tbody.appendChild(tr);

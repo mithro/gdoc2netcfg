@@ -179,28 +179,17 @@ def _build_controls_map(
                 "type": "plug",
             })
 
-    # Switch port controls — link status, speed, PoE
-    # Collect all per-port entity data from HA, keyed by (switch, port).
-    # The JS reads live state via WebSocket using a port prefix to
-    # construct entity_ids (sensor.{pp}_link, sensor.{pp}_speed, etc.).
+    # Switch port controls — link status, speed, PoE.
+    #
+    # Entity naming: {domain}.{switch}_port_{NN}_{suffix}
+    # where pp = {switch}_port_{NN} is the port prefix.
+    # The JS reads live state via WebSocket: sensor.{pp}_link,
+    # sensor.{pp}_speed, switch.{pp}_poe, etc.
     port_re = re.compile(
-        r"^(?:sensor|switch|button)\.(.+)_port_(\d+)_(.+)$",
+        r"^sensor\.(.+)_port_(\d+)_description$",
     )
-    port_data: dict[tuple[str, str], dict[str, str]] = {}
-    # Track actual entity_ids for PoE control (suffix varies per switch model)
-    port_eids: dict[tuple[str, str], dict[str, str]] = {}
-    for e in ha_states:
-        m = port_re.match(e["entity_id"])
-        if m:
-            sw, port, suffix = m.groups()
-            key = (sw, port)
-            port_data.setdefault(key, {})[suffix] = e["state"]
-            port_eids.setdefault(key, {})[suffix] = e["entity_id"]
 
     # Regex to strip interface-name prefixes from port descriptions.
-    # Matches technical interface names (eth0, 10g1, oob2, 1/0/49,
-    # gi27, lag, eth-local, etc.) but NOT hostname components like
-    # bmc, openmesh, or device names.
     _iface_pfx_re = re.compile(
         r"^(?:"
         r"eth\d+|eth-\w+"               # eth0, eth9, eth-local, eth-uplink
@@ -222,56 +211,40 @@ def _build_controls_map(
         name_to_machine[host.machine_name] = host.machine_name
         name_to_machine[host.hostname] = host.machine_name
 
-    for (sw, port), data in port_data.items():
-        desc = data.get("description", "").strip()
+    # Collect PoE entity_ids that actually exist in HA (not all ports
+    # have PoE control entities).
+    poe_entities: set[str] = {
+        e["entity_id"]
+        for e in ha_states
+        if e["entity_id"].startswith("switch.") and e["entity_id"].endswith("_poe")
+    }
+
+    for e in ha_states:
+        m = port_re.match(e["entity_id"])
+        if not m:
+            continue
+        sw, port = m.groups()
+        desc = e["state"].strip()
         if not desc:
             continue
-        # Must have link or PoE data to be useful
-        if "link" not in data and not any(
-            s.startswith("poe") for s in data if s != "poe_status"
-            and s != "poe_admin" and s != "poe_power"
-        ):
-            continue
 
-        m = _iface_pfx_re.match(desc)
-        stripped = desc[m.end():] if m else desc
+        m2 = _iface_pfx_re.match(desc)
+        stripped = desc[m2.end():] if m2 else desc
 
         # Resolve to machine_name via reverse lookup
         machine = name_to_machine.get(stripped)
         if machine is None and "." in stripped:
-            # Try without subdomain (e.g. "openmesh.wifi" -> "openmesh")
             machine = name_to_machine.get(stripped.split(".")[0])
         if machine is None:
             continue
 
         pp = f"{sw}_port_{port}"
-        eids = port_eids.get((sw, port), {})
-
-        # Find PoE control entity_id from actual HA entities.
-        # Per-device monitors append device name to suffix
-        # (e.g. "poe_rpi5_pmod" not "poe"), so we can't construct
-        # the entity_id — we must look it up.
-        # Prefer exact "poe" over "poe_force" (more reliable state).
-        poe_eid = ""
-        for sfx, eid in eids.items():
-            if not eid.startswith("switch."):
-                continue
-            if sfx == "poe":
-                poe_eid = eid
-                break
-            if sfx.startswith("poe") and "force" not in sfx and "admin" not in sfx:
-                poe_eid = eid
-                break
-        if not poe_eid:
-            for sfx, eid in eids.items():
-                if eid.startswith("switch.") and sfx.startswith("poe_force"):
-                    poe_eid = eid
-                    break
+        poe_eid = f"switch.{pp}_poe"
 
         controls_map.setdefault(machine, []).append({
             "name": sw.replace("_", "-") + f" p{port}",
             "url": "",
-            "entity_id": poe_eid,
+            "entity_id": poe_eid if poe_eid in poe_entities else "",
             "pp": pp,
             "type": "port",
         })

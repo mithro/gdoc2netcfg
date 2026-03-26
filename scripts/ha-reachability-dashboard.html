@@ -139,26 +139,40 @@ function callService(domain, service, entityId) {
   ws.send(JSON.stringify({id: msgId++, type: "call_service", domain: domain, service: service, target: {entity_id: entityId}}));
 }
 
-function hostLinkStatus(h) {
-  // Aggregate link status across all port controls.
-  // Any port up → "up"; all ports down → "down"; no ports → null.
-  if (!h.controls) return null;
-  var hasPort = false;
+function portsForIface(h, ifaceName) {
+  // Find port controls matching an interface name.
+  // Returns array of matching port controls.
+  if (!h.controls) return [];
+  var result = [];
   for (var i = 0; i < h.controls.length; i++) {
-    if (h.controls[i].type !== "port") continue;
-    hasPort = true;
-    if (st("sensor." + h.controls[i].pp + "_link") === "up") return "up";
+    var c = h.controls[i];
+    if (c.type !== "port") continue;
+    if (c.iface === (ifaceName || "")) result.push(c);
   }
-  return hasPort ? "down" : null;
+  // If no exact match and interface is default, include controls with no iface
+  if (!result.length && !ifaceName) {
+    for (var i = 0; i < h.controls.length; i++) {
+      var c = h.controls[i];
+      if (c.type === "port" && !c.iface) result.push(c);
+    }
+  }
+  return result;
 }
 
-function hostLinkSpeed(h) {
-  // Best (highest) link speed across all port controls.
-  if (!h.controls) return "";
+function ifaceLinkStatus(ports) {
+  // Link status from port controls: any up → "up", all down → "down", none → null.
+  if (!ports.length) return null;
+  for (var i = 0; i < ports.length; i++) {
+    if (st("sensor." + ports[i].pp + "_link") === "up") return "up";
+  }
+  return "down";
+}
+
+function ifaceLinkSpeed(ports) {
+  // Best link speed from port controls.
   var best = 0;
-  for (var i = 0; i < h.controls.length; i++) {
-    if (h.controls[i].type !== "port") continue;
-    var v = parseInt(st("sensor." + h.controls[i].pp + "_speed"), 10);
+  for (var i = 0; i < ports.length; i++) {
+    var v = parseInt(st("sensor." + ports[i].pp + "_speed"), 10);
     if (v > best) best = v;
   }
   return fmtSpeed(String(best));
@@ -284,8 +298,8 @@ function sortVal(h, col) {
     case "ipv6": return f.ipv6_suffix || "";
     case "mac": return ifaceMac(f) || "";
     case "rtt": var r = bestRtt(h); return r !== null ? r : Infinity;
-    case "link": return {up:0,down:1}[hostLinkStatus(h)] || 2;
-    case "speed": return parseInt(hostLinkSpeed(h),10) || 0;
+    case "link": var lp = portsForIface(h, (f.name || "")); return {up:0,down:1}[ifaceLinkStatus(lp)] || 2;
+    case "speed": var sp = portsForIface(h, (f.name || "")); return parseInt(ifaceLinkSpeed(sp),10) || 0;
     case "location": return h.location || "";
     case "controls": return (h.controls && h.controls.length) ? h.controls[0].name : "";
     default: return h.hostname;
@@ -445,9 +459,7 @@ function render() {
         addCell(tr, makeLink("http://ipv4." + h.fqdn, "ipv4." + h.hostname));
         addCell(tr, makeLink("http://ipv6." + h.fqdn, "ipv6." + h.hostname));
         addCell(tr, ""); addCell(tr, "");
-        var lnk = hostLinkStatus(h);
-        addCell(tr, lnk === "up" ? "\u{1f7e2}" : lnk === "down" ? "\u{1f534}" : "\u2014");
-        addCell(tr, hostLinkSpeed(h) || "\u2014");
+        addCell(tr, ""); addCell(tr, "");
         addCell(tr, h.location || "\u2014");
         addCtrlCell(tr, h);
         tbody.appendChild(tr);
@@ -469,7 +481,10 @@ function render() {
           addCodeCell(itr, (mac && mac !== "unavailable" && mac !== "unknown") ? mac : "");
           var rtt = ifaceRtt(f);
           addCell(itr, rtt !== null ? rtt + "ms" : "\u2014");
-          addCell(itr, ""); addCell(itr, "");
+          var iports = portsForIface(h, f.name);
+          var ilnk = ifaceLinkStatus(iports);
+          addCell(itr, ilnk === "up" ? "\u{1f7e2}" : ilnk === "down" ? "\u{1f534}" : "\u2014");
+          addCell(itr, ifaceLinkSpeed(iports) || "\u2014");
           addCell(itr, ""); addCell(itr, "");
           tbody.appendChild(itr);
         }
@@ -488,9 +503,10 @@ function render() {
         addCodeCell(tr, (mac && mac !== "unavailable" && mac !== "unknown") ? mac : "");
         var rtt = ifaceRtt(f);
         addCell(tr, rtt !== null ? rtt + "ms" : "\u2014");
-        var lnk = hostLinkStatus(h);
-        addCell(tr, lnk === "up" ? "\u{1f7e2}" : lnk === "down" ? "\u{1f534}" : "\u2014");
-        addCell(tr, hostLinkSpeed(h) || "\u2014");
+        var sports = portsForIface(h, f.name);
+        var slnk = ifaceLinkStatus(sports);
+        addCell(tr, slnk === "up" ? "\u{1f7e2}" : slnk === "down" ? "\u{1f534}" : "\u2014");
+        addCell(tr, ifaceLinkSpeed(sports) || "\u2014");
         addCell(tr, h.location || "\u2014");
         addCtrlCell(tr, h);
         tbody.appendChild(tr);

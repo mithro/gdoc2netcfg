@@ -229,6 +229,7 @@ def _build_controls_map(
             continue
 
         m2 = _iface_pfx_re.match(desc)
+        iface_name = desc[: m2.end() - 1] if m2 else ""  # strip trailing dot
         stripped = desc[m2.end():] if m2 else desc
 
         # Resolve to machine_name via reverse lookup
@@ -245,6 +246,7 @@ def _build_controls_map(
             "name": sw.replace("_", "-") + f" p{port}",
             "url": "",
             "entity_id": poe_eid if poe_eid in poe_entities else "",
+            "iface": iface_name,
             "pp": pp,
             "type": "port",
         })

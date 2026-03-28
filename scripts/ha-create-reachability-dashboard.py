@@ -425,10 +425,9 @@ def _discover_switches(
         if host_obj:
             nid = _node_id(host_obj.hostname)
             first_ip = host_obj.first_ipv4
-            fqdn = f"{host_obj.hostname}.{hosts[0].hostname.split('.')[-1]}" if "." in hosts[0].hostname else host_obj.hostname
             host_info = {
                 "nid": nid,
-                "fqdn": "",
+                "fqdn": "",  # Set by _build_switch_data()
                 "ipv4": str(first_ip) if first_ip else "",
             }
 
@@ -660,7 +659,7 @@ def main():
     _deploy_html(switch_html, HA_SWITCH_WWW_PATH)
     asyncio.run(_ensure_iframe_dashboard(config))
 
-    print(f"\nDashboards at:")
+    print("\nDashboards at:")
     print(f"  https://ha.{domain}/network-reachability/default")
     print(f"  https://ha.{domain}/network-reachability/switches")
 

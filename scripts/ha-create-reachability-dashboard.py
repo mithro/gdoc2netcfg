@@ -17,7 +17,6 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import html
 import json
 import re
 import shlex
@@ -77,9 +76,22 @@ def _iface_slug(vi) -> str:
     return re.sub(r"[^a-zA-Z0-9]", "_", name).lower()
 
 
-def _esc(s: str) -> str:
-    """HTML-escape a string."""
-    return html.escape(s, quote=True)
+def _js_esc(s: str) -> str:
+    """Escape a string for safe embedding in a JS string literal.
+
+    The result is placed between double quotes in a <script> block,
+    so we must escape backslashes, double quotes, newlines, and </
+    (to prevent script tag breakout).  HTML entity encoding (html.escape)
+    is wrong here — JS doesn't decode HTML entities inside string literals.
+    """
+    return (
+        s
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("</", r"<\/")
+    )
 
 
 def _ipv6_common_prefix(site) -> str:
@@ -336,10 +348,10 @@ def _generate_html(networks, controls_map, ipv6_prefix, domain, config):
     return (
         template
         .replace("__DATA_JSON__", data_json)
-        .replace("__IPV6_PREFIX__", _esc(ipv6_prefix))
-        .replace("__DOMAIN__", _esc(domain))
-        .replace("__HA_WS_URL__", _esc(ws_url))
-        .replace("__HA_TOKEN__", _esc(config.homeassistant.token))
+        .replace("__IPV6_PREFIX__", _js_esc(ipv6_prefix))
+        .replace("__DOMAIN__", _js_esc(domain))
+        .replace("__HA_WS_URL__", _js_esc(ws_url))
+        .replace("__HA_TOKEN__", _js_esc(config.homeassistant.token))
     )
 
 
@@ -469,9 +481,9 @@ def _generate_switch_html(switch_data: list[dict], domain: str, config) -> str:
     return (
         template
         .replace("__SWITCH_DATA_JSON__", data_json)
-        .replace("__DOMAIN__", _esc(domain))
-        .replace("__HA_WS_URL__", _esc(ws_url))
-        .replace("__HA_TOKEN__", _esc(config.homeassistant.token))
+        .replace("__DOMAIN__", _js_esc(domain))
+        .replace("__HA_WS_URL__", _js_esc(ws_url))
+        .replace("__HA_TOKEN__", _js_esc(config.homeassistant.token))
     )
 
 
@@ -484,11 +496,8 @@ def _fetch_ha_states(config) -> list[dict]:
         "Authorization": f"Bearer {config.homeassistant.token}",
         "Content-Type": "application/json",
     })
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read())
-    except Exception:
-        return []
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read())
 
 
 async def _ensure_iframe_dashboard(config) -> None:

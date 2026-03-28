@@ -80,6 +80,17 @@ var openHosts = {};  // nid -> true for unfolded hosts
 // --- HA WebSocket ---
 
 var ws, msgId = 1, connected = false;
+var renderTimer = null;
+
+// Debounced render: at most once per 200ms to avoid excessive DOM
+// rebuilds when many entities fire state_changed events in a burst.
+function scheduleRender() {
+  if (renderTimer) return;
+  renderTimer = setTimeout(function() {
+    renderTimer = null;
+    render();
+  }, 200);
+}
 
 function haConnect() {
   ws = new WebSocket(HA_WS);
@@ -103,12 +114,12 @@ function haConnect() {
         states[msg.result[i].entity_id] = msg.result[i].state;
       }
       setStatus("Live \u2014 " + Object.keys(states).length + " entities");
-      render();
+      scheduleRender();
     } else if (msg.type === "event" && msg.event && msg.event.event_type === "state_changed") {
       var d = msg.event.data;
       if (d.new_state) {
         states[d.entity_id] = d.new_state.state;
-        render();
+        scheduleRender();
       }
     }
   };

@@ -92,6 +92,8 @@ def _iface_entity_state_topic(
         return f"{STATE_PREFIX}/{nid}/{slug}/stack_mode/state", None
     elif entity.suffix.endswith("_ipv4"):
         return f"{STATE_PREFIX}/{nid}/{slug}/ipv4/state", None
+    elif entity.suffix.endswith("_ipv6"):
+        return f"{STATE_PREFIX}/{nid}/{slug}/ipv6/state", None
     elif entity.suffix.endswith("_mac"):
         return f"{STATE_PREFIX}/{nid}/{slug}/mac/state", None
     elif entity.suffix.endswith("_rtt"):
@@ -205,6 +207,14 @@ def _iface_entities(iface_slug: str, iface_name: str | None) -> list[EntityDef]:
             component="sensor",
             suffix=f"{iface_slug}_ipv4",
             name=f"{display} IPv4",
+            entity_category="diagnostic",
+            icon="mdi:ip-network",
+            expire_after=600,
+        ),
+        EntityDef(
+            component="sensor",
+            suffix=f"{iface_slug}_ipv6",
+            name=f"{display} IPv6",
             entity_category="diagnostic",
             icon="mdi:ip-network",
             expire_after=600,
@@ -366,6 +376,68 @@ def discovery_topic(entity: EntityDef, node_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Host directory
+# ---------------------------------------------------------------------------
+
+HOST_DIRECTORY_STATE_TOPIC = f"{STATE_PREFIX}/host_directory/state"
+HOST_DIRECTORY_ATTRS_TOPIC = f"{STATE_PREFIX}/host_directory/attributes"
+
+HOST_DIRECTORY_ENTITY = EntityDef(
+    component="sensor",
+    suffix="host_directory",
+    name="Host directory",
+    entity_category="diagnostic",
+    icon="mdi:book-search",
+)
+
+
+def _build_host_directory(hosts: list[Host]) -> dict[str, str]:
+    """Build machine_name/hostname → hostname mapping for all hosts.
+
+    The switch dashboard JS uses this to resolve port descriptions
+    (which contain machine_name) to full hostnames, from which it
+    derives entity ID prefixes for looking up live MAC/IPv4/IPv6 data.
+
+    Maps both machine_name and hostname to the full hostname.
+    For machine_name collisions (e.g. BMC hosts share machine_name
+    with their parent), prefer the non-BMC host since port
+    descriptions refer to the primary host.
+    """
+    directory: dict[str, str] = {}
+    for host in hosts:
+        # Always index by hostname (unique)
+        directory[host.hostname] = host.hostname
+        # Index by machine_name only if no collision, and prefer
+        # non-BMC hosts (port descriptions refer to the primary host,
+        # not its BMC).  BMC hosts share machine_name with their parent.
+        key = host.machine_name
+        if key not in directory or host.hostname == key:
+            directory[key] = host.hostname
+    return directory
+
+
+def _host_directory_discovery_payload(
+    avail_list: list[dict],
+) -> dict:
+    """Build HA MQTT discovery payload for the host directory entity.
+
+    This is a standalone entity (no device), published at bridge level.
+    """
+    unique_id = "gdoc2netcfg_host_directory"
+    return {
+        "unique_id": unique_id,
+        "default_entity_id": "sensor.gdoc2netcfg_host_directory",
+        "name": "gdoc2netcfg host directory",
+        "state_topic": HOST_DIRECTORY_STATE_TOPIC,
+        "json_attributes_topic": HOST_DIRECTORY_ATTRS_TOPIC,
+        "entity_category": "diagnostic",
+        "icon": "mdi:book-search",
+        "origin": ORIGIN,
+        "availability": avail_list,
+    }
+
+
+# ---------------------------------------------------------------------------
 # State builders
 # ---------------------------------------------------------------------------
 
@@ -432,6 +504,10 @@ def build_interface_state(
     # IPv4 — every VirtualInterface must have an IPv4; ValueError here
     # means the host-builder produced a broken interface.
     states[f"{prefix}/ipv4/state"] = str(vi.ipv4)
+
+    # IPv6 — first IPv6 address, or empty string if none configured
+    ipv6_addrs = vi.ipv6_addresses
+    states[f"{prefix}/ipv6/state"] = str(ipv6_addrs[0]) if ipv6_addrs else ""
 
     # MAC — every VirtualInterface groups physical NICs, so macs must
     # be non-empty.
@@ -553,6 +629,22 @@ def _publish_hosts_to_client(
                 client.publish(topic, json.dumps(payload), retain=True)
                 discovery_count += 1
 
+    # Host directory discovery (bridge-level, no device)
+    bridge_avail = [
+        {
+            "topic": BRIDGE_AVAIL_TOPIC,
+            "payload_available": "online",
+            "payload_not_available": "offline",
+        },
+    ]
+    dir_disco = _host_directory_discovery_payload(bridge_avail)
+    dir_disco_topic = (
+        f"{DISCOVERY_PREFIX}/sensor/gdoc2netcfg/"
+        f"gdoc2netcfg_host_directory/config"
+    )
+    client.publish(dir_disco_topic, json.dumps(dir_disco), retain=True)
+    discovery_count += 1
+
     # Wait for HA to process discovery and subscribe to state topics
     if verbose:
         print(
@@ -583,6 +675,17 @@ def _publish_hosts_to_client(
                 state_count += 1
 
         published += 1
+
+    # Host directory state — retained so it survives HA restarts
+    host_dir = _build_host_directory(sorted_hosts)
+    client.publish(
+        HOST_DIRECTORY_STATE_TOPIC, str(len(host_dir)), retain=True,
+    )
+    state_count += 1
+    client.publish(
+        HOST_DIRECTORY_ATTRS_TOPIC, json.dumps(host_dir), retain=True,
+    )
+    state_count += 1
 
     return published, discovery_count, state_count
 

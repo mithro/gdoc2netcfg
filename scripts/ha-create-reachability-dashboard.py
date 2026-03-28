@@ -401,11 +401,6 @@ def _discover_switches(
         and e["entity_id"].endswith("_poe")
     }
 
-    # Map _node_id(machine_name) → host for matching
-    nid_to_host: dict[str, object] = {}
-    for h in hosts:
-        nid_to_host[_node_id(h.machine_name)] = h
-
     # Check which hw sensor entities exist
     all_eids = {e["entity_id"] for e in ha_states}
 
@@ -419,18 +414,6 @@ def _discover_switches(
             for p in sorted_ports
         )
 
-        # Match to pipeline host
-        host_info = None
-        host_obj = nid_to_host.get(sw)
-        if host_obj:
-            nid = _node_id(host_obj.hostname)
-            first_ip = host_obj.first_ipv4
-            host_info = {
-                "nid": nid,
-                "fqdn": "",  # Set by _build_switch_data()
-                "ipv4": str(first_ip) if first_ip else "",
-            }
-
         # Hardware sensors
         hw_sensors = [
             s for s in _HW_SENSOR_SUFFIXES
@@ -443,7 +426,7 @@ def _discover_switches(
             "ports": sorted_ports,
             "has_poe": has_poe,
             "hw_sensors": hw_sensors,
-            "host": host_info,
+            "host": None,  # Populated by _build_switch_data()
         })
 
     return switches

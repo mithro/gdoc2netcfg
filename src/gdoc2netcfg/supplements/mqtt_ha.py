@@ -404,12 +404,13 @@ def _build_host_directory(hosts: list[Host]) -> dict[str, str]:
     descriptions refer to the primary host.
     """
     directory: dict[str, str] = {}
+    # Pass 1: index all hostnames (always unique)
     for host in hosts:
-        # Always index by hostname (unique)
         directory[host.hostname] = host.hostname
-        # Index by machine_name only if no collision, and prefer
-        # non-BMC hosts (port descriptions refer to the primary host,
-        # not its BMC).  BMC hosts share machine_name with their parent.
+    # Pass 2: index machine_names.  For BMC collisions (BMC and parent
+    # share machine_name), prefer the primary host (hostname == key)
+    # since port descriptions refer to the primary, not its BMC.
+    for host in hosts:
         key = host.machine_name
         if key not in directory or host.hostname == key:
             directory[key] = host.hostname

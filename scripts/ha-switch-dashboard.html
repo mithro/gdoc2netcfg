@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Switch Ports</title>
+<script>
+// Detect HA dark/light from parent frame background
+try {
+  var bg = window.parent.getComputedStyle(window.parent.document.body).backgroundColor;
+  var m = bg.match(/(\d+)/g);
+  if (m && m.length >= 3) {
+    var lum = (0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2]) / 255;
+    if (lum > 0.5) document.documentElement.classList.add("light");
+  }
+} catch(e) {}
+setTimeout(function() {
+  try {
+    var bg = window.parent.getComputedStyle(window.parent.document.body).backgroundColor;
+    var m = bg.match(/(\d+)/g);
+    if (m && m.length >= 3) {
+      var lum = (0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2]) / 255;
+      if (lum > 0.5) document.documentElement.classList.add("light");
+      else document.documentElement.classList.remove("light");
+    }
+  } catch(e) {}
+}, 1000);
+</script>
+<style>
+:root {
+  --bg: #111; --text: #e1e1e1; --text2: #9b9b9b;
+  --div: #3a3a3a; --hover: #2a2a2a; --link: #4fc3f7;
+}
+:root.light {
+  --bg: #fafafa; --text: #212121; --text2: #727272;
+  --div: #e0e0e0; --hover: #f0f0f0; --link: #03a9f4;
+}
+body { font-family: Roboto,Noto,sans-serif; margin: 16px; background: var(--bg); color: var(--text); font-size: 14px; }
+h2 { margin: 24px 0 8px; font-size: 1.1em; border-bottom: 1px solid var(--div); padding-bottom: 4px; }
+.sw-header { display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; font-size: 0.85em; color: var(--text2); margin-bottom: 4px; }
+.sw-header a { color: var(--link); }
+table { width: 100%; border-collapse: collapse; font-size: 0.85em; margin-bottom: 16px; table-layout: fixed; }
+col.c-port { width: 40px; } col.c-link { width: 30px; } col.c-speed { width: 50px; }
+col.c-desc { width: 14%; } col.c-vlan { width: 7%; } col.c-poe { width: 8%; }
+col.c-host { width: 10%; } col.c-iface { width: 5%; }
+col.c-ipv4 { width: 9%; } col.c-ipv6 { width: 9%; } col.c-mac { width: 10%; }
+col.c-lldp { width: 10%; } col.c-warn { width: 30px; }
+th { text-align: left; padding: 4px 6px; border-bottom: 2px solid var(--div); cursor: pointer; user-select: none; color: var(--text2); }
+th:hover { background: var(--hover); }
+td { padding: 3px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+tr.port-down { opacity: 0.4; }
+code { font-size: 0.95em; } a { color: var(--link); } a:visited { color: var(--link); }
+.poe-toggle { cursor: pointer; user-select: none; } .poe-toggle:hover { filter: brightness(1.3); }
+.sort-active { font-weight: bold; }
+.warn { color: #ff9800; cursor: help; }
+#status-bar { font-size: 0.85em; color: var(--text2); padding: 4px 0; }
+</style>
+</head>
+<body>
+<div id="status-bar">Connecting...</div>
+<div id="dashboard"></div>
+<script>
+var SWITCHES = __SWITCH_DATA_JSON__;
+var DOMAIN = "__DOMAIN__";
+var HA_WS = "__HA_WS_URL__";
+var HA_TOKEN = "__HA_TOKEN__";
+
+var states = {};  // entity_id -> state string
+var stateAttrs = {};  // entity_id -> attributes object (scoped)
+var sortState = {};  // sw.id -> {col, dir}
+
+// --- Interface prefix regex ---
+// Must stay in sync with _iface_pfx_re in ha-create-reachability-dashboard.py
+var IFACE_PFX_RE = new RegExp(
+  "^(?:" +
+  "eth\\d+|eth-\\w+" +
+  "|eno\\d+|enp\\w+|en\\d+" +
+  "|lan\\d*" +
+  "|(?:10|25|40|100)g\\d+" +
+  "|oob\\d+" +
+  "|gi\\d+|te\\d+|xe\\d+|fo\\d+" +
+  "|lag\\d*" +
+  "|\\d+(?:/[\\w]+)+" +
+  ")\\."
+);
+
+// --- HA WebSocket ---
+
+var ws, msgId = 1, connected = false;
+var renderTimer = null;
+
+function haConnect() {
+  ws = new WebSocket(HA_WS);
+  ws.onopen = function() { setStatus("Authenticating..."); };
+  ws.onmessage = function(ev) {
+    var msg = JSON.parse(ev.data);
+    if (msg.type === "auth_required") {
+      ws.send(JSON.stringify({type: "auth", access_token: HA_TOKEN}));
+    } else if (msg.type === "auth_ok") {
+      connected = true;
+      setStatus("Fetching states...");
+      ws.send(JSON.stringify({id: msgId++, type: "get_states"}));
+      ws.send(JSON.stringify({id: msgId++, type: "subscribe_events", event_type: "state_changed"}));
+    } else if (msg.type === "auth_invalid") {
+      setStatus("Auth failed: " + (msg.message || "invalid token"));
+    } else if (msg.type === "result" && msg.success && Array.isArray(msg.result)) {
+      for (var i = 0; i < msg.result.length; i++) {
+        var e = msg.result[i];
+        states[e.entity_id] = e.state;
+        // Store attributes for host directory entity
+        if (e.entity_id === "sensor.gdoc2netcfg_host_directory" && e.attributes) {
+          stateAttrs[e.entity_id] = e.attributes;
+        }
+      }
+      setStatus("Live \u2014 " + Object.keys(states).length + " entities");
+      scheduleRender();
+    } else if (msg.type === "event" && msg.event && msg.event.event_type === "state_changed") {
+      var d = msg.event.data;
+      if (d.new_state) {
+        states[d.entity_id] = d.new_state.state;
+        if (d.entity_id === "sensor.gdoc2netcfg_host_directory" && d.new_state.attributes) {
+          stateAttrs[d.entity_id] = d.new_state.attributes;
+        }
+        scheduleRender();
+      }
+    }
+  };
+  ws.onclose = function() {
+    connected = false;
+    setStatus("Disconnected \u2014 reconnecting in 5s...");
+    setTimeout(haConnect, 5000);
+  };
+  ws.onerror = function() { ws.close(); };
+}
+
+function setStatus(txt) {
+  document.getElementById("status-bar").textContent = txt;
+}
+
+// Debounced render: at most once per 200ms to avoid excessive DOM
+// rebuilds when ~2500 port entities fire state_changed events.
+function scheduleRender() {
+  if (renderTimer) return;
+  renderTimer = setTimeout(function() {
+    renderTimer = null;
+    render();
+  }, 200);
+}
+
+function st(entityId) { return states[entityId] || "unavailable"; }
+
+function fmtSpeed(v) {
+  if (!v || v === "unavailable" || v === "unknown" || v === "0") return "";
+  var n = parseInt(v, 10);
+  if (isNaN(n) || n <= 0) return "";
+  if (n >= 1000) return (n / 1000) + "G";
+  return n + "M";
+}
+
+function callService(domain, service, entityId) {
+  if (!connected || !ws) return;
+  ws.send(JSON.stringify({id: msgId++, type: "call_service", domain: domain, service: service, target: {entity_id: entityId}}));
+}
+
+function natCmp(a, b) {
+  var ax = String(a).match(/(\d+|\D+)/g) || [];
+  var bx = String(b).match(/(\d+|\D+)/g) || [];
+  for (var i = 0; i < Math.min(ax.length, bx.length); i++) {
+    var an = parseInt(ax[i], 10), bn = parseInt(bx[i], 10);
+    var isNum = !isNaN(an) && !isNaN(bn);
+    var c = isNum ? an - bn : ax[i].localeCompare(bx[i]);
+    if (c !== 0) return c;
+  }
+  return ax.length - bx.length;
+}
+
+// --- Host resolution from live host directory ---
+
+function nodeId(name) {
+  return name.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
+}
+
+function resolveHost(machineName, ifaceName) {
+  // Look up hostname from live host directory entity attributes
+  var dir = stateAttrs["sensor.gdoc2netcfg_host_directory"];
+  if (!dir) return null;
+
+  var hostname = dir[machineName];
+  if (!hostname) return null;
+
+  var nid = nodeId(hostname);
+  var slug = ifaceName ? nodeId(ifaceName) : "default";
+  var ep = "gdoc2netcfg_" + nid + "_" + slug;
+
+  // Try specific interface slug first, fall back to _default_
+  var ipv4 = st("sensor." + ep + "_ipv4");
+  if (ipv4 === "unavailable" && slug !== "default") {
+    ep = "gdoc2netcfg_" + nid + "_default";
+    ipv4 = st("sensor." + ep + "_ipv4");
+  }
+
+  return {
+    hostname: hostname,
+    nid: nid,
+    ep: ep,
+    ipv4: ipv4,
+    ipv6: st("sensor." + ep + "_ipv6"),
+    mac: st("sensor." + ep + "_mac")
+  };
+}
+
+function parseDescription(desc) {
+  // Parse port description into {iface, host}
+  if (!desc || desc === "unavailable" || desc === "unknown") return null;
+  var m = IFACE_PFX_RE.exec(desc);
+  if (m) {
+    return {
+      iface: desc.substring(0, m[0].length - 1),  // strip trailing dot
+      host: desc.substring(m[0].length)
+    };
+  }
+  return {iface: "", host: desc};
+}
+
+// --- Sorting ---
+
+function getSort(swId) {
+  return sortState[swId] || {col: "port", dir: 1};
+}
+
+function setSort(swId, col) {
+  var cur = getSort(swId);
+  if (cur.col === col) sortState[swId] = {col: col, dir: cur.dir * -1};
+  else sortState[swId] = {col: col, dir: 1};
+  scheduleRender();
+}
+
+function portSortVal(sw, port, col) {
+  var pp = sw.id + "_port_" + port;
+  switch (col) {
+    case "port": return port;
+    case "link": return st("sensor." + pp + "_link") === "up" ? 0 : 1;
+    case "speed": return parseInt(st("sensor." + pp + "_speed"), 10) || 0;
+    case "desc": return st("sensor." + pp + "_description") || "";
+    case "vlan": return parseInt(st("sensor." + pp + "_vlan"), 10) || 0;
+    case "poe":
+      var pst = st("switch." + pp + "_poe");
+      return pst === "on" ? 0 : pst === "off" ? 1 : 2;
+    case "host":
+      var d = parseDescription(st("sensor." + pp + "_description"));
+      return d ? d.host : "";
+    case "iface":
+      var d2 = parseDescription(st("sensor." + pp + "_description"));
+      return d2 ? d2.iface : "";
+    case "ipv4":
+      var d3 = parseDescription(st("sensor." + pp + "_description"));
+      if (!d3 || !d3.host) return 0;
+      var r = resolveHost(d3.host, d3.iface);
+      if (!r || !r.ipv4 || r.ipv4 === "unavailable") return 0;
+      var p = r.ipv4.split(".");
+      return p.length === 4 ? (+p[0]*16777216 + +p[1]*65536 + +p[2]*256 + +p[3]) : 0;
+    case "ipv6":
+      var d4 = parseDescription(st("sensor." + pp + "_description"));
+      if (!d4 || !d4.host) return "";
+      var r2 = resolveHost(d4.host, d4.iface);
+      return (r2 && r2.ipv6 && r2.ipv6 !== "unavailable") ? r2.ipv6 : "";
+    case "mac":
+      var d5 = parseDescription(st("sensor." + pp + "_description"));
+      if (!d5 || !d5.host) return "";
+      var r3 = resolveHost(d5.host, d5.iface);
+      return (r3 && r3.mac && r3.mac !== "unavailable") ? r3.mac : "";
+    case "lldp": return st("sensor." + pp + "_lldp") || "";
+    case "warn":
+      var desc6 = parseDescription(st("sensor." + pp + "_description"));
+      var lldp = st("sensor." + pp + "_lldp");
+      if (!desc6 || !desc6.host || !lldp || lldp === "unavailable" || lldp === "unknown" || !lldp.trim()) return 1;
+      return desc6.host.toLowerCase() !== lldp.toLowerCase() ? 0 : 1;
+    default: return port;
+  }
+}
+
+function sortPorts(sw, ports) {
+  var s = getSort(sw.id);
+  return ports.slice().sort(function(a, b) {
+    var va = portSortVal(sw, a, s.col), vb = portSortVal(sw, b, s.col);
+    var c = (typeof va === "number" && typeof vb === "number") ? va - vb : natCmp(va, vb);
+    return c !== 0 ? c * s.dir : a - b;
+  });
+}
+
+// --- Render ---
+
+function render() {
+  var root = document.getElementById("dashboard");
+  while (root.firstChild) root.removeChild(root.firstChild);
+
+  for (var si = 0; si < SWITCHES.length; si++) {
+    var sw = SWITCHES[si];
+    var s = getSort(sw.id);
+
+    // Switch header
+    var h2 = document.createElement("h2");
+    h2.textContent = sw.name + " \u2014 " + sw.ports.length + " ports";
+    root.appendChild(h2);
+
+    var hdr = document.createElement("div");
+    hdr.className = "sw-header";
+    if (sw.host) {
+      var lnk = document.createElement("a");
+      lnk.href = "http://" + sw.host.fqdn;
+      lnk.textContent = sw.host.fqdn;
+      hdr.appendChild(lnk);
+      if (sw.host.ipv4) {
+        var ipSpan = document.createElement("span");
+        ipSpan.textContent = sw.host.ipv4;
+        hdr.appendChild(ipSpan);
+      }
+      var conn = st("binary_sensor.gdoc2netcfg_" + sw.host.nid + "_connectivity");
+      var connSpan = document.createElement("span");
+      connSpan.textContent = conn === "on" ? "\uD83D\uDFE2 online" : "\uD83D\uDD34 offline";
+      hdr.appendChild(connSpan);
+      var rtt = st("sensor.gdoc2netcfg_" + sw.host.nid + "_default_rtt");
+      if (rtt && rtt !== "unavailable" && rtt !== "unknown") {
+        var rttSpan = document.createElement("span");
+        rttSpan.textContent = rtt + "ms";
+        hdr.appendChild(rttSpan);
+      }
+      // Hardware sensors
+      for (var hi = 0; hi < sw.hw_sensors.length; hi++) {
+        var hsName = sw.hw_sensors[hi];
+        var hsVal = st("sensor." + sw.id + "_" + hsName);
+        if (hsVal && hsVal !== "unavailable" && hsVal !== "unknown") {
+          var hsSpan = document.createElement("span");
+          hsSpan.textContent = hsName.replace(/_/g, " ") + ": " + hsVal;
+          hdr.appendChild(hsSpan);
+        }
+      }
+    }
+    root.appendChild(hdr);
+
+    // Table
+    var table = document.createElement("table");
+    var cg = document.createElement("colgroup");
+    var colClasses = ["c-port","c-link","c-speed","c-desc","c-vlan","c-poe","c-host","c-iface","c-ipv4","c-ipv6","c-mac","c-lldp","c-warn"];
+    for (var ci = 0; ci < colClasses.length; ci++) {
+      var col = document.createElement("col"); col.className = colClasses[ci]; cg.appendChild(col);
+    }
+    table.appendChild(cg);
+
+    var thead = document.createElement("thead");
+    var htr = document.createElement("tr");
+    var headers = [
+      ["Port","port"],["Link","link"],["Speed","speed"],
+      ["Description","desc"],["VLAN","vlan"],["PoE","poe"],
+      ["Host","host"],["Iface","iface"],
+      ["IPv4","ipv4"],["IPv6","ipv6"],["MAC","mac"],
+      ["LLDP","lldp"],["\u26a0","warn"]
+    ];
+    for (var hIdx = 0; hIdx < headers.length; hIdx++) {
+      var th = document.createElement("th");
+      th.textContent = headers[hIdx][0];
+      var sortKey = headers[hIdx][1];
+      if (s.col === sortKey) {
+        th.classList.add("sort-active");
+        th.textContent = headers[hIdx][0] + (s.dir === 1 ? " \u25be" : " \u25b4");
+      }
+      // Hide PoE column header if switch has no PoE
+      if (sortKey === "poe" && !sw.has_poe) {
+        th.style.visibility = "hidden";
+      }
+      th.addEventListener("click", (function(swId, key) {
+        return function() { setSort(swId, key); };
+      })(sw.id, sortKey));
+      htr.appendChild(th);
+    }
+    thead.appendChild(htr);
+    table.appendChild(thead);
+
+    var tbody = document.createElement("tbody");
+    var sorted = sortPorts(sw, sw.ports);
+
+    for (var pi = 0; pi < sorted.length; pi++) {
+      var port = sorted[pi];
+      var pp = sw.id + "_port_" + port;
+      var linkSt = st("sensor." + pp + "_link");
+      var speedSt = st("sensor." + pp + "_speed");
+      var descSt = st("sensor." + pp + "_description");
+      var vlanSt = st("sensor." + pp + "_vlan");
+      var vlanName = st("sensor." + pp + "_vlan_name");
+      var lldpSt = st("sensor." + pp + "_lldp");
+
+      var tr = document.createElement("tr");
+      if (linkSt !== "up") tr.className = "port-down";
+
+      // Port
+      var td;
+      td = document.createElement("td"); td.textContent = port; tr.appendChild(td);
+
+      // Link
+      td = document.createElement("td");
+      td.textContent = linkSt === "up" ? "\uD83D\uDFE2" : linkSt === "down" ? "\uD83D\uDD34" : "\u2014";
+      tr.appendChild(td);
+
+      // Speed
+      td = document.createElement("td"); td.textContent = fmtSpeed(speedSt) || "\u2014"; tr.appendChild(td);
+
+      // Description
+      td = document.createElement("td");
+      td.textContent = (descSt && descSt !== "unavailable" && descSt !== "unknown") ? descSt : "";
+      td.title = td.textContent;
+      tr.appendChild(td);
+
+      // VLAN
+      td = document.createElement("td");
+      if (vlanSt && vlanSt !== "unavailable" && vlanSt !== "unknown") {
+        td.textContent = vlanSt;
+        if (vlanName && vlanName !== "unavailable" && vlanName !== "unknown") {
+          td.title = vlanName;
+        }
+      }
+      tr.appendChild(td);
+
+      // PoE
+      td = document.createElement("td");
+      if (sw.has_poe) {
+        var poeEid = "switch." + pp + "_poe";
+        var poeSt = st(poeEid);
+        var poePower = st("sensor." + pp + "_poe_power");
+        if (poeSt === "on" || poeSt === "off") {
+          var poe = document.createElement("span");
+          poe.className = "poe-toggle";
+          poe.textContent = (poeSt === "on" ? "\uD83D\uDFE2" : "\uD83D\uDD34") + "\u26a1";
+          poe.title = (poeSt === "on" ? "PoE on" : "PoE off") + " \u2014 click to toggle";
+          poe.addEventListener("click", (function(eid) {
+            return function(ev) { ev.stopPropagation(); callService("switch", "toggle", eid); };
+          })(poeEid));
+          td.appendChild(poe);
+          if (poePower && poePower !== "unavailable" && poePower !== "unknown" && parseFloat(poePower) > 0) {
+            var pw = document.createElement("small");
+            pw.textContent = " " + (parseFloat(poePower) / 1000).toFixed(1) + "W";
+            td.appendChild(pw);
+          }
+        }
+      }
+      tr.appendChild(td);
+
+      // Host + Interface + IPv4/IPv6/MAC (resolved from host directory)
+      var parsed = parseDescription(descSt);
+      var resolved = null;
+      if (parsed && parsed.host) {
+        resolved = resolveHost(parsed.host, parsed.iface);
+      }
+
+      // Host
+      td = document.createElement("td");
+      if (resolved) {
+        var hostLink = document.createElement("a");
+        hostLink.href = "http://" + resolved.hostname + "." + DOMAIN;
+        hostLink.textContent = resolved.hostname;
+        td.appendChild(hostLink);
+      } else if (parsed && parsed.host) {
+        td.textContent = parsed.host;
+      }
+      tr.appendChild(td);
+
+      // Interface
+      td = document.createElement("td");
+      td.textContent = (parsed && parsed.iface) ? parsed.iface : "";
+      tr.appendChild(td);
+
+      // IPv4
+      td = document.createElement("td");
+      if (resolved && resolved.ipv4 && resolved.ipv4 !== "unavailable" && resolved.ipv4 !== "unknown") {
+        var v4Link = document.createElement("a");
+        v4Link.href = "http://" + resolved.ipv4;
+        v4Link.textContent = resolved.ipv4;
+        td.appendChild(v4Link);
+      }
+      tr.appendChild(td);
+
+      // IPv6
+      td = document.createElement("td");
+      if (resolved && resolved.ipv6 && resolved.ipv6 !== "unavailable" && resolved.ipv6 !== "unknown" && resolved.ipv6 !== "") {
+        var v6Code = document.createElement("code");
+        v6Code.textContent = resolved.ipv6;
+        td.appendChild(v6Code);
+      }
+      tr.appendChild(td);
+
+      // MAC
+      td = document.createElement("td");
+      if (resolved && resolved.mac && resolved.mac !== "unavailable" && resolved.mac !== "unknown") {
+        var macCode = document.createElement("code");
+        macCode.textContent = resolved.mac;
+        td.appendChild(macCode);
+      }
+      tr.appendChild(td);
+
+      // LLDP
+      td = document.createElement("td");
+      if (lldpSt && lldpSt !== "unavailable" && lldpSt !== "unknown") {
+        td.textContent = lldpSt;
+        td.title = lldpSt;
+      }
+      tr.appendChild(td);
+
+      // Warning: LLDP vs description mismatch
+      td = document.createElement("td");
+      if (parsed && parsed.host && lldpSt && lldpSt !== "unavailable" && lldpSt !== "unknown" && lldpSt.trim()) {
+        if (parsed.host.toLowerCase() !== lldpSt.trim().toLowerCase()) {
+          var warn = document.createElement("span");
+          warn.className = "warn";
+          warn.textContent = "\u26a0";
+          warn.title = "LLDP mismatch: description says '" + parsed.host + "' but LLDP says '" + lldpSt.trim() + "'";
+          td.appendChild(warn);
+        }
+      }
+      tr.appendChild(td);
+
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    root.appendChild(table);
+  }
+}
+
+render();
+haConnect();
+</script>
+</body>
+</html>

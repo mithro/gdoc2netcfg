@@ -58,6 +58,8 @@ NETWORK_DISPLAY = {
 HA_HOST = "ha.welland.mithis.com"
 HA_WWW_PATH = "/config/www/network-reachability.html"
 HA_PANEL_URL = "/local/network-reachability.html"
+HA_SWITCH_WWW_PATH = "/config/www/network-switch-ports.html"
+HA_SWITCH_PANEL_URL = "/local/network-switch-ports.html"
 
 
 # ---------------------------------------------------------------------------
@@ -345,16 +347,150 @@ def _generate_html(networks, controls_map, ipv6_prefix, domain, config):
 # Deploy
 # ---------------------------------------------------------------------------
 
-def _deploy_html(html_content: str) -> None:
-    """Write the HTML file to HA's www directory via ssh + sudo tee."""
+def _deploy_html(html_content: str, path: str = HA_WWW_PATH) -> None:
+    """Write an HTML file to HA's www directory via ssh + sudo tee."""
     result = subprocess.run(
         ["ssh", HA_HOST,
-         f"sudo tee {shlex.quote(HA_WWW_PATH)} > /dev/null"],
+         f"sudo tee {shlex.quote(path)} > /dev/null"],
         input=html_content, capture_output=True, text=True, timeout=30,
     )
     if result.returncode != 0:
         raise RuntimeError(f"Deploy failed: {result.stderr.strip()}")
-    print(f"Deployed to {HA_HOST}:{HA_WWW_PATH}")
+    print(f"Deployed to {HA_HOST}:{path}")
+
+
+# ---------------------------------------------------------------------------
+# Switch port dashboard
+# ---------------------------------------------------------------------------
+
+_SWITCH_HTML_TEMPLATE_PATH = Path(__file__).parent / "ha-switch-dashboard.html"
+
+# Hardware sensor suffixes that some switches expose.
+_HW_SENSOR_SUFFIXES = ["temperature", "fan_1", "fan_2", "psu_power"]
+
+
+def _discover_switches(
+    ha_states: list[dict],
+    hosts: list,
+) -> list[dict]:
+    """Discover switches from HA sensor entities.
+
+    Scans ``sensor.*_port_*_description`` entities, groups by switch prefix,
+    detects port counts and PoE capability.  Matches each switch prefix to
+    a gdoc2netcfg host by comparing ``_node_id(host.machine_name)`` against
+    the prefix.
+    """
+    port_re = re.compile(r"^sensor\.(.+)_port_(\d+)_description$")
+
+    # Collect ports per switch prefix
+    switch_ports: dict[str, set[int]] = {}
+    for e in ha_states:
+        m = port_re.match(e["entity_id"])
+        if m:
+            sw, port = m.group(1), int(m.group(2))
+            switch_ports.setdefault(sw, set()).add(port)
+
+    if not switch_ports:
+        return []
+
+    # Detect PoE capability per switch
+    poe_entities: set[str] = {
+        e["entity_id"]
+        for e in ha_states
+        if e["entity_id"].startswith("switch.")
+        and e["entity_id"].endswith("_poe")
+    }
+
+    # Map _node_id(machine_name) → host for matching
+    nid_to_host: dict[str, object] = {}
+    for h in hosts:
+        nid_to_host[_node_id(h.machine_name)] = h
+
+    # Check which hw sensor entities exist
+    all_eids = {e["entity_id"] for e in ha_states}
+
+    switches = []
+    for sw, ports in sorted(switch_ports.items()):
+        sorted_ports = sorted(ports)
+
+        # PoE: check if any port on this switch has a PoE toggle
+        has_poe = any(
+            f"switch.{sw}_port_{p}_poe" in poe_entities
+            for p in sorted_ports
+        )
+
+        # Match to pipeline host
+        host_info = None
+        host_obj = nid_to_host.get(sw)
+        if host_obj:
+            nid = _node_id(host_obj.hostname)
+            first_ip = host_obj.first_ipv4
+            fqdn = f"{host_obj.hostname}.{hosts[0].hostname.split('.')[-1]}" if "." in hosts[0].hostname else host_obj.hostname
+            host_info = {
+                "nid": nid,
+                "fqdn": "",
+                "ipv4": str(first_ip) if first_ip else "",
+            }
+
+        # Hardware sensors
+        hw_sensors = [
+            s for s in _HW_SENSOR_SUFFIXES
+            if f"sensor.{sw}_{s}" in all_eids
+        ]
+
+        switches.append({
+            "id": sw,
+            "name": sw.replace("_", "-"),
+            "ports": sorted_ports,
+            "has_poe": has_poe,
+            "hw_sensors": hw_sensors,
+            "host": host_info,
+        })
+
+    return switches
+
+
+def _build_switch_data(
+    switches: list[dict],
+    hosts: list,
+    config,
+) -> list[dict]:
+    """Enrich switch data with host FQDNs from the pipeline."""
+    domain = config.site.domain
+    nid_to_host: dict[str, object] = {}
+    for h in hosts:
+        nid_to_host[_node_id(h.machine_name)] = h
+
+    for sw in switches:
+        host_obj = nid_to_host.get(sw["id"])
+        if host_obj:
+            nid = _node_id(host_obj.hostname)
+            first_ip = host_obj.first_ipv4
+            sw["host"] = {
+                "nid": nid,
+                "fqdn": f"{host_obj.hostname}.{domain}",
+                "ipv4": str(first_ip) if first_ip else "",
+            }
+
+    return switches
+
+
+def _generate_switch_html(switch_data: list[dict], domain: str, config) -> str:
+    """Generate the switch port dashboard HTML from template."""
+    data_json = json.dumps(
+        switch_data, separators=(",", ":"),
+    ).replace("</", r"<\/")
+
+    ws_url = f"wss://ha.{domain}/api/websocket"
+
+    template = _SWITCH_HTML_TEMPLATE_PATH.read_text()
+    return (
+        template
+        .replace("__SWITCH_DATA_JSON__", data_json)
+        .replace("__DOMAIN__", _esc(domain))
+        .replace("__HA_WS_URL__", _esc(ws_url))
+        .replace("__HA_TOKEN__", _esc(config.homeassistant.token))
+    )
 
 
 def _fetch_ha_states(config) -> list[dict]:
@@ -431,23 +567,36 @@ async def _ensure_iframe_dashboard(config) -> None:
             "type": "lovelace/config/save",
             "url_path": "network-reachability",
             "config": {
-                "views": [{
-                    "title": "Network Reachability",
-                    "path": "default",
-                    "icon": "mdi:network",
-                    "panel": True,
-                    "cards": [{
-                        "type": "iframe",
-                        "url": f"{HA_PANEL_URL}?v={bust}",
-                        "aspect_ratio": "",
-                    }],
-                }],
+                "views": [
+                    {
+                        "title": "Host Reachability",
+                        "path": "default",
+                        "icon": "mdi:network",
+                        "panel": True,
+                        "cards": [{
+                            "type": "iframe",
+                            "url": f"{HA_PANEL_URL}?v={bust}",
+                            "aspect_ratio": "",
+                        }],
+                    },
+                    {
+                        "title": "Switch Ports",
+                        "path": "switches",
+                        "icon": "mdi:ethernet",
+                        "panel": True,
+                        "cards": [{
+                            "type": "iframe",
+                            "url": f"{HA_SWITCH_PANEL_URL}?v={bust}",
+                            "aspect_ratio": "",
+                        }],
+                    },
+                ],
             },
         }))
         msg_id += 1
         resp = json.loads(await ws.recv())
         if resp.get("success"):
-            print("Dashboard iframe config saved")
+            print("Dashboard config saved (2 views: Host Reachability, Switch Ports)")
         else:
             print(f"Failed: {resp.get('error')}")
 
@@ -489,17 +638,31 @@ def main():
     ctrl_count = sum(len(v) for v in controls_map.values())
     print(f"  {ctrl_count} control entries for {len(controls_map)} hosts")
 
-    print("Generating HTML...")
+    print("Generating reachability HTML...")
     html_content = _generate_html(
         networks, controls_map, ipv6_prefix, domain, config,
     )
     print(f"  {len(html_content):,} bytes")
 
+    print("Discovering switches...")
+    switches = _discover_switches(ha_states, hosts)
+    switches = _build_switch_data(switches, hosts, config)
+    print(f"  {len(switches)} switches found")
+    for sw in switches:
+        print(f"    {sw['name']}: {len(sw['ports'])} ports, PoE={sw['has_poe']}")
+
+    print("Generating switch HTML...")
+    switch_html = _generate_switch_html(switches, domain, config)
+    print(f"  {len(switch_html):,} bytes")
+
     print("Deploying...")
-    _deploy_html(html_content)
+    _deploy_html(html_content, HA_WWW_PATH)
+    _deploy_html(switch_html, HA_SWITCH_WWW_PATH)
     asyncio.run(_ensure_iframe_dashboard(config))
 
-    print(f"\nDashboard at: https://ha.{domain}/network-reachability/default")
+    print(f"\nDashboards at:")
+    print(f"  https://ha.{domain}/network-reachability/default")
+    print(f"  https://ha.{domain}/network-reachability/switches")
 
 
 if __name__ == "__main__":

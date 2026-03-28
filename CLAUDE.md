@@ -190,8 +190,27 @@ This fetches PoE port mappings from HA, generates the HTML, SCPs it to HA, and u
 - Dark/light theme detection from HA parent frame
 
 **Files**:
-- `scripts/ha-create-reachability-dashboard.py` — generator + deployer
-- `scripts/ha-reachability-dashboard.html` — HTML template with JS/CSS
+- `scripts/ha-create-reachability-dashboard.py` — generator + deployer (both dashboards)
+- `scripts/ha-reachability-dashboard.html` — host reachability HTML template
+- `scripts/ha-switch-dashboard.html` — switch port HTML template
+
+### Switch Port Dashboard
+
+A second tab under the same HA panel (`/network-reachability/switches`) showing per-port switch state. Same architecture: Python bakes structural data (switch list, port numbers) into HTML; JS connects to HA WebSocket for live data.
+
+**Connected device resolution**: Port descriptions (live from HA) are parsed to extract hostname, then looked up in `sensor.gdoc2netcfg_host_directory` (published by the reachability daemon) to get the full hostname and derive entity IDs for live MAC/IPv4/IPv6 lookup.
+
+**Port table columns**: Port, Link, Speed, Description, VLAN, PoE (toggleable), Host, Interface, IPv4, IPv6, MAC, LLDP, mismatch warning. All sortable per-switch.
+
+**LLDP mismatch warning**: Orange warning icon when hostname parsed from description differs from LLDP neighbor name.
+
+**Regeneration**: Same as reachability dashboard — only needed when switch structure changes (new switches, port count changes):
+
+```bash
+uv run scripts/ha-create-reachability-dashboard.py
+```
+
+This generates and deploys both dashboards, then configures the two-view HA panel.
 
 ## Production Deployment
 

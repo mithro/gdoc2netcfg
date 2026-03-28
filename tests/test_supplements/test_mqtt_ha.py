@@ -11,13 +11,17 @@ from gdoc2netcfg.supplements.mqtt_ha import (
     BRIDGE_AVAIL_TOPIC,
     DISCOVERY_PREFIX,
     HOST_CONNECTIVITY,
+    HOST_DIRECTORY_ATTRS_TOPIC,
+    HOST_DIRECTORY_STATE_TOPIC,
     HOST_STACK_MODE,
     HOST_TRACKER,
     ORIGIN,
     STATE_PREFIX,
     EntityDef,
     _availability_list,
+    _build_host_directory,
     _device_dict,
+    _host_directory_discovery_payload,
     _iface_entities,
     _iface_entity_state_topic,
     _iface_slug,
@@ -167,7 +171,7 @@ class TestEntityDefs:
 
     def test_iface_entities_count(self):
         entities = _iface_entities("eth0", "eth0")
-        assert len(entities) == 5  # connectivity, stack_mode, ipv4, mac, rtt
+        assert len(entities) == 6  # connectivity, stack_mode, ipv4, ipv6, mac, rtt
 
     def test_iface_rtt_has_measurement(self):
         entities = _iface_entities("eth0", "eth0")
@@ -580,11 +584,17 @@ class TestPublishAllHosts:
 
         pub_calls = client.publish.call_args_list
 
-        # Find state calls (topic starts with "gdoc2netcfg/" but not bridge avail)
+        # Find per-host state calls (exclude bridge avail and host directory
+        # which are intentionally retained)
+        retained_topics = {
+            BRIDGE_AVAIL_TOPIC,
+            HOST_DIRECTORY_STATE_TOPIC,
+            HOST_DIRECTORY_ATTRS_TOPIC,
+        }
         state_calls = [
             c for c in pub_calls
             if c.args[0].startswith(f"{STATE_PREFIX}/")
-            and c.args[0] != BRIDGE_AVAIL_TOPIC
+            and c.args[0] not in retained_topics
         ]
         assert len(state_calls) > 0
 
@@ -699,10 +709,12 @@ class TestPublishAllHosts:
         for c in discovery_calls:
             payload = json.loads(c.args[1])
             assert "unique_id" in payload, f"Missing unique_id in {c.args[0]}"
-            assert "device" in payload, f"Missing device in {c.args[0]}"
             assert "state_topic" in payload, f"Missing state_topic in {c.args[0]}"
             assert "origin" in payload, f"Missing origin in {c.args[0]}"
             assert "availability" in payload, f"Missing availability in {c.args[0]}"
+            # Host directory entity has no device (standalone bridge-level)
+            if "host_directory" not in c.args[0]:
+                assert "device" in payload, f"Missing device in {c.args[0]}"
 
     @patch("gdoc2netcfg.supplements.mqtt_ha.mqtt.Client")
     def test_multi_interface_host_entities(self, mock_client_cls):
@@ -742,15 +754,15 @@ class TestPublishAllHosts:
             if c.args[0].startswith("homeassistant/")
         ]
 
-        # Should have: 3 host-level + 5 per-interface * 2 interfaces = 13
-        assert len(discovery_calls) == 13
+        # Should have: 3 host-level + 6 per-interface * 2 interfaces + 1 host directory = 16
+        assert len(discovery_calls) == 16
 
         # Check eth0 and eth1 entities exist
         topics = [c.args[0] for c in discovery_calls]
         eth0_topics = [t for t in topics if "eth0" in t]
         eth1_topics = [t for t in topics if "eth1" in t]
-        assert len(eth0_topics) == 5  # connectivity, stack_mode, ipv4, mac, rtt
-        assert len(eth1_topics) == 5
+        assert len(eth0_topics) == 6  # connectivity, stack_mode, ipv4, ipv6, mac, rtt
+        assert len(eth1_topics) == 6
 
     @patch("gdoc2netcfg.supplements.mqtt_ha.mqtt.Client")
     def test_disconnects_on_completion(self, mock_client_cls):
@@ -850,3 +862,229 @@ class TestIfaceEntityStateTopic:
 class TestEntityDefImport:
     """Verify EntityDef is importable for test_unknown_suffix_raises."""
     pass
+
+
+# ---------------------------------------------------------------------------
+# IPv6 interface entity
+# ---------------------------------------------------------------------------
+
+class TestIpv6InterfaceEntity:
+    def test_ipv6_entity_in_iface_entities(self):
+        entities = _iface_entities("eth0", "eth0")
+        ipv6 = [e for e in entities if e.suffix == "eth0_ipv6"]
+        assert len(ipv6) == 1
+        assert ipv6[0].component == "sensor"
+        assert ipv6[0].icon == "mdi:ip-network"
+        assert ipv6[0].entity_category == "diagnostic"
+        assert ipv6[0].expire_after == 600
+
+    def test_ipv6_state_topic(self):
+        entities = _iface_entities("eth0", "eth0")
+        ipv6 = [e for e in entities if e.suffix == "eth0_ipv6"][0]
+        st, ja = _iface_entity_state_topic(ipv6, "big_storage", "eth0")
+        assert st == f"{STATE_PREFIX}/big_storage/eth0/ipv6/state"
+        assert ja is None
+
+    def test_ipv6_in_interface_state(self):
+        host = _make_host(iface_name="eth0")
+        vi = host.virtual_interfaces[0]
+        ir = InterfaceReachability(pings=(
+            ("10.1.5.10", PingResult(10, 10, 1.5)),
+            ("2404:e80:a137:105::10", PingResult(10, 10, 2.0)),
+        ))
+        states = build_interface_state(host, vi, ir)
+        nid = _node_id(host.hostname)
+        assert states[f"{STATE_PREFIX}/{nid}/eth0/ipv6/state"] == "2404:e80:a137:105::10"
+
+    def test_ipv6_empty_when_no_ipv6(self):
+        """Interface with no IPv6 should publish empty string."""
+        host = Host(
+            machine_name="no-ipv6",
+            hostname="no-ipv6",
+            interfaces=[
+                NetworkInterface(
+                    name="eth0",
+                    mac=MACAddress("aa:bb:cc:dd:ee:ff"),
+                    ip_addresses=(IPv4Address("10.1.5.10"),),
+                ),
+            ],
+        )
+        vi = host.virtual_interfaces[0]
+        ir = InterfaceReachability(pings=(
+            ("10.1.5.10", PingResult(10, 10, 1.5)),
+        ))
+        states = build_interface_state(host, vi, ir)
+        nid = _node_id(host.hostname)
+        assert states[f"{STATE_PREFIX}/{nid}/eth0/ipv6/state"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Host directory
+# ---------------------------------------------------------------------------
+
+class TestBuildHostDirectory:
+    def test_basic_mapping(self):
+        host = _make_host(machine_name="big-storage", hostname="big-storage")
+        d = _build_host_directory([host])
+        assert d["big-storage"] == "big-storage"
+
+    def test_hostname_with_subdomain(self):
+        host = _make_host(machine_name="au-plug-1", hostname="au-plug-1.iot")
+        d = _build_host_directory([host])
+        assert d["au-plug-1"] == "au-plug-1.iot"
+        assert d["au-plug-1.iot"] == "au-plug-1.iot"
+
+    def test_bmc_collision_prefers_primary(self):
+        """BMC and parent share machine_name; primary host should win."""
+        primary = _make_host(
+            machine_name="big-storage", hostname="big-storage",
+        )
+        bmc = _make_host(
+            machine_name="big-storage", hostname="bmc.big-storage",
+            ip="10.1.5.150", mac="11:22:33:44:55:66",
+        )
+        # Primary processed first
+        d = _build_host_directory([primary, bmc])
+        assert d["big-storage"] == "big-storage"  # primary wins
+        assert d["bmc.big-storage"] == "bmc.big-storage"
+
+    def test_bmc_collision_order_independent(self):
+        """Even if BMC is processed first, primary should win."""
+        primary = _make_host(
+            machine_name="big-storage", hostname="big-storage",
+        )
+        bmc = _make_host(
+            machine_name="big-storage", hostname="bmc.big-storage",
+            ip="10.1.5.150", mac="11:22:33:44:55:66",
+        )
+        # BMC processed first
+        d = _build_host_directory([bmc, primary])
+        assert d["big-storage"] == "big-storage"  # primary still wins
+        assert d["bmc.big-storage"] == "bmc.big-storage"
+
+    def test_multiple_hosts(self):
+        hosts = [
+            _make_host(machine_name="srv1", hostname="srv1"),
+            _make_host(
+                machine_name="rpi5-pmod", hostname="rpi5-pmod.iot",
+                ip="10.1.30.5", mac="11:22:33:44:55:66",
+            ),
+        ]
+        d = _build_host_directory(hosts)
+        assert d["srv1"] == "srv1"
+        assert d["rpi5-pmod"] == "rpi5-pmod.iot"
+        assert d["rpi5-pmod.iot"] == "rpi5-pmod.iot"
+
+
+class TestHostDirectoryDiscoveryPayload:
+    def test_basic_payload(self):
+        avail = [
+            {
+                "topic": BRIDGE_AVAIL_TOPIC,
+                "payload_available": "online",
+                "payload_not_available": "offline",
+            },
+        ]
+        payload = _host_directory_discovery_payload(avail)
+        assert payload["unique_id"] == "gdoc2netcfg_host_directory"
+        assert payload["default_entity_id"] == "sensor.gdoc2netcfg_host_directory"
+        assert payload["state_topic"] == HOST_DIRECTORY_STATE_TOPIC
+        assert payload["json_attributes_topic"] == HOST_DIRECTORY_ATTRS_TOPIC
+        assert payload["entity_category"] == "diagnostic"
+        assert payload["icon"] == "mdi:book-search"
+        assert payload["origin"] == ORIGIN
+
+
+class TestHostDirectoryPublishing:
+    @patch("gdoc2netcfg.supplements.mqtt_ha.mqtt.Client")
+    def test_host_directory_published(self, mock_client_cls):
+        """Host directory discovery and state must be published."""
+        client = MagicMock()
+        mock_client_cls.return_value = client
+
+        host = _make_host()
+        hr = _make_reachability()
+
+        from gdoc2netcfg.config import TasmotaConfig
+
+        mqtt_config = TasmotaConfig(
+            mqtt_host="broker", mqtt_port=1883,
+            mqtt_user="user", mqtt_password="pass",
+        )
+
+        publish_all_hosts([host], {"big-storage": hr}, mqtt_config)
+
+        pub_calls = client.publish.call_args_list
+        topics = [c.args[0] for c in pub_calls]
+
+        # Discovery payload
+        dir_disco_topics = [
+            t for t in topics
+            if "host_directory" in t and t.startswith("homeassistant/")
+        ]
+        assert len(dir_disco_topics) == 1
+
+        # State + attributes
+        assert HOST_DIRECTORY_STATE_TOPIC in topics
+        assert HOST_DIRECTORY_ATTRS_TOPIC in topics
+
+    @patch("gdoc2netcfg.supplements.mqtt_ha.mqtt.Client")
+    def test_host_directory_state_retained(self, mock_client_cls):
+        """Host directory state and attributes must be retained."""
+        client = MagicMock()
+        mock_client_cls.return_value = client
+
+        host = _make_host()
+        hr = _make_reachability()
+
+        from gdoc2netcfg.config import TasmotaConfig
+
+        mqtt_config = TasmotaConfig(
+            mqtt_host="broker", mqtt_port=1883,
+            mqtt_user="user", mqtt_password="pass",
+        )
+
+        publish_all_hosts([host], {"big-storage": hr}, mqtt_config)
+
+        pub_calls = client.publish.call_args_list
+
+        state_call = [
+            c for c in pub_calls if c.args[0] == HOST_DIRECTORY_STATE_TOPIC
+        ]
+        assert len(state_call) == 1
+        assert state_call[0].kwargs.get(
+            "retain", state_call[0].args[2] if len(state_call[0].args) > 2 else None,
+        ) is True
+
+        attrs_call = [
+            c for c in pub_calls if c.args[0] == HOST_DIRECTORY_ATTRS_TOPIC
+        ]
+        assert len(attrs_call) == 1
+        attrs_json = json.loads(attrs_call[0].args[1])
+        assert "big-storage" in attrs_json
+        assert attrs_json["big-storage"] == "big-storage"
+
+    @patch("gdoc2netcfg.supplements.mqtt_ha.mqtt.Client")
+    def test_host_directory_state_is_count(self, mock_client_cls):
+        """Host directory state should be the mapping entry count."""
+        client = MagicMock()
+        mock_client_cls.return_value = client
+
+        host = _make_host()
+        hr = _make_reachability()
+
+        from gdoc2netcfg.config import TasmotaConfig
+
+        mqtt_config = TasmotaConfig(
+            mqtt_host="broker", mqtt_port=1883,
+            mqtt_user="user", mqtt_password="pass",
+        )
+
+        publish_all_hosts([host], {"big-storage": hr}, mqtt_config)
+
+        pub_calls = client.publish.call_args_list
+        state_call = [
+            c for c in pub_calls if c.args[0] == HOST_DIRECTORY_STATE_TOPIC
+        ]
+        # "big-storage" maps to itself (machine_name == hostname), so 1 entry
+        assert state_call[0].args[1] == "1"

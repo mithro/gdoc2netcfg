@@ -272,12 +272,11 @@ function portSortVal(sw, port, col) {
       return (r3 && r3.mac && r3.mac !== "unavailable") ? r3.mac : "";
     case "lldp": return st("sensor." + pp + "_lldp") || "";
     case "warn":
-      var desc6 = parseDescription(st("sensor." + pp + "_description"));
-      var lldp6 = st("sensor." + pp + "_lldp");
-      if (!desc6 || !desc6.host || !lldp6 || lldp6 === "unavailable" || lldp6 === "unknown" || !lldp6.trim()) return 1;
-      var lldpP6 = parseDescription(lldp6.trim());
-      var lldpH6 = lldpP6 ? lldpP6.host : lldp6.trim();
-      return desc6.host.toLowerCase() !== lldpH6.toLowerCase() ? 0 : 1;
+      var wDesc = st("sensor." + pp + "_description");
+      var wLldp = st("sensor." + pp + "_lldp");
+      if (!wDesc || wDesc === "unavailable" || !wDesc.trim()
+          || !wLldp || wLldp === "unavailable" || wLldp === "unknown" || !wLldp.trim()) return 1;
+      return wDesc.trim().toLowerCase() !== wLldp.trim().toLowerCase() ? 0 : 1;
     default: return port;
   }
 }
@@ -533,20 +532,15 @@ function render() {
       }
       tr.appendChild(td);
 
-      // Warning: LLDP vs description hostname mismatch.
-      // Both description and LLDP use the same "{iface}.{host}" format,
-      // so parse LLDP the same way to extract the hostname before comparing.
-      // Different interface names on the same host is normal (e.g. desc
-      // "10g1.big-storage" vs LLDP "enp94s0f0.big-storage").
+      // Warning: LLDP vs description mismatch (raw string comparison)
       td = document.createElement("td");
-      if (parsed && parsed.host && lldpSt && lldpSt !== "unavailable" && lldpSt !== "unknown" && lldpSt.trim()) {
-        var lldpParsed = parseDescription(lldpSt.trim());
-        var lldpHost = lldpParsed ? lldpParsed.host : lldpSt.trim();
-        if (parsed.host.toLowerCase() !== lldpHost.toLowerCase()) {
+      if (descSt && descSt !== "unavailable" && descSt !== "unknown" && descSt.trim()
+          && lldpSt && lldpSt !== "unavailable" && lldpSt !== "unknown" && lldpSt.trim()) {
+        if (descSt.trim().toLowerCase() !== lldpSt.trim().toLowerCase()) {
           var warn = document.createElement("span");
           warn.className = "warn";
           warn.textContent = "\u26a0";
-          warn.title = "LLDP mismatch: description says '" + parsed.host + "' but LLDP says '" + lldpHost + "'";
+          warn.title = "Description '" + descSt.trim() + "' does not match LLDP '" + lldpSt.trim() + "'";
           td.appendChild(warn);
         }
       }

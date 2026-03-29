@@ -399,13 +399,14 @@ def _discover_switches(
     """
     port_re = re.compile(r"^sensor\.(.+)_port_(\d+)_description$")
 
-    # Collect ports per switch prefix
-    switch_ports: dict[str, set[int]] = {}
+    # Collect ports per switch prefix.  Store the raw port string
+    # (e.g. "01") because entity IDs use the zero-padded form.
+    switch_ports: dict[str, set[str]] = {}
     for e in ha_states:
         m = port_re.match(e["entity_id"])
         if m:
-            sw, port = m.group(1), int(m.group(2))
-            switch_ports.setdefault(sw, set()).add(port)
+            sw, port_str = m.group(1), m.group(2)
+            switch_ports.setdefault(sw, set()).add(port_str)
 
     if not switch_ports:
         return []
@@ -423,7 +424,7 @@ def _discover_switches(
 
     switches = []
     for sw, ports in sorted(switch_ports.items()):
-        sorted_ports = sorted(ports)
+        sorted_ports = sorted(ports, key=lambda s: int(s))
 
         # PoE: check if any port on this switch has a PoE toggle
         has_poe = any(

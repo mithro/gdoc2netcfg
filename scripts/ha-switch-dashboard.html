@@ -285,7 +285,7 @@ function sortPorts(sw, ports) {
   return ports.slice().sort(function(a, b) {
     var va = portSortVal(sw, a, s.col), vb = portSortVal(sw, b, s.col);
     var c = (typeof va === "number" && typeof vb === "number") ? va - vb : natCmp(va, vb);
-    return c !== 0 ? c * s.dir : a - b;
+    return c !== 0 ? c * s.dir : natCmp(a, b);
   });
 }
 
@@ -395,7 +395,7 @@ function render() {
 
       // Port
       var td;
-      td = document.createElement("td"); td.textContent = port; tr.appendChild(td);
+      td = document.createElement("td"); td.textContent = parseInt(port, 10); tr.appendChild(td);
 
       // Link
       td = document.createElement("td");

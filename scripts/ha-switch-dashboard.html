@@ -204,7 +204,7 @@ function resolveHost(machineName, ifaceName) {
     hostname: hostname,
     nid: nid,
     ep: ep,
-    ipv4: ipv4,
+    ipv4: st("sensor." + ep + "_ipv4"),
     ipv6: st("sensor." + ep + "_ipv6"),
     mac: st("sensor." + ep + "_mac")
   };

@@ -521,9 +521,20 @@ async def _ensure_iframe_dashboard(config) -> None:
     async with websockets.connect(ws_url, max_size=10 * 1024 * 1024) as ws:
         # Read responses matching on id, skipping any interleaved
         # server-initiated messages (pings, events, etc.).
-        async def recv_result(expected_id: int) -> dict:
+        async def recv_result(
+            expected_id: int, timeout: float = 30.0,
+        ) -> dict:
+            deadline = asyncio.get_event_loop().time() + timeout
             while True:
-                msg = json.loads(await ws.recv())
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"No WS response for id={expected_id} "
+                        f"within {timeout}s",
+                    )
+                msg = json.loads(
+                    await asyncio.wait_for(ws.recv(), timeout=remaining),
+                )
                 if msg.get("id") == expected_id:
                     return msg
 

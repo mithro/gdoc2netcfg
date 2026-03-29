@@ -975,6 +975,18 @@ class TestBuildHostDirectory:
         assert d["rpi5-pmod"] == "rpi5-pmod.iot"
         assert d["rpi5-pmod.iot"] == "rpi5-pmod.iot"
 
+    def test_duplicate_machine_name_raises(self):
+        """Two non-primary hosts with the same machine_name must raise."""
+        host_a = _make_host(
+            machine_name="dupe", hostname="dupe.iot",
+        )
+        host_b = _make_host(
+            machine_name="dupe", hostname="dupe.net",
+            ip="10.1.5.99", mac="11:22:33:44:55:66",
+        )
+        with pytest.raises(ValueError, match="duplicate machine name"):
+            _build_host_directory([host_a, host_b])
+
 
 class TestHostDirectoryDiscoveryPayload:
     def test_basic_payload(self):

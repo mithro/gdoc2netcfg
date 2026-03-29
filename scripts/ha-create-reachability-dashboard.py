@@ -251,6 +251,11 @@ def _build_controls_map(
         if machine is None and "." in stripped:
             machine = name_to_machine.get(stripped.split(".")[0])
         if machine is None:
+            print(
+                f"  warning: port {sw} p{port} description "
+                f"{desc!r} does not match any known host",
+                file=sys.stderr,
+            )
             continue
 
         pp = f"{sw}_port_{port}"
@@ -514,7 +519,15 @@ async def _ensure_iframe_dashboard(config) -> None:
     )
 
     async with websockets.connect(ws_url, max_size=10 * 1024 * 1024) as ws:
-        await ws.recv()
+        # Read responses matching on id, skipping any interleaved
+        # server-initiated messages (pings, events, etc.).
+        async def recv_result(expected_id: int) -> dict:
+            while True:
+                msg = json.loads(await ws.recv())
+                if msg.get("id") == expected_id:
+                    return msg
+
+        await ws.recv()  # auth_required
         await ws.send(json.dumps({
             "type": "auth",
             "access_token": config.homeassistant.token,
@@ -527,13 +540,17 @@ async def _ensure_iframe_dashboard(config) -> None:
         await ws.send(json.dumps({
             "id": msg_id, "type": "lovelace/dashboards/list",
         }))
+        resp = await recv_result(msg_id)
         msg_id += 1
-        resp = json.loads(await ws.recv())
         if not resp.get("success"):
-            return
+            raise RuntimeError(
+                f"Failed to list dashboards: {resp.get('error')}",
+            )
 
-        existing = [d for d in resp["result"]
-                     if d.get("url_path") == "network-reachability"]
+        existing = [
+            d for d in resp["result"]
+            if d.get("url_path") == "network-reachability"
+        ]
 
         if not existing:
             await ws.send(json.dumps({
@@ -545,11 +562,12 @@ async def _ensure_iframe_dashboard(config) -> None:
                 "require_admin": False,
                 "show_in_sidebar": True,
             }))
+            resp = await recv_result(msg_id)
             msg_id += 1
-            resp = json.loads(await ws.recv())
             if not resp.get("success"):
-                print(f"Failed to create dashboard: {resp.get('error')}")
-                return
+                raise RuntimeError(
+                    f"Failed to create dashboard: {resp.get('error')}",
+                )
             print("Created dashboard 'network-reachability'")
 
         bust = int(time.time())
@@ -584,12 +602,16 @@ async def _ensure_iframe_dashboard(config) -> None:
                 ],
             },
         }))
+        resp = await recv_result(msg_id)
         msg_id += 1
-        resp = json.loads(await ws.recv())
-        if resp.get("success"):
-            print("Dashboard config saved (2 views: Host Reachability, Switch Ports)")
-        else:
-            print(f"Failed: {resp.get('error')}")
+        if not resp.get("success"):
+            raise RuntimeError(
+                f"Failed to save dashboard config: {resp.get('error')}",
+            )
+        print(
+            "Dashboard config saved "
+            "(2 views: Host Reachability, Switch Ports)",
+        )
 
 
 # ---------------------------------------------------------------------------

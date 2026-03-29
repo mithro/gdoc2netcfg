@@ -412,8 +412,24 @@ def _build_host_directory(hosts: list[Host]) -> dict[str, str]:
     # since port descriptions refer to the primary, not its BMC.
     for host in hosts:
         key = host.machine_name
-        if key not in directory or host.hostname == key:
+        if host.hostname == key:
+            # Primary host: machine_name == hostname — always wins
             directory[key] = host.hostname
+        elif key not in directory:
+            # First non-primary claim on this machine_name
+            directory[key] = host.hostname
+        elif directory[key] == key:
+            # Primary host already claimed this key — skip BMC
+            pass
+        else:
+            # Two different non-primary hosts claim the same
+            # machine_name — this is a data error.
+            raise ValueError(
+                f"machine_name {key!r} is claimed by both "
+                f"{directory[key]!r} and {host.hostname!r}. "
+                f"This indicates a duplicate machine name in the "
+                f"spreadsheet."
+            )
     return directory
 
 

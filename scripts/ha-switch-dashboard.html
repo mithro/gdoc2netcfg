@@ -192,11 +192,12 @@ function resolveHost(machineName, ifaceName) {
   var slug = ifaceName ? nodeId(ifaceName) : "default";
   var ep = "gdoc2netcfg_" + nid + "_" + slug;
 
-  // Try specific interface slug first, fall back to _default_
-  var ipv4 = st("sensor." + ep + "_ipv4");
-  if (ipv4 === "unavailable" && slug !== "default") {
+  // Fall back to _default_ only if the named-interface entity does not
+  // exist at all (not in states map).  Do NOT fall back on "unavailable"
+  // — that also happens during initial load before states arrive, and
+  // falling back would show wrong IP/MAC for multi-interface hosts.
+  if (slug !== "default" && !(("sensor." + ep + "_ipv4") in states)) {
     ep = "gdoc2netcfg_" + nid + "_default";
-    ipv4 = st("sensor." + ep + "_ipv4");
   }
 
   return {

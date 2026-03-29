@@ -245,8 +245,8 @@ function portSortVal(sw, port, col) {
     case "desc": return st("sensor." + pp + "_description") || "";
     case "vlan": return parseInt(st("sensor." + pp + "_vlan"), 10) || 0;
     case "poe":
-      var pst = st("switch." + pp + "_poe");
-      return pst === "on" ? 0 : pst === "off" ? 1 : 2;
+      var poeS = st("sensor." + pp + "_poe_status");
+      return poeS === "delivering" ? 0 : poeS === "fault" ? 1 : poeS === "searching" ? 2 : 3;
     case "host":
       var d = parseDescription(st("sensor." + pp + "_description"));
       return d ? d.host : "";
@@ -421,17 +421,39 @@ function render() {
       }
       tr.appendChild(td);
 
-      // PoE
+      // PoE — show status via poe_status sensor, toggle via switch entity
+      // delivering (green): actively powering a device
+      // searching (orange): enabled, no device drawing power
+      // off/disabled (red): PoE disabled
+      // fault (red flash): PoE error
       td = document.createElement("td");
       if (sw.has_poe) {
         var poeEid = "switch." + pp + "_poe";
         var poeSt = st(poeEid);
+        var poeStatus = st("sensor." + pp + "_poe_status");
         var poePower = st("sensor." + pp + "_poe_power");
         if (poeSt === "on" || poeSt === "off") {
           var poe = document.createElement("span");
           poe.className = "poe-toggle";
-          poe.textContent = (poeSt === "on" ? "\uD83D\uDFE2" : "\uD83D\uDD34") + "\u26a1";
-          poe.title = (poeSt === "on" ? "PoE on" : "PoE off") + " \u2014 click to toggle";
+          var poeIcon, poeLabel;
+          if (poeStatus === "delivering") {
+            poeIcon = "\uD83D\uDFE2";  // green
+            poeLabel = "delivering";
+          } else if (poeStatus === "searching") {
+            poeIcon = "\uD83D\uDFE0";  // orange
+            poeLabel = "searching";
+          } else if (poeStatus === "fault") {
+            poeIcon = "\u274C";  // red X
+            poeLabel = "fault";
+          } else if (poeSt === "off") {
+            poeIcon = "\uD83D\uDD34";  // red
+            poeLabel = "disabled";
+          } else {
+            poeIcon = "\u26AB";  // black
+            poeLabel = poeStatus || "unknown";
+          }
+          poe.textContent = poeIcon + "\u26a1";
+          poe.title = "PoE " + poeLabel + " \u2014 click to toggle";
           poe.addEventListener("click", (function(eid) {
             return function(ev) { ev.stopPropagation(); callService("switch", "toggle", eid); };
           })(poeEid));

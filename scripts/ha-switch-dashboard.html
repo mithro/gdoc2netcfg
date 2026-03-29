@@ -491,22 +491,26 @@ function render() {
       td.textContent = (parsed && parsed.iface) ? parsed.iface : "";
       tr.appendChild(td);
 
-      // IPv4
+      // IPv4 / IPv6 — link via DNS name: ipv4.{iface}.{host}.{domain}
+      var ifaceFqdn = resolved
+        ? ((parsed && parsed.iface) ? parsed.iface + "." : "") + resolved.hostname + "." + DOMAIN
+        : null;
+
       td = document.createElement("td");
       if (resolved && resolved.ipv4 && resolved.ipv4 !== "unavailable" && resolved.ipv4 !== "unknown") {
         var v4Link = document.createElement("a");
-        v4Link.href = "http://" + resolved.ipv4;
+        v4Link.href = "http://ipv4." + ifaceFqdn;
         v4Link.textContent = resolved.ipv4;
         td.appendChild(v4Link);
       }
       tr.appendChild(td);
 
-      // IPv6
       td = document.createElement("td");
       if (resolved && resolved.ipv6 && resolved.ipv6 !== "unavailable" && resolved.ipv6 !== "unknown" && resolved.ipv6 !== "") {
-        var v6Code = document.createElement("code");
-        v6Code.textContent = resolved.ipv6;
-        td.appendChild(v6Code);
+        var v6Link = document.createElement("a");
+        v6Link.href = "http://ipv6." + ifaceFqdn;
+        v6Link.textContent = resolved.ipv6;
+        td.appendChild(v6Link);
       }
       tr.appendChild(td);
 

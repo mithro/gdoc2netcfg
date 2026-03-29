@@ -49,6 +49,7 @@ th { text-align: left; padding: 4px 6px; border-bottom: 2px solid var(--div); cu
 th:hover { background: var(--hover); }
 td { padding: 3px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 tr.port-down { opacity: 0.4; }
+.poe-unused { opacity: 0.4; }
 code { font-size: 0.95em; } a { color: var(--link); } a:visited { color: var(--link); }
 .poe-toggle { cursor: pointer; user-select: none; } .poe-toggle:hover { filter: brightness(1.3); }
 .sort-active { font-weight: bold; }
@@ -433,6 +434,10 @@ function render() {
         var poeSt = st(poeEid);
         var poeStatus = st("sensor." + pp + "_poe_status");
         var poePower = st("sensor." + pp + "_poe_power");
+        // Grey out PoE when link is up but device isn't using PoE
+        if (linkSt === "up" && poeStatus !== "delivering") {
+          td.className = "poe-unused";
+        }
         if (poeSt === "on" || poeSt === "off") {
           // Enabled/disabled toggle (green/red circle)
           var poe = document.createElement("span");

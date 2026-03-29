@@ -273,9 +273,11 @@ function portSortVal(sw, port, col) {
     case "lldp": return st("sensor." + pp + "_lldp") || "";
     case "warn":
       var desc6 = parseDescription(st("sensor." + pp + "_description"));
-      var lldp = st("sensor." + pp + "_lldp");
-      if (!desc6 || !desc6.host || !lldp || lldp === "unavailable" || lldp === "unknown" || !lldp.trim()) return 1;
-      return desc6.host.toLowerCase() !== lldp.toLowerCase() ? 0 : 1;
+      var lldp6 = st("sensor." + pp + "_lldp");
+      if (!desc6 || !desc6.host || !lldp6 || lldp6 === "unavailable" || lldp6 === "unknown" || !lldp6.trim()) return 1;
+      var lldpP6 = parseDescription(lldp6.trim());
+      var lldpH6 = lldpP6 ? lldpP6.host : lldp6.trim();
+      return desc6.host.toLowerCase() !== lldpH6.toLowerCase() ? 0 : 1;
     default: return port;
   }
 }
@@ -531,14 +533,20 @@ function render() {
       }
       tr.appendChild(td);
 
-      // Warning: LLDP vs description mismatch
+      // Warning: LLDP vs description hostname mismatch.
+      // Both description and LLDP use the same "{iface}.{host}" format,
+      // so parse LLDP the same way to extract the hostname before comparing.
+      // Different interface names on the same host is normal (e.g. desc
+      // "10g1.big-storage" vs LLDP "enp94s0f0.big-storage").
       td = document.createElement("td");
       if (parsed && parsed.host && lldpSt && lldpSt !== "unavailable" && lldpSt !== "unknown" && lldpSt.trim()) {
-        if (parsed.host.toLowerCase() !== lldpSt.trim().toLowerCase()) {
+        var lldpParsed = parseDescription(lldpSt.trim());
+        var lldpHost = lldpParsed ? lldpParsed.host : lldpSt.trim();
+        if (parsed.host.toLowerCase() !== lldpHost.toLowerCase()) {
           var warn = document.createElement("span");
           warn.className = "warn";
           warn.textContent = "\u26a0";
-          warn.title = "LLDP mismatch: description says '" + parsed.host + "' but LLDP says '" + lldpSt.trim() + "'";
+          warn.title = "LLDP mismatch: description says '" + parsed.host + "' but LLDP says '" + lldpHost + "'";
           td.appendChild(warn);
         }
       }

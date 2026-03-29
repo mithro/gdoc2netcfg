@@ -434,31 +434,23 @@ function render() {
         var poeStatus = st("sensor." + pp + "_poe_status");
         var poePower = st("sensor." + pp + "_poe_power");
         if (poeSt === "on" || poeSt === "off") {
+          // Enabled/disabled toggle (green/red circle)
           var poe = document.createElement("span");
           poe.className = "poe-toggle";
-          var poeIcon, poeLabel;
-          if (poeStatus === "delivering") {
-            poeIcon = "\uD83D\uDFE2";  // green
-            poeLabel = "delivering";
-          } else if (poeStatus === "searching") {
-            poeIcon = "\uD83D\uDD0D";  // magnifying glass
-            poeLabel = "searching";
-          } else if (poeStatus === "fault") {
-            poeIcon = "\u274C";  // red X
-            poeLabel = "fault";
-          } else if (poeSt === "off") {
-            poeIcon = "\uD83D\uDD34";  // red
-            poeLabel = "disabled";
-          } else {
-            poeIcon = "\u26AB";  // black
-            poeLabel = poeStatus || "unknown";
-          }
-          poe.textContent = poeIcon + "\u26a1";
-          poe.title = "PoE " + poeLabel + " \u2014 click to toggle";
+          poe.textContent = poeSt === "on" ? "\uD83D\uDFE2" : "\uD83D\uDD34";
+          poe.title = "PoE " + poeSt + " \u2014 click to toggle";
           poe.addEventListener("click", (function(eid) {
             return function(ev) { ev.stopPropagation(); callService("switch", "toggle", eid); };
           })(poeEid));
           td.appendChild(poe);
+          // Status icon: delivering=⚡ searching=🔍 fault=❌
+          if (poeStatus === "delivering") {
+            td.appendChild(document.createTextNode("\u26a1"));
+          } else if (poeStatus === "searching") {
+            td.appendChild(document.createTextNode("\uD83D\uDD0D"));
+          } else if (poeStatus === "fault") {
+            td.appendChild(document.createTextNode("\u274C"));
+          }
           if (poePower && poePower !== "unavailable" && poePower !== "unknown" && parseFloat(poePower) > 0) {
             var pw = document.createElement("small");
             pw.textContent = " " + (parseFloat(poePower) / 1000).toFixed(1) + "W";

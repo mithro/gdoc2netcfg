@@ -56,6 +56,32 @@ class TasmotaConfig:
 
 
 @dataclass
+class ZigbeeSiteConfig:
+    """Configuration for a single Zigbee2MQTT site."""
+
+    name: str
+    mqtt_host: str = ""
+    mqtt_port: int = 1883
+    mqtt_user: str = ""
+    mqtt_password: str = ""
+
+
+@dataclass
+class ZigbeeConfig:
+    """Configuration for Zigbee2MQTT device scanning and sheet updates.
+
+    Supports multiple sites (each with its own MQTT broker).
+    Google Sheet credentials can be OAuth2 (default) or service account.
+    """
+
+    sites: list[ZigbeeSiteConfig] = field(default_factory=list)
+    sheet_name: str = "Zigbee Info"
+    credentials_file: str = ""      # OAuth2 client_secret.json path
+    token_cache: str = ".cache/google_oauth_token.json"
+    service_account_file: str = ""  # Alternative: service account JSON key path
+
+
+@dataclass
 class HomeAssistantConfig:
     """Configuration for Home Assistant integration checks.
 
@@ -77,10 +103,12 @@ class PipelineConfig:
 
     site: Site
     sheets: list[SheetConfig] = field(default_factory=list)
+    spreadsheet_url: str = ""  # Edit URL for write access (from [sheets] spreadsheet_url)
     cache: CacheConfig = field(default_factory=CacheConfig)
     generators: dict[str, GeneratorConfig] = field(default_factory=dict)
     tasmota: TasmotaConfig = field(default_factory=TasmotaConfig)
     homeassistant: HomeAssistantConfig = field(default_factory=HomeAssistantConfig)
+    zigbee: ZigbeeConfig = field(default_factory=ZigbeeConfig)
 
 
 def _build_site(data: dict) -> Site:
@@ -115,9 +143,14 @@ def _build_site(data: dict) -> Site:
 
 
 def _build_sheets(data: dict) -> list[SheetConfig]:
-    """Build sheet configs from parsed TOML data."""
+    """Build sheet configs from parsed TOML data.
+
+    Skips the special 'spreadsheet_url' key (used for write access).
+    """
     sheets = []
     for name, url in data.get("sheets", {}).items():
+        if name == "spreadsheet_url":
+            continue
         sheets.append(SheetConfig(name=name, url=url))
     return sheets
 
@@ -156,6 +189,30 @@ def _build_tasmota(data: dict) -> TasmotaConfig:
     )
 
 
+def _build_zigbee(data: dict) -> ZigbeeConfig:
+    """Build Zigbee config from parsed TOML data."""
+    section = data.get("zigbee", {})
+    if not section:
+        return ZigbeeConfig()
+    sites = [
+        ZigbeeSiteConfig(
+            name=s["name"],
+            mqtt_host=s.get("mqtt_host", ""),
+            mqtt_port=s.get("mqtt_port", 1883),
+            mqtt_user=s.get("mqtt_user", ""),
+            mqtt_password=s.get("mqtt_password", ""),
+        )
+        for s in section.get("sites", [])
+    ]
+    return ZigbeeConfig(
+        sites=sites,
+        sheet_name=section.get("sheet_name", "Zigbee Info"),
+        credentials_file=section.get("credentials_file", ""),
+        token_cache=section.get("token_cache", ".cache/google_oauth_token.json"),
+        service_account_file=section.get("service_account_file", ""),
+    )
+
+
 def _build_homeassistant(data: dict) -> HomeAssistantConfig:
     """Build Home Assistant config from parsed TOML data."""
     section = data.get("homeassistant", {})
@@ -184,10 +241,12 @@ def load_config(config_path: Path | str | None = None) -> PipelineConfig:
     return PipelineConfig(
         site=_build_site(data),
         sheets=_build_sheets(data),
+        spreadsheet_url=data.get("sheets", {}).get("spreadsheet_url", ""),
         cache=CacheConfig(
             directory=Path(data.get("cache", {}).get("directory", ".cache")),
         ),
         generators=_build_generators(data),
         tasmota=_build_tasmota(data),
         homeassistant=_build_homeassistant(data),
+        zigbee=_build_zigbee(data),
     )

@@ -16,10 +16,13 @@ site_octet = 1  # Second octet: 10.1.X.X for Welland, 10.2.X.X for Monarto
 all_sites = ["welland", "monarto", "ps1"]  # Valid values for the "Site" column
 
 [sheets]
-# Google Sheets published CSV URLs for each data source
+# Google Sheets published CSV URLs for each data source (read-only, no auth required)
 network = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=1476589425&single=true&output=csv"
 iot = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=1695016218&single=true&output=csv"
 vlan_allocations = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=208407908&single=true&output=csv"
+# Edit URL of the same spreadsheet — used by 'zigbee update-sheet' for write access.
+# Get this from your browser's address bar while the sheet is open.
+# spreadsheet_url = "https://docs.google.com/spreadsheets/d/{ID}/edit"
 
 [cache]
 directory = ".cache"
@@ -82,3 +85,27 @@ mqtt_password = ""
 [homeassistant]
 url = "http://ha.welland.mithis.com:8123"
 # token = ""  # Long-lived access token from HA profile page
+
+# ── Optional: Zigbee2MQTT device scanning and sheet updates ──
+# Sheet credentials: set credentials_file for OAuth2 (browser-based, recommended),
+# or service_account_file for a service account key (non-interactive).
+# Real values belong in gdoc2netcfg.toml only (this file is a template).
+[zigbee]
+sheet_name = "Zigbee Info"
+credentials_file = ""  # Path to OAuth2 client_secret.json (Google Cloud Console)
+token_cache = ".cache/google_oauth_token.json"
+# service_account_file = ""  # Alternative: path to service account JSON key
+
+[[zigbee.sites]]
+name = "welland"
+mqtt_host = "ha.welland.mithis.com"
+mqtt_port = 1883
+mqtt_user = ""
+mqtt_password = ""
+
+[[zigbee.sites]]
+name = "monarto"
+mqtt_host = "ha.monarto.mithis.com"
+mqtt_port = 1883
+mqtt_user = ""
+mqtt_password = ""

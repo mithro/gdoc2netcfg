@@ -1742,6 +1742,156 @@ def cmd_tasmota_ha_sync(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subcommands: zigbee scan / show / update-sheet
+# ---------------------------------------------------------------------------
+
+
+def cmd_zigbee_scan(args: argparse.Namespace) -> int:
+    """Scan Zigbee2MQTT on all configured sites and cache results."""
+    config = _load_config(args)
+
+    if not config.zigbee.sites:
+        print(
+            "Error: No zigbee sites configured. Add [[zigbee.sites]] entries "
+            "to gdoc2netcfg.toml",
+            file=sys.stderr,
+        )
+        return 1
+
+    from gdoc2netcfg.supplements.zigbee import scan_all_sites
+
+    force = getattr(args, "force", False)
+    cache_dir = Path(config.cache.directory)
+
+    try:
+        results = scan_all_sites(config.zigbee, cache_dir, force=force, verbose=True)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    total = sum(len(devices) for devices, _ in results.values())
+    print(f"\nFound {total} Zigbee device(s) across {len(results)} site(s).")
+    return 0
+
+
+def cmd_zigbee_show(args: argparse.Namespace) -> int:
+    """Show cached Zigbee device data."""
+    config = _load_config(args)
+
+    from gdoc2netcfg.supplements.zigbee import ZigbeeBridgeInfo, ZigbeeDevice, load_zigbee_cache
+
+    cache_dir = Path(config.cache.directory)
+    found_any = False
+
+    for site_cfg in config.zigbee.sites:
+        cache_path = cache_dir / f"zigbee_{site_cfg.name}.json"
+        cached = load_zigbee_cache(cache_path)
+        if not cached or cached.get("devices") is None:
+            print(
+                f"No cache for site '{site_cfg.name}'. "
+                "Run 'gdoc2netcfg zigbee scan' first."
+            )
+            continue
+
+        found_any = True
+        devices = [ZigbeeDevice(**d) for d in cached["devices"]]
+        bridge_raw = cached.get("bridge")
+        bridge = ZigbeeBridgeInfo(**bridge_raw) if bridge_raw else None
+        scanned_at = cached.get("scanned_at", "")
+
+        print(f"\n{'='*60}")
+        print(f"Site: {site_cfg.name}  (scanned {scanned_at})")
+        print("=" * 60)
+        if bridge:
+            print(f"  Z2M:         {bridge.z2m_version}")
+            print(
+                f"  Coordinator: {bridge.coordinator_type} ({bridge.coordinator_ieee})"
+            )
+            print(f"  Channel:     {bridge.channel}   PAN ID: {bridge.pan_id}")
+        print(f"\n  {len(devices)} device(s):")
+        for d in sorted(devices, key=lambda x: x.object_id):
+            avail = d.availability.upper() if d.availability else "?"
+            fw = d.software_build_id or "—"
+            print(
+                f"  {d.object_id:6s}  {avail:8s}  "
+                f"{(d.model_id or d.model):25s}  "
+                f"{d.friendly_name:35s}  fw={fw}"
+            )
+
+    return 0 if found_any else 1
+
+
+def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
+    """Write cached Zigbee data to the Google Sheet."""
+    config = _load_config(args)
+
+    if not config.spreadsheet_url:
+        print(
+            "Error: spreadsheet_url must be configured in the [sheets] section of "
+            "gdoc2netcfg.toml\n"
+            "  Example: spreadsheet_url = "
+            '"https://docs.google.com/spreadsheets/d/{ID}/edit"',
+            file=sys.stderr,
+        )
+        return 1
+
+    if not config.zigbee.credentials_file and not config.zigbee.service_account_file:
+        print(
+            "Error: [zigbee] credentials_file or service_account_file must be "
+            "configured in gdoc2netcfg.toml",
+            file=sys.stderr,
+        )
+        return 1
+
+    from gdoc2netcfg.supplements.zigbee import ZigbeeBridgeInfo, ZigbeeDevice, load_zigbee_cache
+    from gdoc2netcfg.supplements.zigbee_sheet import update_zigbee_sheet
+
+    cache_dir = Path(config.cache.directory)
+    all_devices: list[ZigbeeDevice] = []
+    bridge_infos: dict[str, ZigbeeBridgeInfo | None] = {}
+
+    for site_cfg in config.zigbee.sites:
+        cache_path = cache_dir / f"zigbee_{site_cfg.name}.json"
+        cached = load_zigbee_cache(cache_path)
+        if not cached or cached.get("devices") is None:
+            print(
+                f"Warning: no cache for site '{site_cfg.name}'. "
+                "Run 'gdoc2netcfg zigbee scan' first.",
+                file=sys.stderr,
+            )
+            continue
+
+        devices = [ZigbeeDevice(**d) for d in cached["devices"]]
+        bridge_raw = cached.get("bridge")
+        bridge_infos[site_cfg.name] = (
+            ZigbeeBridgeInfo(**bridge_raw) if bridge_raw else None
+        )
+        all_devices.extend(devices)
+
+    if not all_devices:
+        print("No Zigbee data to write. Run 'gdoc2netcfg zigbee scan' first.")
+        return 1
+
+    dry_run = getattr(args, "dry_run", False)
+
+    try:
+        written = update_zigbee_sheet(
+            config,
+            all_devices,
+            bridge_infos,
+            dry_run=dry_run,
+            verbose=True,
+        )
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    action = "Would write" if dry_run else "Wrote"
+    print(f"\n{action} {written} row(s) to '{config.zigbee.sheet_name}'.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: password
 # ---------------------------------------------------------------------------
 
@@ -2038,6 +2188,30 @@ def main(argv: list[str] | None = None) -> int:
         help="Show what would be changed without applying",
     )
 
+    # zigbee (with subcommands)
+    zigbee_parser = subparsers.add_parser(
+        "zigbee", help="Zigbee2MQTT device scanning and sheet updates",
+    )
+    zigbee_subparsers = zigbee_parser.add_subparsers(dest="zigbee_command")
+
+    zigbee_scan_parser = zigbee_subparsers.add_parser(
+        "scan", help="Scan Zigbee2MQTT on all configured sites",
+    )
+    zigbee_scan_parser.add_argument(
+        "--force", action="store_true",
+        help="Re-scan even if cached data exists",
+    )
+
+    zigbee_subparsers.add_parser("show", help="Show cached Zigbee device data")
+
+    zigbee_update_parser = zigbee_subparsers.add_parser(
+        "update-sheet", help="Write cached Zigbee data to the Google Sheet",
+    )
+    zigbee_update_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would be written without updating the sheet",
+    )
+
     # password (device credential lookup)
     pwd_parser = subparsers.add_parser(
         "password", help="Look up device credentials",
@@ -2086,6 +2260,18 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_nsdp_show(args)
         else:
             nsdp_parser.print_help()
+            return 0
+
+    # Handle zigbee subcommands
+    if args.command == "zigbee":
+        if args.zigbee_command == "scan":
+            return cmd_zigbee_scan(args)
+        elif args.zigbee_command == "show":
+            return cmd_zigbee_show(args)
+        elif args.zigbee_command == "update-sheet":
+            return cmd_zigbee_update_sheet(args)
+        else:
+            zigbee_parser.print_help()
             return 0
 
     # Handle tasmota subcommands

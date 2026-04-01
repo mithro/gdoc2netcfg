@@ -31,3 +31,5 @@ build/
 .worktrees/
 .superpowers/
 tmp/
+client_secret*.json
+service_account*.json

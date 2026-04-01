@@ -82,7 +82,7 @@ def _parse_device(site: str, d: dict, availability: dict[str, str]) -> ZigbeeDev
     manufacturer = definition.get("vendor") or d.get("manufacturer") or ""
     model = definition.get("model", "")
     definition_description = definition.get("description", "")
-    description = options.get("description", "")  # user-set description in Z2M
+    description = d.get("description", "")  # user-set description in Z2M (top-level field)
 
     avail = availability.get(friendly, "unknown")
 

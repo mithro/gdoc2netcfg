@@ -50,11 +50,28 @@ _EXPECTED_HEADER = [
 
 
 def _device_type_label(device: ZigbeeDevice) -> str:
-    """Derive a human-readable device type from Z2M model information.
+    """Derive a human-readable device type from Z2M model/description information.
 
-    Returns an empty string when the model is unrecognised so that
-    existing values in the sheet are preserved (see update logic below).
+    Uses definition.description as the primary signal (more reliable than model
+    string matching); falls back to model/model_id string matching.
+    Returns an empty string when unrecognised so existing sheet values are
+    preserved (see update logic below).
     """
+    desc = device.description.lower()
+    if "soil" in desc or "moisture" in desc:
+        return "Soil Sensor"
+    if "temperature" in desc or "humidity" in desc:
+        return "Temp Sensor"
+    if "motion" in desc or "occupancy" in desc or "presence" in desc:
+        return "Motion Sensor"
+    if "contact" in desc or "door" in desc or "window" in desc:
+        return "Door Sensor"
+    if "plug" in desc or "socket" in desc or "outlet" in desc:
+        return "Smart Plug"
+    if "relay" in desc or "switch" in desc:
+        return "Smart Switch"
+
+    # Fall back to model string matching
     text = (device.model or device.model_id or "").lower()
     if "soil" in text or "moisture" in text:
         return "Soil Sensor"
@@ -84,24 +101,29 @@ def _device_to_row(
     derived_type = _device_type_label(device)
     row_type = derived_type or existing_type  # prefer derived; fall back to sheet value
 
-    connected_via = ""
-    if bridge:
-        connected_via = f"{bridge.coordinator_type} ({device.site})"
+    # Connected Via: EndDevices route through a Router; Routers connect to Coordinator.
+    # We don't run networkmap (too slow), so we use device_type as a proxy.
+    if device.device_type == "Router":
+        connected_via = f"Coordinator ({bridge.coordinator_type})" if bridge else "Coordinator"
+    elif device.device_type == "EndDevice":
+        connected_via = "Router"
+    else:
+        connected_via = device.device_type  # preserve whatever Z2M reports
 
     avail = device.availability.capitalize() if device.availability else ""
 
     return [
-        device.site,                        # A: Site
-        row_type,                           # B: Type
-        device.object_id,                   # C: Entity Name
-        "",                                 # D: Description (not in Z2M data)
-        device.friendly_name,               # E: Friendly Name
-        avail,                              # F: State
-        col_g_value,                        # G: unnamed — preserved or blank
-        device.model_id or device.model,    # H: Model
-        device.ieee_address,                # I: IEEE Address
-        device.power_source,                # J: Power Source
-        connected_via,                      # K: Connected Via
+        device.site,                             # A: Site
+        row_type,                                # B: Type
+        device.object_id or device.friendly_name,  # C: Entity Name (fallback to friendly_name)
+        device.description,                      # D: Description
+        device.friendly_name,                    # E: Friendly Name
+        avail,                                   # F: State
+        col_g_value,                             # G: unnamed — preserved or blank
+        device.model_id or device.model,         # H: Model
+        device.ieee_address,                     # I: IEEE Address
+        device.power_source,                     # J: Power Source
+        connected_via,                           # K: Connected Via
     ]
 
 

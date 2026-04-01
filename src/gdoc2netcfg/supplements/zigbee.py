@@ -47,6 +47,7 @@ class ZigbeeDevice:
     link_quality: int | None
     availability: str       # "online" / "offline" / "unknown"
     network_address: int | None
+    description: str = ""  # definition.description (human-readable function)
 
     @property
     def last_seen_str(self) -> str:
@@ -79,6 +80,7 @@ def _parse_device(site: str, d: dict, availability: dict[str, str]) -> ZigbeeDev
     definition = d.get("definition") or {}
     manufacturer = definition.get("vendor") or d.get("manufacturer") or ""
     model = definition.get("model", "")
+    description = definition.get("description", "")
 
     avail = availability.get(friendly, "unknown")
 
@@ -107,6 +109,7 @@ def _parse_device(site: str, d: dict, availability: dict[str, str]) -> ZigbeeDev
         link_quality=d.get("link_quality"),
         availability=avail,
         network_address=d.get("network_address"),
+        description=description,
     )
 
 

@@ -57,7 +57,8 @@ def _device_type_label(device: ZigbeeDevice) -> str:
     Returns an empty string when unrecognised so existing sheet values are
     preserved (see update logic below).
     """
-    desc = device.description.lower()
+    # Use Z2M's model description (definition.description) as primary signal
+    desc = device.definition_description.lower()
     if "soil" in desc or "moisture" in desc:
         return "Soil Sensor"
     if "temperature" in desc or "humidity" in desc:

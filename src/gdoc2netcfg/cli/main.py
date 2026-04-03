@@ -2490,35 +2490,38 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
 
 
 def cmd_zigbee_topology(args: argparse.Namespace) -> int:
-    """Generate Zigbee mesh topology diagrams from cached scan data."""
+    """Generate Zigbee mesh topology diagrams with fresh networkmap data."""
     config = _load_config(args)
 
-    from gdoc2netcfg.supplements.zigbee import ZigbeeBridgeInfo, ZigbeeDevice, load_zigbee_cache
+    from gdoc2netcfg.supplements.zigbee import scan_all_sites
     from gdoc2netcfg.supplements.zigbee_topology import generate_zigbee_topology, render_dot
+
+    if not config.zigbee.sites:
+        print(
+            "Error: No zigbee sites configured. Add [[zigbee.sites]] entries "
+            "to gdoc2netcfg.toml",
+            file=sys.stderr,
+        )
+        return 1
 
     cache_dir = Path(config.cache.directory)
     output_dir = Path(getattr(args, "output_dir", None) or ".")
     fmt = getattr(args, "format", "svg")
+
+    # Always scan fresh to get up-to-date networkmap parent relationships
+    try:
+        results = scan_all_sites(
+            config.zigbee, cache_dir, force=True, verbose=True,
+        )
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     wrote_any = False
+    for site_name, (devices, bridge) in results.items():
+        dot = generate_zigbee_topology(devices, bridge, site_name)
 
-    for site_cfg in config.zigbee.sites:
-        cache_path = cache_dir / f"zigbee_{site_cfg.name}.json"
-        cached = load_zigbee_cache(cache_path)
-        if not cached or cached.get("devices") is None:
-            print(
-                f"No cache for site '{site_cfg.name}'. "
-                "Run 'gdoc2netcfg zigbee scan' first.",
-                file=sys.stderr,
-            )
-            continue
-
-        devices = [ZigbeeDevice(**d) for d in cached["devices"]]
-        bridge_raw = cached.get("bridge")
-        bridge = ZigbeeBridgeInfo(**bridge_raw) if bridge_raw else None
-
-        dot = generate_zigbee_topology(devices, bridge, site_cfg.name)
-
-        out_path = output_dir / f"zigbee_{site_cfg.name}.{fmt}"
+        out_path = output_dir / f"zigbee_{site_name}.{fmt}"
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:

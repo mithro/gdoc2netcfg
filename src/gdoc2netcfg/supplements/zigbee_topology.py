@@ -13,10 +13,42 @@ Devices without known parents are shown in a separate "unconnected" cluster.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from gdoc2netcfg.supplements.zigbee import ZigbeeBridgeInfo, ZigbeeDevice
+
+
+def render_dot(dot_source: str, output_path: Path, fmt: str = "svg") -> None:
+    """Render a DOT string to an image file using graphviz.
+
+    Args:
+        dot_source: The DOT-format graph string.
+        output_path: Destination file path (e.g. /tmp/zigbee_welland.svg).
+        fmt: Output format — "svg" or "png".
+
+    Raises:
+        RuntimeError: If graphviz ``dot`` is not installed or rendering fails.
+    """
+    dot_bin = shutil.which("dot")
+    if dot_bin is None:
+        raise RuntimeError(
+            "Graphviz 'dot' command not found. "
+            "Install it with: sudo apt install graphviz"
+        )
+    result = subprocess.run(
+        [dot_bin, f"-T{fmt}", "-o", str(output_path)],
+        input=dot_source,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"dot rendering failed (exit {result.returncode}):\n{result.stderr}"
+        )
 
 
 def generate_zigbee_topology(

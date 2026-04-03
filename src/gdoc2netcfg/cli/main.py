@@ -2490,14 +2490,15 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
 
 
 def cmd_zigbee_topology(args: argparse.Namespace) -> int:
-    """Generate Graphviz DOT topology diagrams from cached Zigbee data."""
+    """Generate Zigbee mesh topology diagrams from cached scan data."""
     config = _load_config(args)
 
     from gdoc2netcfg.supplements.zigbee import ZigbeeBridgeInfo, ZigbeeDevice, load_zigbee_cache
-    from gdoc2netcfg.supplements.zigbee_topology import generate_zigbee_topology
+    from gdoc2netcfg.supplements.zigbee_topology import generate_zigbee_topology, render_dot
 
     cache_dir = Path(config.cache.directory)
     output_dir = Path(getattr(args, "output_dir", None) or ".")
+    fmt = getattr(args, "format", "svg")
     wrote_any = False
 
     for site_cfg in config.zigbee.sites:
@@ -2517,9 +2518,15 @@ def cmd_zigbee_topology(args: argparse.Namespace) -> int:
 
         dot = generate_zigbee_topology(devices, bridge, site_cfg.name)
 
-        out_path = output_dir / f"zigbee_{site_cfg.name}.dot"
+        out_path = output_dir / f"zigbee_{site_cfg.name}.{fmt}"
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(dot)
+
+        try:
+            render_dot(dot, out_path, fmt=fmt)
+        except RuntimeError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+
         print(f"  Wrote {out_path}")
         wrote_any = True
 
@@ -3037,11 +3044,15 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     zigbee_topo_parser = zigbee_subparsers.add_parser(
-        "topology", help="Generate Graphviz DOT mesh diagram per site",
+        "topology", help="Generate Zigbee mesh diagram per site (SVG/PNG)",
     )
     zigbee_topo_parser.add_argument(
         "--output-dir", default=".",
-        help="Directory for output .dot files (default: current directory)",
+        help="Directory for output files (default: current directory)",
+    )
+    zigbee_topo_parser.add_argument(
+        "--format", choices=["svg", "png"], default="svg",
+        help="Output format (default: svg)",
     )
 
     # db (database management and history)

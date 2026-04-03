@@ -48,6 +48,10 @@ _EXPECTED_HEADER = [
     "State", "", "Model", "IEEE Address", "Power Source", "Connected Via",
 ]
 
+# Index of the Connected Via column K (0-based).  Populated from the Z2M
+# networkmap; preserved when the current scan didn't capture a parent.
+_CONNECTED_VIA_COL_IDX = 10
+
 
 def _device_type_label(device: ZigbeeDevice) -> str:
     """Derive a human-readable device type from Z2M model/description information.
@@ -92,15 +96,19 @@ def _device_to_row(
     bridge: ZigbeeBridgeInfo | None,
     col_g_value: str,
     existing_type: str,
+    existing_connected_via: str,
 ) -> list[str]:
     """Build a sheet row from a ZigbeeDevice.
 
     col_g_value: preserved from the existing row (or "" for new rows).
     existing_type: existing Type cell value; used when we can't determine
                    the type ourselves.
+    existing_connected_via: existing Connected Via cell value; preserved when
+                            the networkmap didn't capture this device's parent.
     """
     derived_type = _device_type_label(device)
     row_type = derived_type or existing_type  # prefer derived; fall back to sheet value
+    connected_via = device.connected_via or existing_connected_via
 
     avail = device.availability.capitalize() if device.availability else ""
 
@@ -115,7 +123,7 @@ def _device_to_row(
         device.model_id or device.model,         # H: Model
         device.ieee_address,                     # I: IEEE Address
         device.power_source,                     # J: Power Source
-        device.connected_via,                    # K: Connected Via (from networkmap)
+        connected_via,                           # K: Connected Via (from networkmap)
     ]
 
 
@@ -231,7 +239,14 @@ def update_zigbee_sheet(
                 if type_col_idx < len(existing_row)
                 else ""
             )
-            new_row = _device_to_row(device, bridge, col_g_val, existing_type)
+            existing_connected_via = (
+                existing_row[_CONNECTED_VIA_COL_IDX]
+                if _CONNECTED_VIA_COL_IDX < len(existing_row)
+                else ""
+            )
+            new_row = _device_to_row(
+                device, bridge, col_g_val, existing_type, existing_connected_via,
+            )
 
             padded_existing = [
                 existing_row[i] if i < len(existing_row) else ""
@@ -254,7 +269,7 @@ def update_zigbee_sheet(
                     file=sys.stderr,
                 )
         else:
-            new_row = _device_to_row(device, bridge, "", "")
+            new_row = _device_to_row(device, bridge, "", "", "")
             appends.append(new_row)
             if verbose:
                 print(

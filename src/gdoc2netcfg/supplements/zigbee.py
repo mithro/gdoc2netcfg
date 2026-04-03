@@ -16,7 +16,7 @@ import json
 import sys
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -47,8 +47,9 @@ class ZigbeeDevice:
     link_quality: int | None
     availability: str       # "online" / "offline" / "unknown"
     network_address: int | None
-    description: str = ""             # user-set description in Z2M (options.description)
+    description: str = ""             # user-set description in Z2M (top-level field)
     definition_description: str = ""  # Z2M model description (definition.description)
+    connected_via: str = ""           # parent device friendly_name from networkmap
 
     @property
     def last_seen_str(self) -> str:
@@ -138,10 +139,142 @@ def _parse_bridge_info(site: str, info: dict) -> ZigbeeBridgeInfo:
     )
 
 
+def _request_networkmap(
+    mqtt_config: ZigbeeSiteConfig,
+    site_name: str,
+    timeout: float = 120.0,
+    verbose: bool = False,
+) -> dict | None:
+    """Request the Z2M network map via MQTT.
+
+    Publishes to zigbee2mqtt/bridge/request/networkmap and waits for the
+    response on zigbee2mqtt/bridge/response/networkmap.  Returns the raw
+    response dict, or None if the request times out.
+    """
+    import paho.mqtt.client as mqtt
+
+    result: dict = {}
+    connected = threading.Event()
+    done = threading.Event()
+
+    def on_connect(
+        client: mqtt.Client,
+        userdata: object,
+        flags: mqtt.ConnectFlags,
+        reason_code: mqtt.ReasonCode,
+        properties: object,
+    ) -> None:
+        if reason_code == 0:
+            client.subscribe("zigbee2mqtt/bridge/response/networkmap")
+            connected.set()
+
+    def on_message(
+        client: mqtt.Client,
+        userdata: object,
+        msg: mqtt.MQTTMessage,
+    ) -> None:
+        if msg.topic == "zigbee2mqtt/bridge/response/networkmap":
+            try:
+                result["data"] = json.loads(msg.payload.decode())
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                pass
+            done.set()
+
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    client.on_connect = on_connect
+    client.on_message = on_message
+    if mqtt_config.mqtt_user:
+        client.username_pw_set(mqtt_config.mqtt_user, mqtt_config.mqtt_password)
+
+    client.connect(mqtt_config.mqtt_host, mqtt_config.mqtt_port, keepalive=30)
+    client.loop_start()
+
+    try:
+        if not connected.wait(timeout=10.0):
+            if verbose:
+                print(
+                    f"  [{site_name}] Networkmap: connection timeout",
+                    file=sys.stderr,
+                )
+            return None
+
+        if verbose:
+            print(
+                f"  [{site_name}] Requesting network map (this may take 1-2 min)...",
+                file=sys.stderr,
+            )
+
+        # routes=False skips per-device routing table queries which are very
+        # slow (>3min on welland with offline devices).  The neighbor table
+        # relationship fields are sufficient to determine parent links.
+        client.publish(
+            "zigbee2mqtt/bridge/request/networkmap",
+            json.dumps({"type": "raw", "routes": False}),
+        )
+
+        if not done.wait(timeout=timeout):
+            if verbose:
+                print(
+                    f"  [{site_name}] Networkmap timed out after {timeout:.0f}s",
+                    file=sys.stderr,
+                )
+            return None
+    finally:
+        client.loop_stop()
+        client.disconnect()
+
+    return result.get("data")
+
+
+def _build_parent_map(networkmap: dict) -> dict[str, str]:
+    """Build a mapping of ieee_address -> parent friendly_name from a networkmap.
+
+    Uses Zigbee neighbor table relationship types:
+      - relationship=1 (IS_CHILD): source's parent is target — most reliable
+      - relationship=0 (IS_PARENT): source is parent of target — secondary signal
+
+    Relationship=2 (IS_SIBLING) is ignored as it only indicates neighbor
+    awareness, not routing.
+    """
+    data = networkmap.get("data", {})
+    value = data.get("value", {})
+    nodes = value.get("nodes", [])
+    links = value.get("links", [])
+
+    # ieee -> friendly_name lookup (includes Coordinator)
+    ieee_to_name: dict[str, str] = {}
+    for node in nodes:
+        ieee_to_name[node["ieeeAddr"]] = node.get("friendlyName", node["ieeeAddr"])
+
+    # Build parent map: device_ieee -> parent_friendly_name
+    parent_map: dict[str, str] = {}
+
+    # Pass 1: rel=1 links (source is child of target) — most reliable
+    for link in links:
+        if link.get("relationship") != 1:
+            continue
+        source_ieee = link.get("sourceIeeeAddr") or link.get("source", {}).get("ieeeAddr", "")
+        target_ieee = link.get("targetIeeeAddr") or link.get("target", {}).get("ieeeAddr", "")
+        if source_ieee and target_ieee:
+            parent_map[source_ieee] = ieee_to_name.get(target_ieee, target_ieee)
+
+    # Pass 2: rel=0 links (source is parent of target) — fill gaps only
+    for link in links:
+        if link.get("relationship") != 0:
+            continue
+        source_ieee = link.get("sourceIeeeAddr") or link.get("source", {}).get("ieeeAddr", "")
+        target_ieee = link.get("targetIeeeAddr") or link.get("target", {}).get("ieeeAddr", "")
+        if source_ieee and target_ieee and target_ieee not in parent_map:
+            parent_map[target_ieee] = ieee_to_name.get(source_ieee, source_ieee)
+
+    return parent_map
+
+
 def scan_zigbee_site(
     site_name: str,
     mqtt_config: MqttBrokerConfig,
     timeout: float = 15.0,
+    networkmap_timeout: float = 120.0,
     availability_collect_s: float = 2.0,
     verbose: bool = False,
 ) -> tuple[list[ZigbeeDevice], ZigbeeBridgeInfo | None]:
@@ -149,7 +282,8 @@ def scan_zigbee_site(
 
     Subscribes to the retained bridge/devices and bridge/info topics,
     then waits briefly to collect per-device availability messages
-    (also retained, arrive immediately).
+    (also retained, arrive immediately).  After collecting devices,
+    requests the network map to determine parent routing relationships.
 
     Returns (devices, bridge_info).  Raises RuntimeError on connection
     failure or if no device list arrives within the timeout.
@@ -274,6 +408,29 @@ def scan_zigbee_site(
         version_str = f", Z2M {bridge_info.z2m_version}" if bridge_info else ""
         print(
             f"  [{site_name}] Found {len(devices)} device(s){version_str}",
+            file=sys.stderr,
+        )
+
+    # Request network map to determine parent routing relationships
+    networkmap = _request_networkmap(
+        mqtt_config, site_name, timeout=networkmap_timeout, verbose=verbose,
+    )
+    if networkmap is not None:
+        parent_map = _build_parent_map(networkmap)
+        devices = [
+            replace(d, connected_via=parent_map.get(d.ieee_address, ""))
+            for d in devices
+        ]
+        assigned = sum(1 for d in devices if d.connected_via)
+        if verbose:
+            print(
+                f"  [{site_name}] Network map: {assigned}/{len(devices)} "
+                f"device(s) have parent info",
+                file=sys.stderr,
+            )
+    elif verbose:
+        print(
+            f"  [{site_name}] Continuing without network map (connected_via will be empty)",
             file=sys.stderr,
         )
 

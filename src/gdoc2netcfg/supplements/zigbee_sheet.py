@@ -102,15 +102,6 @@ def _device_to_row(
     derived_type = _device_type_label(device)
     row_type = derived_type or existing_type  # prefer derived; fall back to sheet value
 
-    # Connected Via: EndDevices route through a Router; Routers connect to Coordinator.
-    # We don't run networkmap (too slow), so we use device_type as a proxy.
-    if device.device_type == "Router":
-        connected_via = f"Coordinator ({bridge.coordinator_type})" if bridge else "Coordinator"
-    elif device.device_type == "EndDevice":
-        connected_via = "Router"
-    else:
-        connected_via = device.device_type  # preserve whatever Z2M reports
-
     avail = device.availability.capitalize() if device.availability else ""
 
     return [
@@ -124,7 +115,7 @@ def _device_to_row(
         device.model_id or device.model,         # H: Model
         device.ieee_address,                     # I: IEEE Address
         device.power_source,                     # J: Power Source
-        connected_via,                           # K: Connected Via
+        device.connected_via,                    # K: Connected Via (from networkmap)
     ]
 
 

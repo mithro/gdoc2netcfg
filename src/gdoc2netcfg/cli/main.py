@@ -2299,7 +2299,7 @@ def cmd_sensors2mqtt_status(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Subcommands: zigbee scan / show / update-sheet
+# Subcommands: zigbee scan / show / update-sheet / topology
 # ---------------------------------------------------------------------------
 
 
@@ -2486,6 +2486,45 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
 
     action = "Would write" if dry_run else "Wrote"
     print(f"\n{action} {written} row(s) to '{config.zigbee.sheet_name}'.")
+    return 0
+
+
+def cmd_zigbee_topology(args: argparse.Namespace) -> int:
+    """Generate Graphviz DOT topology diagrams from cached Zigbee data."""
+    config = _load_config(args)
+
+    from gdoc2netcfg.supplements.zigbee import ZigbeeBridgeInfo, ZigbeeDevice, load_zigbee_cache
+    from gdoc2netcfg.supplements.zigbee_topology import generate_zigbee_topology
+
+    cache_dir = Path(config.cache.directory)
+    output_dir = Path(getattr(args, "output_dir", None) or ".")
+    wrote_any = False
+
+    for site_cfg in config.zigbee.sites:
+        cache_path = cache_dir / f"zigbee_{site_cfg.name}.json"
+        cached = load_zigbee_cache(cache_path)
+        if not cached or cached.get("devices") is None:
+            print(
+                f"No cache for site '{site_cfg.name}'. "
+                "Run 'gdoc2netcfg zigbee scan' first.",
+                file=sys.stderr,
+            )
+            continue
+
+        devices = [ZigbeeDevice(**d) for d in cached["devices"]]
+        bridge_raw = cached.get("bridge")
+        bridge = ZigbeeBridgeInfo(**bridge_raw) if bridge_raw else None
+
+        dot = generate_zigbee_topology(devices, bridge, site_cfg.name)
+
+        out_path = output_dir / f"zigbee_{site_cfg.name}.dot"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(dot)
+        print(f"  Wrote {out_path}")
+        wrote_any = True
+
+    if not wrote_any:
+        return 1
     return 0
 
 
@@ -2997,6 +3036,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Show what would be written without updating the sheet",
     )
 
+    zigbee_topo_parser = zigbee_subparsers.add_parser(
+        "topology", help="Generate Graphviz DOT mesh diagram per site",
+    )
+    zigbee_topo_parser.add_argument(
+        "--output-dir", default=".",
+        help="Directory for output .dot files (default: current directory)",
+    )
+
     # db (database management and history)
     db_parser = subparsers.add_parser(
         "db", help="Database management and history queries",
@@ -3091,6 +3138,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_zigbee_show(args)
         elif args.zigbee_command == "update-sheet":
             return cmd_zigbee_update_sheet(args)
+        elif args.zigbee_command == "topology":
+            return cmd_zigbee_topology(args)
         else:
             zigbee_parser.print_help()
             return 0

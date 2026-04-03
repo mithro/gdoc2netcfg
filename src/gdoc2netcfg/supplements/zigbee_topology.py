@@ -66,10 +66,14 @@ def generate_zigbee_topology(
     Returns:
         DOT-format string.
     """
-    # Build lookup: friendly_name -> device
-    name_to_device: dict[str, ZigbeeDevice] = {
-        d.friendly_name: d for d in devices
-    }
+    # Exclude devices that are both offline and have no known parent —
+    # they add noise without topology information.  Offline devices WITH
+    # a known parent are kept (they show the mesh structure).  Online
+    # devices without a known parent are kept (they're active).
+    devices = [
+        d for d in devices
+        if d.connected_via or d.availability != "offline"
+    ]
 
     # Coordinator label
     if bridge:

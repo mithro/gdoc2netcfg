@@ -56,6 +56,10 @@ def open_databases(
     if migrate and (config_is_new or discovery_is_new):
         from gdoc2netcfg.storage.migration import import_flat_files
 
-        import_flat_files(cache_dir, config_db, discovery_db)
+        import_flat_files(
+            cache_dir, config_db, discovery_db,
+            import_config=config_is_new,
+            import_discovery=discovery_is_new,
+        )
 
     return DatabasePair(config=config_db, discovery=discovery_db)

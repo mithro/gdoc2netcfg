@@ -538,7 +538,7 @@ class DiscoveryDB(BaseDatabase):
 
         Compares canonical JSON (``json.dumps(sort_keys=True)``) per host.
         """
-        latest = self._latest_json_blobs(table, scan_type)
+        latest = self._latest_json_blobs(table)
         changed = 0
         cur = self._conn.cursor()
         try:
@@ -586,7 +586,6 @@ class DiscoveryDB(BaseDatabase):
     def _latest_json_blobs(
         self,
         table: str,
-        scan_type: str,
     ) -> dict[str, str]:
         """Build hostname -> canonical JSON string for comparison."""
         cur = self._conn.execute(

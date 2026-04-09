@@ -30,25 +30,45 @@ def import_flat_files(
     cache_dir: Path,
     config_db: ConfigDB,
     discovery_db: DiscoveryDB,
+    *,
+    import_config: bool = True,
+    import_discovery: bool = True,
 ) -> dict[str, int]:
     """Import existing flat-file caches into SQLite databases.
 
     Returns a dict mapping filename -> number of records imported.
-    Skips files that don't exist.  Logs progress to stderr.
+    Skips files that don't exist.  Set *import_config* or
+    *import_discovery* to False to skip a database that already
+    has data (avoids duplicate imports).
     """
     results: dict[str, int] = {}
 
     # -- CSV files -> ConfigDB --
-    for csv_path in sorted(cache_dir.glob("*.csv")):
+    if not import_config:
+        print("  Skipping config import (database already exists)", file=sys.stderr)
+    for csv_path in sorted(cache_dir.glob("*.csv")) if import_config else ():
         sheet_name = csv_path.stem  # e.g. "network", "iot", "vlan_allocations"
         csv_text = csv_path.read_text(encoding="utf-8")
         mtime_iso = _file_mtime_iso(csv_path)
 
         scan_id = config_db.begin_scan("csv_fetch", started_at=mtime_iso)
         config_db.save_csv(scan_id, sheet_name, csv_text)
-        config_db.finish_scan(scan_id, host_count=1, changed_count=1)
-        results[csv_path.name] = 1
-        print(f"  Imported {csv_path.name} ({len(csv_text)} bytes)", file=sys.stderr)
+        # Count data rows (lines minus header).  CSV text always has
+        # at least a header line, so max(..., 1) avoids host_count=0.
+        row_count = max(csv_text.strip().count("\n"), 1)
+        config_db.finish_scan(
+            scan_id, host_count=row_count, changed_count=row_count,
+        )
+        results[csv_path.name] = row_count
+        print(
+            f"  Imported {csv_path.name} ({row_count} rows, {len(csv_text)} bytes)",
+            file=sys.stderr,
+        )
+
+    # -- Discovery data --
+    if not import_discovery:
+        print("  Skipping discovery import (database already exists)", file=sys.stderr)
+        return results
 
     # -- SSH host keys (special format: dict[hostname, list[str]]) --
     ssh_path = cache_dir / "ssh_host_keys.json"

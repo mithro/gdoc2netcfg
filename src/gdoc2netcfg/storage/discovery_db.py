@@ -19,7 +19,6 @@ from pathlib import Path
 
 from gdoc2netcfg.storage.base import BaseDatabase
 
-
 # -- Table DDL -------------------------------------------------------------
 
 _REACHABILITY_SQL = """\
@@ -340,7 +339,6 @@ class DiscoveryDB(BaseDatabase):
             "  ORDER BY s.id DESC LIMIT 1"
             ")"
         )
-        result: dict[str, frozenset] = {}
         entries: dict[str, list[tuple[str, str]]] = {}
         for hostname, key_type, key_data in cur.fetchall():
             entries.setdefault(hostname, []).append((key_type, key_data))

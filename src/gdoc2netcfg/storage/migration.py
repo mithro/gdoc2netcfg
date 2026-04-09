@@ -15,7 +15,6 @@ from pathlib import Path
 from gdoc2netcfg.storage.config_db import ConfigDB
 from gdoc2netcfg.storage.discovery_db import DiscoveryDB
 
-
 # Maps flat-file name (without extension) to (DiscoveryDB method, scan_type)
 _DISCOVERY_JSON_FILES: dict[str, tuple[str, str]] = {
     "ssl_certs": ("save_ssl_certs", "ssl_certs"),
@@ -45,14 +44,8 @@ def import_flat_files(
         csv_text = csv_path.read_text(encoding="utf-8")
         mtime_iso = _file_mtime_iso(csv_path)
 
-        scan_id = config_db.begin_scan("csv_fetch")
-        # Manually set started_at to the file's mtime for historical accuracy
-        config_db.connection.execute(
-            "UPDATE scans SET started_at = ? WHERE id = ?",
-            (mtime_iso, scan_id),
-        )
+        scan_id = config_db.begin_scan("csv_fetch", started_at=mtime_iso)
         config_db.save_csv(scan_id, sheet_name, csv_text)
-        # Finish with host_count=1 (minimal; we don't parse records here)
         config_db.finish_scan(scan_id, host_count=1, changed_count=1)
         results[csv_path.name] = 1
         print(f"  Imported {csv_path.name} ({len(csv_text)} bytes)", file=sys.stderr)
@@ -63,10 +56,8 @@ def import_flat_files(
         data = _load_json(ssh_path)
         if data:
             mtime_iso = _file_mtime_iso(ssh_path)
-            scan_id = discovery_db.begin_scan("ssh_host_keys")
-            discovery_db.connection.execute(
-                "UPDATE scans SET started_at = ? WHERE id = ?",
-                (mtime_iso, scan_id),
+            scan_id = discovery_db.begin_scan(
+                "ssh_host_keys", started_at=mtime_iso,
             )
             changed = discovery_db.save_ssh_host_keys(scan_id, data)
             discovery_db.finish_scan(
@@ -86,10 +77,8 @@ def import_flat_files(
             hosts_data = raw.get("hosts", {})
             if hosts_data:
                 mtime_iso = _file_mtime_iso(reach_path)
-                scan_id = discovery_db.begin_scan("reachability")
-                discovery_db.connection.execute(
-                    "UPDATE scans SET started_at = ? WHERE id = ?",
-                    (mtime_iso, scan_id),
+                scan_id = discovery_db.begin_scan(
+                    "reachability", started_at=mtime_iso,
                 )
                 changed = discovery_db.save_reachability(scan_id, hosts_data)
                 discovery_db.finish_scan(
@@ -118,11 +107,7 @@ def import_flat_files(
             continue
 
         mtime_iso = _file_mtime_iso(json_path)
-        scan_id = discovery_db.begin_scan(scan_type)
-        discovery_db.connection.execute(
-            "UPDATE scans SET started_at = ? WHERE id = ?",
-            (mtime_iso, scan_id),
-        )
+        scan_id = discovery_db.begin_scan(scan_type, started_at=mtime_iso)
         changed = getattr(discovery_db, save_method)(scan_id, data)
         discovery_db.finish_scan(
             scan_id, host_count=len(data), changed_count=changed,

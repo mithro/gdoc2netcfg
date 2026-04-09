@@ -16,7 +16,6 @@ from gdoc2netcfg.storage.base import (
     _utcnow_iso,
 )
 
-
 # -- Helpers ---------------------------------------------------------------
 
 class ConcreteDB(BaseDatabase):

@@ -14,7 +14,6 @@ from pathlib import Path
 
 from gdoc2netcfg.storage.base import BaseDatabase
 
-
 _CSV_SNAPSHOTS_SQL = """\
 CREATE TABLE IF NOT EXISTS csv_snapshots (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

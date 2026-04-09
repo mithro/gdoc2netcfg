@@ -133,12 +133,22 @@ class BaseDatabase:
     # Scan lifecycle
     # ------------------------------------------------------------------
 
-    def begin_scan(self, scan_type: str) -> int:
-        """Record the start of a scan.  Returns the new scan ID."""
-        now = _utcnow_iso()
+    def begin_scan(
+        self,
+        scan_type: str,
+        *,
+        started_at: str | None = None,
+    ) -> int:
+        """Record the start of a scan.  Returns the new scan ID.
+
+        If *started_at* is provided (ISO 8601), it is used as the scan
+        start time instead of the current time.  This is used by the
+        migration to preserve flat-file timestamps.
+        """
+        ts = started_at or _utcnow_iso()
         cur = self._conn.execute(
             "INSERT INTO scans (scan_type, started_at) VALUES (?, ?)",
-            (scan_type, now),
+            (scan_type, ts),
         )
         self._conn.commit()
         return cur.lastrowid  # type: ignore[return-value]

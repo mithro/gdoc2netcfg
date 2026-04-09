@@ -575,8 +575,7 @@ def _load_or_run_reachability(
         # Try DB first for cached data
         db_path = config.cache.discovery_db_path
         if db_path.exists():
-            db = DiscoveryDB(db_path)
-            try:
+            with DiscoveryDB(db_path) as db:
                 age = db.latest_scan_age("reachability")
                 if age is not None and age < 300:
                     raw = db.load_latest_reachability()
@@ -588,8 +587,6 @@ def _load_or_run_reachability(
                         )
                         print_reachability_status(cached)
                         return cached
-            finally:
-                db.close()
 
         # Fall back to flat file
         result = load_reachability_cache(cache_path)
@@ -608,24 +605,10 @@ def _load_or_run_reachability(
     # Save to flat file (existing behaviour)
     save_reachability_cache(cache_path, reachability)
 
-    # Save to DiscoveryDB
-    db = DiscoveryDB(config.cache.discovery_db_path)
-    try:
-        scan_id = db.begin_scan("reachability")
-        try:
-            changed = db.save_reachability(scan_id, reachability)
-            db.finish_scan(
-                scan_id,
-                host_count=len(reachability),
-                changed_count=changed,
-            )
-        except Exception:
-            db.connection.execute(
-                "DELETE FROM scans WHERE id = ?", (scan_id,),
-            )
-            raise
-    finally:
-        db.close()
+    # Save to DiscoveryDB (using the shared helper)
+    _save_to_discovery_db(
+        config, "reachability", "save_reachability", reachability,
+    )
 
     return reachability
 

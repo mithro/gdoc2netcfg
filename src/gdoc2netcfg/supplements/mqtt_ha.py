@@ -842,8 +842,26 @@ def run_daemon(
                 hosts, verbose=verbose,
             )
 
-            # Save cache for CLI tools
+            # Save cache for CLI tools (flat file)
             save_reachability_cache(cache_path, reachability)
+
+            # Save to DiscoveryDB (delta-based historical storage)
+            from gdoc2netcfg.storage.discovery_db import DiscoveryDB
+
+            with DiscoveryDB(config.cache.discovery_db_path) as db:
+                scan_id = db.begin_scan("reachability")
+                try:
+                    changed = db.save_reachability(scan_id, reachability)
+                    db.finish_scan(
+                        scan_id,
+                        host_count=len(reachability),
+                        changed_count=changed,
+                    )
+                except Exception:
+                    db.connection.execute(
+                        "DELETE FROM scans WHERE id = ?", (scan_id,),
+                    )
+                    raise
 
             # Publish discovery + state using shared helper
             published, disc, state = _publish_hosts_to_client(

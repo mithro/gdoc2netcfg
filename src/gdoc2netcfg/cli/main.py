@@ -2133,6 +2133,111 @@ def cmd_password(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: db (database management and history)
+# ---------------------------------------------------------------------------
+
+def cmd_db_migrate(args: argparse.Namespace) -> int:
+    """Import flat-file caches into SQLite databases."""
+    config = _load_config(args)
+
+    from gdoc2netcfg.storage import open_databases
+
+    print("Migrating flat-file caches to SQLite...", file=sys.stderr)
+    pair = open_databases(config.cache.directory, migrate=True)
+    pair.close()
+    print("Migration complete.", file=sys.stderr)
+    return 0
+
+
+def cmd_db_info(args: argparse.Namespace) -> int:
+    """Show database sizes, scan counts, and status."""
+    config = _load_config(args)
+
+    config_path = config.cache.config_db_path
+    discovery_path = config.cache.discovery_db_path
+
+    for label, db_path in [("Config", config_path), ("Discovery", discovery_path)]:
+        if not db_path.exists():
+            print(f"{label} DB: not created yet")
+            continue
+
+        size_kb = db_path.stat().st_size / 1024
+        print(f"{label} DB: {db_path} ({size_kb:.1f} KB)")
+
+        # Count scans by type
+        from gdoc2netcfg.storage.base import BaseDatabase
+
+        db = BaseDatabase(db_path)
+        cur = db.connection.execute(
+            "SELECT scan_type, COUNT(*) as cnt, "
+            "MIN(started_at) as oldest, MAX(started_at) as newest "
+            "FROM scans WHERE finished_at IS NOT NULL "
+            "GROUP BY scan_type ORDER BY scan_type"
+        )
+        rows = cur.fetchall()
+        if rows:
+            for scan_type, cnt, oldest, newest in rows:
+                oldest_date = oldest[:10] if oldest else "?"
+                newest_date = newest[:10] if newest else "?"
+                print(f"  {scan_type}: {cnt} scans ({oldest_date} to {newest_date})")
+        else:
+            print("  No completed scans.")
+        db.close()
+
+    return 0
+
+
+def cmd_db_history(args: argparse.Namespace) -> int:
+    """Show scan history."""
+    config = _load_config(args)
+
+    from gdoc2netcfg.storage import open_databases
+
+    config_path = config.cache.config_db_path
+    discovery_path = config.cache.discovery_db_path
+
+    if not config_path.exists() and not discovery_path.exists():
+        print("No databases found. Run 'gdoc2netcfg db migrate' first.", file=sys.stderr)
+        return 1
+
+    pair = open_databases(config.cache.directory)
+    try:
+        # Collect scans from both databases
+        all_scans = []
+        for db in [pair.config, pair.discovery]:
+            scans = db.scan_history(
+                scan_type=args.scan_type,
+                since=args.since,
+                limit=args.limit,
+            )
+            all_scans.extend(scans)
+
+        # Sort by ID descending (most recent first) and limit
+        all_scans.sort(key=lambda s: s["started_at"], reverse=True)
+        all_scans = all_scans[:args.limit]
+
+        if not all_scans:
+            print("No scans found matching criteria.")
+            return 0
+
+        # Print table
+        print(f"{'Started':<28} {'Type':<18} {'Hosts':>5} {'Changed':>7}")
+        print("-" * 62)
+        for scan in all_scans:
+            started = scan["started_at"][:19].replace("T", " ")
+            scan_type = scan["scan_type"]
+            hosts = scan.get("host_count") or 0
+            changed = scan.get("changed_count") or 0
+            print(f"{started:<28} {scan_type:<18} {hosts:>5} {changed:>7}")
+
+        print(f"\n{len(all_scans)} scan(s) shown.")
+    finally:
+        pair.close()
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -2370,6 +2475,36 @@ def main(argv: list[str] | None = None) -> int:
         help="Show what would be written without updating the sheet",
     )
 
+    # db (database management and history)
+    db_parser = subparsers.add_parser(
+        "db", help="Database management and history queries",
+    )
+    db_subparsers = db_parser.add_subparsers(dest="db_command")
+
+    db_subparsers.add_parser(
+        "migrate", help="Import flat-file caches into SQLite databases",
+    )
+
+    db_subparsers.add_parser(
+        "info", help="Show database sizes, scan counts, and status",
+    )
+
+    db_history_parser = db_subparsers.add_parser(
+        "history", help="Show scan history",
+    )
+    db_history_parser.add_argument(
+        "--type", dest="scan_type", default=None,
+        help="Filter by scan type (e.g. reachability, ssl_certs)",
+    )
+    db_history_parser.add_argument(
+        "--since", default=None,
+        help="Only show scans since this date (ISO 8601, e.g. 2025-06-01)",
+    )
+    db_history_parser.add_argument(
+        "--limit", type=int, default=50,
+        help="Maximum number of scans to show (default: 50)",
+    )
+
     # password (device credential lookup)
     pwd_parser = subparsers.add_parser(
         "password", help="Look up device credentials",
@@ -2399,6 +2534,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     from gdoc2netcfg.cli.cron import cmd_cron
+
+    # Handle db subcommands
+    if args.command == "db":
+        if args.db_command == "migrate":
+            return cmd_db_migrate(args)
+        elif args.db_command == "info":
+            return cmd_db_info(args)
+        elif args.db_command == "history":
+            return cmd_db_history(args)
+        else:
+            db_parser.print_help()
+            return 0
 
     # Handle bridge subcommands
     if args.command == "bridge":

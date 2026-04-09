@@ -108,6 +108,35 @@ def _enrich_site_from_vlan_sheet(config, csv_data: list[tuple[str, str]]) -> Non
     config.site.network_subdomains = subdomains
 
 
+def _save_to_discovery_db(
+    config: PipelineConfig,
+    scan_type: str,
+    save_method: str,
+    data: dict,
+) -> None:
+    """Save supplement scan results to DiscoveryDB.
+
+    Handles the begin_scan/finish_scan lifecycle and cleans up the
+    scan row on failure.  Used by all supplement cmd_* functions.
+    """
+    from gdoc2netcfg.storage.discovery_db import DiscoveryDB
+
+    with DiscoveryDB(config.cache.discovery_db_path) as db:
+        scan_id = db.begin_scan(scan_type)
+        try:
+            changed = getattr(db, save_method)(scan_id, data)
+            db.finish_scan(
+                scan_id,
+                host_count=len(data),
+                changed_count=changed,
+            )
+        except Exception:
+            db.connection.execute(
+                "DELETE FROM scans WHERE id = ?", (scan_id,),
+            )
+            raise
+
+
 def _open_databases(config):
     """Open the SQLite databases if either exists, returning DatabasePair or None.
 
@@ -758,6 +787,11 @@ def _scan_ssh_host_keys_pipeline(
 
     enrich_hosts_with_ssh_host_keys(hosts, host_keys_data)
 
+    if host_keys_data:
+        _save_to_discovery_db(
+            config, "ssh_host_keys", "save_ssh_host_keys", host_keys_data,
+        )
+
     return hosts, host_keys_data
 
 
@@ -836,6 +870,9 @@ def cmd_ssl_certs(args: argparse.Namespace) -> int:
 
     enrich_hosts_with_ssl_certs(hosts, cert_data)
 
+    if cert_data:
+        _save_to_discovery_db(config, "ssl_certs", "save_ssl_certs", cert_data)
+
     # Report scan results
     hosts_with_cert = sum(1 for h in hosts if h.ssl_cert_info is not None)
     print(f"SSL certificates for {hosts_with_cert}/{len(hosts)} hosts.")
@@ -898,6 +935,11 @@ def cmd_snmp_host(args: argparse.Namespace) -> int:
     enrich_hosts_with_bmc_firmware(hosts, bmc_fw_data)
     refine_bmc_hardware_type(hosts)
 
+    if bmc_fw_data:
+        _save_to_discovery_db(
+            config, "bmc_firmware", "save_bmc_firmware", bmc_fw_data,
+        )
+
     cache_path = Path(config.cache.directory) / "snmp.json"
     print("\nScanning SNMP...", file=sys.stderr)
     snmp_data = scan_snmp(
@@ -909,6 +951,9 @@ def cmd_snmp_host(args: argparse.Namespace) -> int:
     )
 
     enrich_hosts_with_snmp(hosts, snmp_data)
+
+    if snmp_data:
+        _save_to_discovery_db(config, "snmp", "save_snmp", snmp_data)
 
     # Run validation
     validation_result = validate_snmp_availability(hosts, reachability)
@@ -975,6 +1020,11 @@ def cmd_bmc_firmware(args: argparse.Namespace) -> int:
     enrich_hosts_with_bmc_firmware(hosts, fw_data)
     refine_bmc_hardware_type(hosts)
 
+    if fw_data:
+        _save_to_discovery_db(
+            config, "bmc_firmware", "save_bmc_firmware", fw_data,
+        )
+
     # Report
     bmcs_total = sum(
         1 for h in hosts
@@ -1033,6 +1083,9 @@ def cmd_snmp_switch(args: argparse.Namespace) -> int:
     )
 
     enrich_hosts_with_bridge_data(hosts, bridge_data)
+
+    if bridge_data:
+        _save_to_discovery_db(config, "bridge", "save_bridge", bridge_data)
 
     # Run bridge validations
     from gdoc2netcfg.constraints.bridge_validation import (
@@ -1124,6 +1177,9 @@ def cmd_bridge_scan(args: argparse.Namespace) -> int:
     )
     enrich_hosts_with_bridge_data(hosts, bridge_data)
 
+    if bridge_data:
+        _save_to_discovery_db(config, "bridge", "save_bridge", bridge_data)
+
     # NSDP scan
     nsdp_cache = Path(config.cache.directory) / "nsdp.json"
     print("\nScanning switches via NSDP...", file=sys.stderr)
@@ -1134,6 +1190,9 @@ def cmd_bridge_scan(args: argparse.Namespace) -> int:
         verbose=True,
     )
     enrich_hosts_with_nsdp(hosts, nsdp_data)
+
+    if nsdp_data:
+        _save_to_discovery_db(config, "nsdp", "save_nsdp", nsdp_data)
 
     # Run bridge validations
     inventory = build_inventory(hosts, config.site)
@@ -1494,6 +1553,9 @@ def cmd_nsdp_scan(args: argparse.Namespace) -> int:
 
     enrich_hosts_with_nsdp(hosts, nsdp_data)
 
+    if nsdp_data:
+        _save_to_discovery_db(config, "nsdp", "save_nsdp", nsdp_data)
+
     # Report - count only Netgear switches
     netgear_hosts = [h for h in hosts if h.hardware_type in NSDP_HARDWARE_TYPES]
     hosts_with_nsdp = sum(1 for h in netgear_hosts if h.nsdp_data is not None)
@@ -1611,6 +1673,11 @@ def cmd_tasmota_scan(args: argparse.Namespace) -> int:
     )
 
     enrich_hosts_with_tasmota(hosts, tasmota_data)
+
+    if tasmota_data:
+        _save_to_discovery_db(
+            config, "tasmota", "save_tasmota", tasmota_data,
+        )
 
     # Report
     iot_hosts = [h for h in hosts if h.sheet_type == "IoT"]

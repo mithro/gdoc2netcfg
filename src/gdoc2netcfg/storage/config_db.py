@@ -153,7 +153,7 @@ class ConfigDB(BaseDatabase):
                 )
                 new_tuple = (
                     rec["sheet_name"],
-                    rec["row_number"],
+                    int(rec["row_number"]),
                     rec["machine"],
                     rec.get("mac_address", ""),
                     rec.get("ip", ""),

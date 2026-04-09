@@ -91,18 +91,16 @@ class TestImportFlatFiles:
         config_db.close()
         discovery_db.close()
 
-    def test_skips_reachability_v1(self, cache_dir: Path):
-        # v1 format: flat dict[hostname, list[ips]]
+    def test_reachability_v1_raises(self, cache_dir: Path):
+        """v1 reachability format raises an error (fail loud)."""
         _write_json(cache_dir / "reachability.json", {
             "server1": ["10.1.10.1"],
         })
 
         config_db = ConfigDB(cache_dir / "config.db")
         discovery_db = DiscoveryDB(cache_dir / "discovery.db")
-        results = import_flat_files(cache_dir, config_db, discovery_db)
-
-        assert "reachability.json" not in results
-        assert discovery_db.load_latest_reachability() is None
+        with pytest.raises(ValueError, match="unsupported format"):
+            import_flat_files(cache_dir, config_db, discovery_db)
 
         config_db.close()
         discovery_db.close()
@@ -200,15 +198,14 @@ class TestImportFlatFiles:
         config_db.close()
         discovery_db.close()
 
-    def test_handles_corrupt_json(self, cache_dir: Path):
-        """Corrupt JSON files are skipped with a warning."""
+    def test_corrupt_json_raises(self, cache_dir: Path):
+        """Corrupt JSON files raise an error (fail loud)."""
         (cache_dir / "snmp.json").write_text("{invalid json")
 
         config_db = ConfigDB(cache_dir / "config.db")
         discovery_db = DiscoveryDB(cache_dir / "discovery.db")
-        results = import_flat_files(cache_dir, config_db, discovery_db)
-
-        assert "snmp.json" not in results
+        with pytest.raises(json.JSONDecodeError):
+            import_flat_files(cache_dir, config_db, discovery_db)
 
         config_db.close()
         discovery_db.close()

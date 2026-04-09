@@ -60,7 +60,10 @@ class BaseDatabase:
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
         is_new = not db_path.exists()
-        self._conn = sqlite3.connect(str(db_path))
+        # isolation_level=None disables Python's implicit transaction
+        # management.  All transactions are managed explicitly via
+        # BEGIN/COMMIT/ROLLBACK in save methods.
+        self._conn = sqlite3.connect(str(db_path), isolation_level=None)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
 

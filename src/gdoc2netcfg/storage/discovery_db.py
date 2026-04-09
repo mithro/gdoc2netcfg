@@ -638,6 +638,11 @@ class DiscoveryDB(BaseDatabase):
     # History / time-travel queries
     # ==================================================================
 
+    # Valid table names for host_changes() — prevents SQL injection.
+    _HISTORY_TABLES = frozenset({
+        "snmp_data", "bridge_data", "nsdp_data", "tasmota_data",
+    })
+
     def host_changes(
         self,
         table: str,
@@ -650,11 +655,16 @@ class DiscoveryDB(BaseDatabase):
 
         Works for JSON-blob tables.  Every row IS a change, newest first.
         """
+        if table not in self._HISTORY_TABLES:
+            raise ValueError(
+                f"Invalid table {table!r}; must be one of {sorted(self._HISTORY_TABLES)}"
+            )
         clauses = [
             "d.hostname = ?",
             "s.finished_at IS NOT NULL",
+            "s.scan_type = ?",
         ]
-        params: list[str] = [hostname]
+        params: list[str] = [hostname, scan_type]
         if since is not None:
             clauses.append("s.started_at >= ?")
             params.append(since)

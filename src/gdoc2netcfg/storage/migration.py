@@ -54,48 +54,46 @@ def import_flat_files(
     ssh_path = cache_dir / "ssh_host_keys.json"
     if ssh_path.exists():
         data = _load_json(ssh_path)
-        if data:
-            mtime_iso = _file_mtime_iso(ssh_path)
-            scan_id = discovery_db.begin_scan(
-                "ssh_host_keys", started_at=mtime_iso,
-            )
-            changed = discovery_db.save_ssh_host_keys(scan_id, data)
-            discovery_db.finish_scan(
-                scan_id, host_count=len(data), changed_count=changed,
-            )
-            results["ssh_host_keys.json"] = len(data)
-            print(
-                f"  Imported ssh_host_keys.json ({len(data)} hosts)",
-                file=sys.stderr,
-            )
+        mtime_iso = _file_mtime_iso(ssh_path)
+        scan_id = discovery_db.begin_scan(
+            "ssh_host_keys", started_at=mtime_iso,
+        )
+        changed = discovery_db.save_ssh_host_keys(scan_id, data)
+        discovery_db.finish_scan(
+            scan_id, host_count=len(data), changed_count=changed,
+        )
+        results["ssh_host_keys.json"] = len(data)
+        print(
+            f"  Imported ssh_host_keys.json ({len(data)} hosts)",
+            file=sys.stderr,
+        )
 
     # -- Reachability (v2 format with version envelope) --
     reach_path = cache_dir / "reachability.json"
     if reach_path.exists():
         raw = _load_json(reach_path)
-        if isinstance(raw, dict) and raw.get("version") == 2:
-            hosts_data = raw.get("hosts", {})
-            if hosts_data:
-                mtime_iso = _file_mtime_iso(reach_path)
-                scan_id = discovery_db.begin_scan(
-                    "reachability", started_at=mtime_iso,
-                )
-                changed = discovery_db.save_reachability(scan_id, hosts_data)
-                discovery_db.finish_scan(
-                    scan_id,
-                    host_count=len(hosts_data),
-                    changed_count=changed,
-                )
-                results["reachability.json"] = len(hosts_data)
-                print(
-                    f"  Imported reachability.json ({len(hosts_data)} hosts)",
-                    file=sys.stderr,
-                )
-        else:
-            print(
-                "  Skipping reachability.json (v1 format or invalid)",
-                file=sys.stderr,
+        if raw.get("version") != 2:
+            raise ValueError(
+                f"reachability.json has unsupported format "
+                f"(version={raw.get('version')!r}, expected 2). "
+                f"Delete the file and re-scan, or convert to v2 format."
             )
+        hosts_data = raw["hosts"]
+        mtime_iso = _file_mtime_iso(reach_path)
+        scan_id = discovery_db.begin_scan(
+            "reachability", started_at=mtime_iso,
+        )
+        changed = discovery_db.save_reachability(scan_id, hosts_data)
+        discovery_db.finish_scan(
+            scan_id,
+            host_count=len(hosts_data),
+            changed_count=changed,
+        )
+        results["reachability.json"] = len(hosts_data)
+        print(
+            f"  Imported reachability.json ({len(hosts_data)} hosts)",
+            file=sys.stderr,
+        )
 
     # -- Other discovery JSON files (simple dict[hostname, dict] format) --
     for stem, (save_method, scan_type) in _DISCOVERY_JSON_FILES.items():
@@ -103,8 +101,6 @@ def import_flat_files(
         if not json_path.exists():
             continue
         data = _load_json(json_path)
-        if not data:
-            continue
 
         mtime_iso = _file_mtime_iso(json_path)
         scan_id = discovery_db.begin_scan(scan_type, started_at=mtime_iso)
@@ -121,14 +117,10 @@ def import_flat_files(
     return results
 
 
-def _load_json(path: Path) -> dict | None:
-    """Load a JSON file, returning None on error."""
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
-        print(f"  Warning: failed to load {path.name}: {e}", file=sys.stderr)
-        return None
+def _load_json(path: Path) -> dict:
+    """Load a JSON file.  Raises on corrupt or unreadable files."""
+    with open(path) as f:
+        return json.load(f)
 
 
 def _file_mtime_iso(path: Path) -> str:

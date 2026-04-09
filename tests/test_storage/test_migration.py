@@ -182,7 +182,7 @@ class TestImportFlatFiles:
     def test_preserves_file_mtime(self, cache_dir: Path):
         """Scan timestamps use the flat file's mtime."""
         csv_path = cache_dir / "network.csv"
-        csv_path.write_text("data")
+        csv_path.write_text("Machine,MAC\ndesktop,aa:bb")
         # Set mtime to a known time (2025-01-15 12:00:00 UTC)
         known_time = 1736942400.0
         os.utime(csv_path, (known_time, known_time))

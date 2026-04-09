@@ -79,20 +79,37 @@ class BaseDatabase:
     # ------------------------------------------------------------------
 
     def _init_schema(self) -> None:
-        """Create all tables in a new database."""
-        cur = self._conn.cursor()
-        cur.executescript(
-            _SCANS_SQL + _SCANS_INDEX_SQL + _META_SQL
-        )
-        cur.execute(
-            "INSERT INTO _meta (key, value) VALUES ('schema_version', ?)",
-            (str(SCHEMA_VERSION),),
-        )
-        self._create_tables(cur)
-        self._conn.commit()
+        """Create all tables in a new database.
 
-    def _create_tables(self, cur: sqlite3.Cursor) -> None:
-        """Create data-specific tables.  Override in subclasses."""
+        Uses an explicit transaction so that a crash during init
+        leaves no half-created database file.
+        """
+        self._conn.execute("BEGIN")
+        try:
+            # Run each DDL statement individually (not executescript,
+            # which auto-commits and would break our transaction).
+            for stmt in (
+                _SCANS_SQL + _SCANS_INDEX_SQL + _META_SQL
+            ).split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    self._conn.execute(stmt)
+            self._conn.execute(
+                "INSERT INTO _meta (key, value) VALUES ('schema_version', ?)",
+                (str(SCHEMA_VERSION),),
+            )
+            self._create_tables(self._conn)
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+
+    def _create_tables(self, conn: sqlite3.Connection) -> None:
+        """Create data-specific tables.  Override in subclasses.
+
+        Called inside a transaction — use ``conn.execute()`` for each
+        DDL statement, not ``executescript()`` (which auto-commits).
+        """
 
     def _check_schema_version(self) -> None:
         """Verify the on-disk schema version matches the code."""

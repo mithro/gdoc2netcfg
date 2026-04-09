@@ -53,9 +53,14 @@ def import_flat_files(
 
         scan_id = config_db.begin_scan("csv_fetch", started_at=mtime_iso)
         config_db.save_csv(scan_id, sheet_name, csv_text)
-        # Count data rows (lines minus header).  CSV text always has
-        # at least a header line, so max(..., 1) avoids host_count=0.
-        row_count = max(csv_text.strip().count("\n"), 1)
+        # Count data rows (header line is not a data row).
+        lines = csv_text.strip().splitlines()
+        if len(lines) <= 1:
+            raise ValueError(
+                f"{csv_path.name} has no data rows (only header or empty). "
+                "This usually indicates a failed Google Sheets fetch."
+            )
+        row_count = len(lines) - 1  # subtract header
         config_db.finish_scan(
             scan_id, host_count=row_count, changed_count=row_count,
         )

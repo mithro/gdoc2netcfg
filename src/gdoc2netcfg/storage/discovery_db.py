@@ -130,8 +130,8 @@ class DiscoveryDB(BaseDatabase):
     def __init__(self, db_path: Path) -> None:
         super().__init__(db_path)
 
-    def _create_tables(self, cur: sqlite3.Cursor) -> None:
-        cur.executescript(
+    def _create_tables(self, conn: sqlite3.Connection) -> None:
+        for stmt in (
             _REACHABILITY_SQL
             + _SSH_HOST_KEYS_SQL
             + _SSL_CERTS_SQL
@@ -140,7 +140,10 @@ class DiscoveryDB(BaseDatabase):
             + _BRIDGE_DATA_SQL
             + _NSDP_DATA_SQL
             + _TASMOTA_DATA_SQL
-        )
+        ).split(";"):
+            stmt = stmt.strip()
+            if stmt:
+                conn.execute(stmt)
 
     # ==================================================================
     # Reachability

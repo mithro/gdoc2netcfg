@@ -21,8 +21,8 @@ from gdoc2netcfg.storage.base import (
 class ConcreteDB(BaseDatabase):
     """Minimal subclass for testing (BaseDatabase is abstract-ish)."""
 
-    def _create_tables(self, cur: sqlite3.Cursor) -> None:
-        cur.execute(
+    def _create_tables(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS test_data ("
             "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
             "  scan_id INTEGER NOT NULL REFERENCES scans(id),"

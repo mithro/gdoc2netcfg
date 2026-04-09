@@ -64,10 +64,13 @@ class ConfigDB(BaseDatabase):
     def __init__(self, db_path: Path) -> None:
         super().__init__(db_path)
 
-    def _create_tables(self, cur: sqlite3.Cursor) -> None:
-        cur.executescript(
+    def _create_tables(self, conn: sqlite3.Connection) -> None:
+        for stmt in (
             _CSV_SNAPSHOTS_SQL + _DEVICE_RECORDS_SQL + _VLAN_DEFINITIONS_SQL
-        )
+        ).split(";"):
+            stmt = stmt.strip()
+            if stmt:
+                conn.execute(stmt)
 
     # ------------------------------------------------------------------
     # CSV snapshots (always stored, NOT delta-based)

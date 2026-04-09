@@ -242,8 +242,11 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
     from gdoc2netcfg.sources.cache import CSVCache
     from gdoc2netcfg.sources.sheets import fetch_sheet
+    from gdoc2netcfg.storage.config_db import ConfigDB
 
     cache = CSVCache(config.cache.directory)
+    config_db = ConfigDB(config.cache.config_db_path)
+    scan_id = config_db.begin_scan("csv_fetch")
     ok = 0
     fail = 0
 
@@ -251,13 +254,17 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         try:
             data = fetch_sheet(sheet.name, sheet.url)
             cache.write(sheet.name, data.csv_text)
+            config_db.save_csv(scan_id, sheet.name, data.csv_text)
             print(f"  {sheet.name}: fetched ({len(data.csv_text)} bytes)")
             ok += 1
         except Exception as e:
             print(f"  {sheet.name}: FAILED ({e})", file=sys.stderr)
             fail += 1
 
+    if ok > 0:
+        config_db.finish_scan(scan_id, host_count=ok, changed_count=ok)
     print(f"\nFetched {ok} sheets, {fail} failures.")
+    config_db.close()
     return 1 if fail > 0 else 0
 
 

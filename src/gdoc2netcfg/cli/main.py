@@ -527,17 +527,42 @@ def _load_or_run_reachability(
 
     Per-host status is always printed to stderr — either progressively
     during the live scan or from cached data after loading.
+
+    Tries DiscoveryDB first (if available), then flat-file cache.
+    On fresh scan, saves to both DB and flat file.
     """
     from gdoc2netcfg.supplements.reachability import (
         check_all_hosts_reachability,
         load_reachability_cache,
+        parse_reachability_dict,
         print_reachability_status,
         save_reachability_cache,
     )
+    from gdoc2netcfg.storage.discovery_db import DiscoveryDB
 
     cache_path = Path(config.cache.directory) / "reachability.json"
 
     if not force:
+        # Try DB first for cached data
+        db_path = config.cache.discovery_db_path
+        if db_path.exists():
+            db = DiscoveryDB(db_path)
+            try:
+                age = db.latest_scan_age("reachability")
+                if age is not None and age < 300:
+                    raw = db.load_latest_reachability()
+                    if raw is not None:
+                        cached = parse_reachability_dict(raw)
+                        print(
+                            f"Using cached reachability ({age:.0f}s old).",
+                            file=sys.stderr,
+                        )
+                        print_reachability_status(cached)
+                        return cached
+            finally:
+                db.close()
+
+        # Fall back to flat file
         result = load_reachability_cache(cache_path)
         if result is not None:
             cached, age = result
@@ -550,7 +575,29 @@ def _load_or_run_reachability(
 
     print("Checking host reachability...", file=sys.stderr)
     reachability = check_all_hosts_reachability(hosts, verbose=True)
+
+    # Save to flat file (existing behaviour)
     save_reachability_cache(cache_path, reachability)
+
+    # Save to DiscoveryDB
+    db = DiscoveryDB(config.cache.discovery_db_path)
+    try:
+        scan_id = db.begin_scan("reachability")
+        try:
+            changed = db.save_reachability(scan_id, reachability)
+            db.finish_scan(
+                scan_id,
+                host_count=len(reachability),
+                changed_count=changed,
+            )
+        except Exception:
+            db.connection.execute(
+                "DELETE FROM scans WHERE id = ?", (scan_id,),
+            )
+            raise
+    finally:
+        db.close()
+
     return reachability
 
 

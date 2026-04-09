@@ -363,10 +363,13 @@ class TestReachabilityCache:
         main(["-c", str(config), "reachability"])
         first_call_count = mock_ping.call_count
 
-        # Backdate the cache file
+        # Backdate the cache file and remove the DB (which has a fresh scan)
         cache_file = cache_dir / "reachability.json"
         old_time = time.time() - 600
         os.utime(cache_file, (old_time, old_time))
+        db_file = cache_dir / "discovery.db"
+        if db_file.exists():
+            db_file.unlink()
 
         # Second run — cache is stale, should re-ping
         main(["-c", str(config), "reachability"])

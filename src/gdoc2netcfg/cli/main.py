@@ -274,13 +274,21 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     if fetched_csvs:
         with ConfigDB(config.cache.config_db_path) as config_db:
             scan_id = config_db.begin_scan("csv_fetch")
-            for sheet_name, csv_text in fetched_csvs:
-                config_db.save_csv(scan_id, sheet_name, csv_text)
-            config_db.finish_scan(
-                scan_id,
-                host_count=len(fetched_csvs),
-                changed_count=len(fetched_csvs),
-            )
+            try:
+                for sheet_name, csv_text in fetched_csvs:
+                    config_db.save_csv(scan_id, sheet_name, csv_text)
+                config_db.finish_scan(
+                    scan_id,
+                    host_count=len(fetched_csvs),
+                    changed_count=len(fetched_csvs),
+                )
+            except Exception:
+                # Clean up the orphaned scan row immediately rather
+                # than waiting for the 1-hour cleanup_incomplete_scans.
+                config_db.connection.execute(
+                    "DELETE FROM scans WHERE id = ?", (scan_id,),
+                )
+                raise
 
     print(f"\nFetched {ok} sheets, {fail} failures.")
     return 1 if fail > 0 else 0

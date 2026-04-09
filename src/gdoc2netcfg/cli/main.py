@@ -108,10 +108,22 @@ def _enrich_site_from_vlan_sheet(config, csv_data: list[tuple[str, str]]) -> Non
     config.site.network_subdomains = subdomains
 
 
+def _open_databases(config):
+    """Open the SQLite databases if they exist, returning DatabasePair or None."""
+    from gdoc2netcfg.storage import open_databases
+
+    if config.cache.config_db_path.exists() or config.cache.discovery_db_path.exists():
+        return open_databases(config.cache.directory)
+    return None
+
+
 def _build_pipeline(config):
     """Run the full build pipeline: parse → derive → validate → enrich.
 
     Returns (records, hosts, inventory, validation_result).
+
+    Loads supplement data from SQLite databases when available,
+    falling back to flat-file caches for supplements not yet migrated.
     """
     from gdoc2netcfg.constraints.validators import validate_all
     from gdoc2netcfg.derivations.host_builder import build_hosts, build_inventory
@@ -127,6 +139,9 @@ def _build_pipeline(config):
         load_ssh_host_keys_cache,
     )
     from gdoc2netcfg.supplements.ssl_certs import enrich_hosts_with_ssl_certs, load_ssl_cert_cache
+
+    db = _open_databases(config)
+    cache_dir = Path(config.cache.directory)
 
     # Fetch or load CSVs
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
@@ -152,51 +167,64 @@ def _build_pipeline(config):
     # Build inventory (aggregate derivations)
     inventory = build_inventory(hosts, config.site)
 
-    # Load SSH host keys cache and enrich (sets both ssh_host_keys and sshfp_records)
-    ssh_keys_cache = Path(config.cache.directory) / "ssh_host_keys.json"
-    ssh_keys_data = load_ssh_host_keys_cache(ssh_keys_cache)
+    # Load supplement data: try DB first, fall back to flat file.
+    # Each load_latest_* returns None if no completed scan exists in DB.
+
+    # SSH host keys
+    ssh_keys_data = db.discovery.load_latest_ssh_host_keys() if db else None
+    if ssh_keys_data is None:
+        ssh_keys_data = load_ssh_host_keys_cache(cache_dir / "ssh_host_keys.json")
     enrich_hosts_with_ssh_host_keys(hosts, ssh_keys_data)
 
-    # Load SSL cert cache and enrich (don't scan — that's a separate subcommand)
-    ssl_cache = Path(config.cache.directory) / "ssl_certs.json"
-    ssl_data = load_ssl_cert_cache(ssl_cache)
+    # SSL certs
+    ssl_data = db.discovery.load_latest_ssl_certs() if db else None
+    if ssl_data is None:
+        ssl_data = load_ssl_cert_cache(cache_dir / "ssl_certs.json")
     enrich_hosts_with_ssl_certs(hosts, ssl_data)
 
-    # Load BMC firmware cache and refine hardware types (don't scan — separate subcommand)
-    bmc_fw_cache = Path(config.cache.directory) / "bmc_firmware.json"
-    bmc_fw_data = load_bmc_firmware_cache(bmc_fw_cache)
+    # BMC firmware
+    bmc_fw_data = db.discovery.load_latest_bmc_firmware() if db else None
+    if bmc_fw_data is None:
+        bmc_fw_data = load_bmc_firmware_cache(cache_dir / "bmc_firmware.json")
     enrich_hosts_with_bmc_firmware(hosts, bmc_fw_data)
     refine_bmc_hardware_type(hosts)
 
-    # Load SNMP cache and enrich (don't scan — that's a separate subcommand)
-    snmp_cache = Path(config.cache.directory) / "snmp.json"
-    snmp_data = load_snmp_cache(snmp_cache)
+    # SNMP
+    snmp_data = db.discovery.load_latest_snmp() if db else None
+    if snmp_data is None:
+        snmp_data = load_snmp_cache(cache_dir / "snmp.json")
     enrich_hosts_with_snmp(hosts, snmp_data)
 
-    # Load bridge cache and enrich (don't scan — that's a separate subcommand)
+    # Bridge
     from gdoc2netcfg.supplements.bridge import enrich_hosts_with_bridge_data
     from gdoc2netcfg.supplements.snmp_common import load_json_cache
 
-    bridge_cache_path = Path(config.cache.directory) / "bridge.json"
-    bridge_cache = load_json_cache(bridge_cache_path)
-    enrich_hosts_with_bridge_data(hosts, bridge_cache)
+    bridge_data = db.discovery.load_latest_bridge() if db else None
+    if bridge_data is None:
+        bridge_data = load_json_cache(cache_dir / "bridge.json")
+    enrich_hosts_with_bridge_data(hosts, bridge_data)
 
-    # Load NSDP cache and enrich (don't scan — that's a separate subcommand)
+    # NSDP
     from gdoc2netcfg.supplements.nsdp import enrich_hosts_with_nsdp, load_nsdp_cache
 
-    nsdp_cache_path = Path(config.cache.directory) / "nsdp.json"
-    nsdp_cache = load_nsdp_cache(nsdp_cache_path)
-    enrich_hosts_with_nsdp(hosts, nsdp_cache)
+    nsdp_data = db.discovery.load_latest_nsdp() if db else None
+    if nsdp_data is None:
+        nsdp_data = load_nsdp_cache(cache_dir / "nsdp.json")
+    enrich_hosts_with_nsdp(hosts, nsdp_data)
 
-    # Load Tasmota cache and enrich (don't scan — that's a separate subcommand)
+    # Tasmota
     from gdoc2netcfg.supplements.tasmota import (
         enrich_hosts_with_tasmota,
         load_tasmota_cache,
     )
 
-    tasmota_cache_path = Path(config.cache.directory) / "tasmota.json"
-    tasmota_cache = load_tasmota_cache(tasmota_cache_path)
-    enrich_hosts_with_tasmota(hosts, tasmota_cache)
+    tasmota_data = db.discovery.load_latest_tasmota() if db else None
+    if tasmota_data is None:
+        tasmota_data = load_tasmota_cache(cache_dir / "tasmota.json")
+    enrich_hosts_with_tasmota(hosts, tasmota_data)
+
+    if db:
+        db.close()
 
     # Validate
     result = validate_all(all_records, hosts, inventory)

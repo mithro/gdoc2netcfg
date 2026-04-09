@@ -19,9 +19,19 @@ class SheetConfig:
 
 @dataclass
 class CacheConfig:
-    """Configuration for the local CSV cache."""
+    """Configuration for the local cache (flat files and SQLite databases)."""
 
     directory: Path = field(default_factory=lambda: Path(".cache"))
+
+    @property
+    def config_db_path(self) -> Path:
+        """Path to the configuration SQLite database."""
+        return self.directory / "config.db"
+
+    @property
+    def discovery_db_path(self) -> Path:
+        """Path to the discovery SQLite database."""
+        return self.directory / "discovery.db"
 
 
 @dataclass

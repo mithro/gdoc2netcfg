@@ -109,7 +109,13 @@ def _enrich_site_from_vlan_sheet(config, csv_data: list[tuple[str, str]]) -> Non
 
 
 def _open_databases(config):
-    """Open the SQLite databases if they exist, returning DatabasePair or None."""
+    """Open the SQLite databases if either exists, returning DatabasePair or None.
+
+    If only one database file exists (e.g. config.db but not discovery.db),
+    the missing one is created as empty.  This is intentional — both databases
+    are needed for the pipeline to function, and creating an empty DB is
+    harmless (load_latest_* returns None for empty DBs).
+    """
     from gdoc2netcfg.storage import open_databases
 
     if config.cache.config_db_path.exists() or config.cache.discovery_db_path.exists():
@@ -143,93 +149,96 @@ def _build_pipeline(config):
     db = _open_databases(config)
     cache_dir = Path(config.cache.directory)
 
-    # Fetch or load CSVs
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    try:
+        # Fetch or load CSVs
+        csv_data = _fetch_or_load_csvs(config, use_cache=True)
 
-    # Enrich site config from VLAN Allocations sheet
-    _enrich_site_from_vlan_sheet(config, csv_data)
+        # Enrich site config from VLAN Allocations sheet
+        _enrich_site_from_vlan_sheet(config, csv_data)
 
-    # Parse device records (exclude vlan_allocations — not a device sheet)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
+        # Parse device records (exclude vlan_allocations — not a device sheet)
+        all_records = []
+        for name, csv_text in csv_data:
+            if name == "vlan_allocations":
+                continue
+            records = parse_csv(csv_text, name)
+            all_records.extend(records)
 
-    if not all_records:
-        print("Error: no device records found in any sheet.", file=sys.stderr)
-        sys.exit(1)
+        if not all_records:
+            print("Error: no device records found in any sheet.", file=sys.stderr)
+            sys.exit(1)
 
-    # Build hosts (applies all derivations)
-    hosts = build_hosts(all_records, config.site)
+        # Build hosts (applies all derivations)
+        hosts = build_hosts(all_records, config.site)
 
-    # Build inventory (aggregate derivations)
-    inventory = build_inventory(hosts, config.site)
+        # Build inventory (aggregate derivations)
+        inventory = build_inventory(hosts, config.site)
 
-    # Load supplement data: try DB first, fall back to flat file.
-    # Each load_latest_* returns None if no completed scan exists in DB.
+        # Load supplement data: try DB first, fall back to flat file.
+        # Each load_latest_* returns None if no completed scan exists in DB.
+        # Reachability is not loaded here — it's a live-scan gate loaded
+        # separately by cmd_reachability.  Will be wired in Phase 3.
 
-    # SSH host keys
-    ssh_keys_data = db.discovery.load_latest_ssh_host_keys() if db else None
-    if ssh_keys_data is None:
-        ssh_keys_data = load_ssh_host_keys_cache(cache_dir / "ssh_host_keys.json")
-    enrich_hosts_with_ssh_host_keys(hosts, ssh_keys_data)
+        # SSH host keys
+        ssh_keys_data = db.discovery.load_latest_ssh_host_keys() if db else None
+        if ssh_keys_data is None:
+            ssh_keys_data = load_ssh_host_keys_cache(cache_dir / "ssh_host_keys.json")
+        enrich_hosts_with_ssh_host_keys(hosts, ssh_keys_data)
 
-    # SSL certs
-    ssl_data = db.discovery.load_latest_ssl_certs() if db else None
-    if ssl_data is None:
-        ssl_data = load_ssl_cert_cache(cache_dir / "ssl_certs.json")
-    enrich_hosts_with_ssl_certs(hosts, ssl_data)
+        # SSL certs
+        ssl_data = db.discovery.load_latest_ssl_certs() if db else None
+        if ssl_data is None:
+            ssl_data = load_ssl_cert_cache(cache_dir / "ssl_certs.json")
+        enrich_hosts_with_ssl_certs(hosts, ssl_data)
 
-    # BMC firmware
-    bmc_fw_data = db.discovery.load_latest_bmc_firmware() if db else None
-    if bmc_fw_data is None:
-        bmc_fw_data = load_bmc_firmware_cache(cache_dir / "bmc_firmware.json")
-    enrich_hosts_with_bmc_firmware(hosts, bmc_fw_data)
-    refine_bmc_hardware_type(hosts)
+        # BMC firmware
+        bmc_fw_data = db.discovery.load_latest_bmc_firmware() if db else None
+        if bmc_fw_data is None:
+            bmc_fw_data = load_bmc_firmware_cache(cache_dir / "bmc_firmware.json")
+        enrich_hosts_with_bmc_firmware(hosts, bmc_fw_data)
+        refine_bmc_hardware_type(hosts)
 
-    # SNMP
-    snmp_data = db.discovery.load_latest_snmp() if db else None
-    if snmp_data is None:
-        snmp_data = load_snmp_cache(cache_dir / "snmp.json")
-    enrich_hosts_with_snmp(hosts, snmp_data)
+        # SNMP
+        snmp_data = db.discovery.load_latest_snmp() if db else None
+        if snmp_data is None:
+            snmp_data = load_snmp_cache(cache_dir / "snmp.json")
+        enrich_hosts_with_snmp(hosts, snmp_data)
 
-    # Bridge
-    from gdoc2netcfg.supplements.bridge import enrich_hosts_with_bridge_data
-    from gdoc2netcfg.supplements.snmp_common import load_json_cache
+        # Bridge
+        from gdoc2netcfg.supplements.bridge import enrich_hosts_with_bridge_data
+        from gdoc2netcfg.supplements.snmp_common import load_json_cache
 
-    bridge_data = db.discovery.load_latest_bridge() if db else None
-    if bridge_data is None:
-        bridge_data = load_json_cache(cache_dir / "bridge.json")
-    enrich_hosts_with_bridge_data(hosts, bridge_data)
+        bridge_data = db.discovery.load_latest_bridge() if db else None
+        if bridge_data is None:
+            bridge_data = load_json_cache(cache_dir / "bridge.json")
+        enrich_hosts_with_bridge_data(hosts, bridge_data)
 
-    # NSDP
-    from gdoc2netcfg.supplements.nsdp import enrich_hosts_with_nsdp, load_nsdp_cache
+        # NSDP
+        from gdoc2netcfg.supplements.nsdp import enrich_hosts_with_nsdp, load_nsdp_cache
 
-    nsdp_data = db.discovery.load_latest_nsdp() if db else None
-    if nsdp_data is None:
-        nsdp_data = load_nsdp_cache(cache_dir / "nsdp.json")
-    enrich_hosts_with_nsdp(hosts, nsdp_data)
+        nsdp_data = db.discovery.load_latest_nsdp() if db else None
+        if nsdp_data is None:
+            nsdp_data = load_nsdp_cache(cache_dir / "nsdp.json")
+        enrich_hosts_with_nsdp(hosts, nsdp_data)
 
-    # Tasmota
-    from gdoc2netcfg.supplements.tasmota import (
-        enrich_hosts_with_tasmota,
-        load_tasmota_cache,
-    )
+        # Tasmota
+        from gdoc2netcfg.supplements.tasmota import (
+            enrich_hosts_with_tasmota,
+            load_tasmota_cache,
+        )
 
-    tasmota_data = db.discovery.load_latest_tasmota() if db else None
-    if tasmota_data is None:
-        tasmota_data = load_tasmota_cache(cache_dir / "tasmota.json")
-    enrich_hosts_with_tasmota(hosts, tasmota_data)
+        tasmota_data = db.discovery.load_latest_tasmota() if db else None
+        if tasmota_data is None:
+            tasmota_data = load_tasmota_cache(cache_dir / "tasmota.json")
+        enrich_hosts_with_tasmota(hosts, tasmota_data)
 
-    if db:
-        db.close()
+        # Validate
+        result = validate_all(all_records, hosts, inventory)
 
-    # Validate
-    result = validate_all(all_records, hosts, inventory)
-
-    return all_records, hosts, inventory, result
+        return all_records, hosts, inventory, result
+    finally:
+        if db:
+            db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -245,26 +254,35 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     from gdoc2netcfg.storage.config_db import ConfigDB
 
     cache = CSVCache(config.cache.directory)
-    config_db = ConfigDB(config.cache.config_db_path)
-    scan_id = config_db.begin_scan("csv_fetch")
     ok = 0
     fail = 0
+    fetched_csvs: list[tuple[str, str]] = []
 
     for sheet in config.sheets:
         try:
             data = fetch_sheet(sheet.name, sheet.url)
             cache.write(sheet.name, data.csv_text)
-            config_db.save_csv(scan_id, sheet.name, data.csv_text)
+            fetched_csvs.append((sheet.name, data.csv_text))
             print(f"  {sheet.name}: fetched ({len(data.csv_text)} bytes)")
             ok += 1
         except Exception as e:
             print(f"  {sheet.name}: FAILED ({e})", file=sys.stderr)
             fail += 1
 
-    if ok > 0:
-        config_db.finish_scan(scan_id, host_count=ok, changed_count=ok)
+    # Save to ConfigDB only if at least one sheet was fetched.
+    # begin_scan is deferred to avoid orphaned scan rows on total failure.
+    if fetched_csvs:
+        with ConfigDB(config.cache.config_db_path) as config_db:
+            scan_id = config_db.begin_scan("csv_fetch")
+            for sheet_name, csv_text in fetched_csvs:
+                config_db.save_csv(scan_id, sheet_name, csv_text)
+            config_db.finish_scan(
+                scan_id,
+                host_count=len(fetched_csvs),
+                changed_count=len(fetched_csvs),
+            )
+
     print(f"\nFetched {ok} sheets, {fail} failures.")
-    config_db.close()
     return 1 if fail > 0 else 0
 
 

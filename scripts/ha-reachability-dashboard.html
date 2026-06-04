@@ -154,18 +154,15 @@ function portsForIface(h, ifaceName) {
   // Find port controls matching an interface name.
   // Returns array of matching port controls.
   if (!h.controls) return [];
+  // Unnamed interfaces have name "default" in the host data but
+  // iface "" in port controls (no interface prefix in the port
+  // description).  Normalise so the comparison matches.
+  var matchIface = ifaceName === "default" ? "" : (ifaceName || "");
   var result = [];
   for (var i = 0; i < h.controls.length; i++) {
     var c = h.controls[i];
     if (c.type !== "port") continue;
-    if (c.iface === (ifaceName || "")) result.push(c);
-  }
-  // If no exact match and interface is default, include controls with no iface
-  if (!result.length && !ifaceName) {
-    for (var i = 0; i < h.controls.length; i++) {
-      var c = h.controls[i];
-      if (c.type === "port" && !c.iface) result.push(c);
-    }
+    if (c.iface === matchIface) result.push(c);
   }
   return result;
 }

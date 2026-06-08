@@ -30,6 +30,9 @@ uv run gdoc2netcfg bmc-firmware --force # Probe BMC firmware versions via ipmito
 uv run gdoc2netcfg bridge              # Unified switch data (SNMP + NSDP)
 uv run gdoc2netcfg nsdp                # Scan Netgear switches via NSDP
 uv run gdoc2netcfg cron                # Manage scheduled cron jobs
+uv run gdoc2netcfg db migrate          # Import flat-file caches into SQLite (one-time per site)
+uv run gdoc2netcfg db info             # Show SQLite DB sizes and per-scan_type scan counts
+uv run gdoc2netcfg db history          # Show scan history (flags: --type, --since, --limit)
 uv run gdoc2netcfg password <query>        # Look up device password by hostname/MAC/IP
 uv run gdoc2netcfg password --type snmp <query>  # Look up SNMP community string
 uv run gdoc2netcfg password --type ipmi <query>  # Look up IPMI credentials
@@ -93,6 +96,7 @@ Config files               Per-host .conf files in output directories
 Supporting modules:
 - `utils/` — shared helpers: IP sort/classification (`ip.py`), DNS/path injection guards (`dns.py`), terminal colours (`terminal.py`)
 - `audit/` — compare spreadsheet data against live network state
+- `storage/` — SQLite historical storage (`config.db` + `discovery.db`) with delta-based retention; see **SQLite Storage** below
 
 The CLI (`cli/main.py`) wires the pipeline via `_build_pipeline()` which returns `(records, hosts, inventory, validation_result)`. Generators receive a `NetworkInventory` — the fully enriched model with all derivations applied.
 
@@ -139,6 +143,19 @@ The topology generator (`topology.py`) produces a Graphviz DOT diagram of the ph
 `gdoc2netcfg.toml` (gitignored, site-specific) defines site topology (domain, VLANs, IPv6 prefixes, network subdomains), sheet URLs, cache directory, and generator settings. Loaded by `config.py` into a `PipelineConfig` dataclass containing a `Site` object.
 
 `gdoc2netcfg.toml.example` is the tracked template with Welland defaults. Each site copies it to `gdoc2netcfg.toml` and edits the `[site]`, `[ipv6]`, and `[generators] enabled` sections. This avoids merge conflicts when deploying to Monarto.
+
+### SQLite Storage
+
+Alongside the flat-file caches, supplement and spreadsheet data are stored in two SQLite databases under the cache directory (`storage/` modules):
+
+- `.cache/config.db` (`ConfigDB`) — spreadsheet data: CSV snapshots, device records, VLAN definitions (scan_type `csv_fetch`).
+- `.cache/discovery.db` (`DiscoveryDB`) — supplement scan results: reachability, SSH host keys, SSL certs, BMC firmware, SNMP, bridge, NSDP, Tasmota (one scan_type each).
+
+Both inherit `BaseDatabase` (`storage/base.py`): WAL mode, schema versioning, and a shared `scans` audit table (one row per scan/fetch). Storage is **delta-based** — data rows are INSERTed only when a value actually changes, so history accrues with bounded growth; reads reconstruct the latest state via `load_latest_*`.
+
+`cmd_fetch`, the supplement scans, and the reachability daemon write to **both** the flat files and the DBs (parallel write). `_build_pipeline` loads supplements from `discovery.db` when present, falling back to the flat-file cache per supplement (the fallback is None-guarded, not exception-guarded). Seed the DBs from existing flat files once per site with `db migrate` (`storage/migration.py`); inspect with `db info` / `db history`.
+
+> **WAL caveat:** `BaseDatabase.__init__` runs `PRAGMA journal_mode=WAL` — a *write* — on every open, and WAL readers also need write access to the `-shm` sidecar. So even read-only commands require write access to the DB files; this drives the production ownership model (see *SQLite databases* under Production Deployment).
 
 ### Models
 
@@ -250,6 +267,17 @@ cp gdoc2netcfg.toml.example gdoc2netcfg.toml
 ```
 
 Note: `uv` on monarto is at `~/.local/bin/uv` (not in PATH for non-interactive shells).
+
+### SQLite databases
+
+The SQLite DBs (`.cache/config.db`, `.cache/discovery.db`) accrue historical scan data (see *SQLite Storage*). Create them once per site by importing the existing flat caches, run as **root** from the repo dir (the cache path is resolved relative to the working directory):
+
+```bash
+sudo bash -c 'cd /opt/gdoc2netcfg && .venv/bin/gdoc2netcfg db migrate'   # one-time import
+sudo bash -c 'cd /opt/gdoc2netcfg && .venv/bin/gdoc2netcfg db info'      # verify
+```
+
+**Ownership = everything root.** The reachability daemon runs as root, so `/opt/gdoc2netcfg/.cache` and `.venv` are owned by `root`. Because opening a WAL database is a write (the WAL caveat under *SQLite Storage*), a non-root user cannot open a root-owned DB at all — so **every gdoc2netcfg command on `/opt` that touches a DB must run via `sudo`**, using the direct `.venv/bin/gdoc2netcfg` (not `uv run`, which would re-sync the root-owned venv). The reachability daemon writes a new `reachability` scan to `discovery.db` each 5-minute cycle; the other supplements only gain history when their scan commands are run.
 
 ### dnsmasq
 

@@ -1,0 +1,13 @@
+[Unit]
+Description=Restart gdoc2netcfg reachability daemon when its config changes
+Documentation=https://github.com/mithro/gdoc2netcfg
+
+[Path]
+# Pick up gdoc2netcfg.toml edits without a manual restart. PathModified fires
+# when the file is written and closed; systemd re-arms via the parent directory
+# on atomic replace. Triggers the matching .service (a try-restart helper).
+PathModified=/opt/gdoc2netcfg/gdoc2netcfg.toml
+Unit=gdoc2netcfg-reachability-config.service
+
+[Install]
+WantedBy=multi-user.target

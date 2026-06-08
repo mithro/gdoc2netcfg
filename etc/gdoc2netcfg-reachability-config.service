@@ -1,0 +1,9 @@
+[Unit]
+Description=Restart gdoc2netcfg reachability daemon (triggered by config change)
+Documentation=https://github.com/mithro/gdoc2netcfg
+
+[Service]
+Type=oneshot
+# try-restart restarts only if the daemon is currently running, so editing the
+# config never starts a daemon that was deliberately stopped.
+ExecStart=/usr/bin/systemctl try-restart gdoc2netcfg-reachability.service

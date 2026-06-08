@@ -127,7 +127,7 @@ def _enrich_all_sites_from_sheet(config, csv_data: list[tuple[str, str]]) -> Non
     (not configured / fetch failed), the TOML all_sites is kept as a
     fallback.
     """
-    from gdoc2netcfg.sources.sites_parser import parse_sites, site_names
+    from gdoc2netcfg.sources.sites_parser import parse_sites, site_config_drift, site_names
 
     sites_csv = None
     for name, text in csv_data:
@@ -144,6 +144,17 @@ def _enrich_all_sites_from_sheet(config, csv_data: list[tuple[str, str]]) -> Non
         return
 
     config.site.all_sites = site_names(sites)
+
+    # Shadow-check the per-site TOML against the sheet (not yet authoritative).
+    info = next((s for s in sites if s.shortname == config.site.name.lower()), None)
+    if info is None:
+        print(
+            f"Warning: site {config.site.name!r} not found in the Sites sheet",
+            file=sys.stderr,
+        )
+        return
+    for d in site_config_drift(config.site, info):
+        print(f"Warning: {config.site.name} TOML/sheet drift — {d}", file=sys.stderr)
 
 
 def _save_to_discovery_db(

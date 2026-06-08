@@ -9,14 +9,18 @@ The sheet mixes three kinds of rows in its Shortname column:
 
 Only the site rows are returned; the others are skipped.  No derivation is
 done here — SiteInfo carries the raw columns, and callers turn them into
-Site.all_sites (sources/... -> cli/main.py) or cross-check them against the
-per-site TOML.
+Site.all_sites (cli/main.py) or cross-check them against the per-site TOML
+(site_config_drift).
 """
 from __future__ import annotations
 
 import csv
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gdoc2netcfg.models.network import Site
 
 # A site Shortname is a single lowercase identifier: it starts with an
 # alphanumeric, then allows alphanumerics/dashes, and — crucially — contains
@@ -104,3 +108,52 @@ def parse_sites(csv_text: str) -> list[SiteInfo]:
 def site_names(sites: list[SiteInfo]) -> tuple[str, ...]:
     """Return the tuple of site shortnames (for Site.all_sites)."""
     return tuple(s.shortname for s in sites)
+
+
+def octet_from_private_ipv4(private_ipv4: str) -> int | None:
+    """Extract the site octet from a Private IPv4 like '10.1.X.X' -> 1.
+
+    Returns None if the value isn't a '10.N.*' address (N numeric).
+    """
+    parts = private_ipv4.split(".")
+    if len(parts) >= 2 and parts[0] == "10" and parts[1].isdigit():
+        return int(parts[1])
+    return None
+
+
+def prefix_from_sheet_ipv6(ipv6: str) -> str:
+    """Normalise a sheet IPv6 CIDR to the TOML prefix form.
+
+    '2404:e80:a137::/48' -> '2404:e80:a137:' (the TOML stores prefixes as a
+    string ending in ':').  Returns '' for a blank cell.
+    """
+    if not ipv6:
+        return ""
+    base = ipv6.split("/")[0].rstrip(":")
+    return base + ":" if base else ""
+
+
+def site_config_drift(site: Site, info: SiteInfo) -> list[str]:
+    """Describe where the per-site TOML config disagrees with the sheet row.
+
+    Compares domain, public_ipv4, site_octet (from Private IPv4 '10.N.X.X')
+    and the IPv6 /48 prefix.  Empty sheet cells mean 'no opinion' and are
+    skipped (the sheet is sparse).  Returns an empty list when consistent.
+    Shadow check only — the sheet is not yet authoritative for these fields.
+    """
+    drift: list[str] = []
+    if info.domain and info.domain != site.domain:
+        drift.append(f"domain: toml={site.domain!r} sheet={info.domain!r}")
+    if info.public_ipv4 and info.public_ipv4 != (site.public_ipv4 or ""):
+        drift.append(
+            f"public_ipv4: toml={site.public_ipv4!r} sheet={info.public_ipv4!r}"
+        )
+    octet = octet_from_private_ipv4(info.private_ipv4)
+    if octet is not None and octet != site.site_octet:
+        drift.append(f"site_octet: toml={site.site_octet} sheet={octet}")
+    prefix = prefix_from_sheet_ipv6(info.ipv6)
+    if prefix:
+        toml_prefixes = [p.prefix for p in site.ipv6_prefixes]
+        if prefix not in toml_prefixes:
+            drift.append(f"ipv6_prefix: toml={toml_prefixes} sheet={prefix!r}")
+    return drift

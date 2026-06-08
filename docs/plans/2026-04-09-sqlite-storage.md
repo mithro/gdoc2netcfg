@@ -144,29 +144,19 @@ and the DB are still written in parallel. To finish:
 - [x] **Rebase onto `origin/main`.** Rebased onto `c6fd05d`; the single
       `cli/main.py` conflict (db vs. zigbee subparsers) was resolved keeping
       both. Now 0-behind / 22-ahead of `main`, FF-able (2026-06-08).
-- [ ] **Fix the read pathway to not require RW access to the DB.**
-      `BaseDatabase.__init__` (`base.py:67`) issues `PRAGMA journal_mode=WAL` — a
-      *write* — on every open, and WAL readers also need write access to the
-      `-shm` wal-index. So every read (`load_latest_*` in `_build_pipeline`,
-      `db info`, `db history`) needs read **and write** access to the DB, which is
-      what forces all CLI through `sudo` under the root-owned model. Decouple
-      reads from write access:
-      - Add a read-only connection that opens
-        `sqlite3.connect("file:{path}?mode=ro", uri=True)` and does **not** run
-        the WAL pragma (journal mode is a persisted DB property set by the
-        writer; a reader must not try to change it).
-      - Resolve the WAL `-shm` constraint: a plain `mode=ro` open of a *live* WAL
-        database still wants to map/create `-shm`. Evaluate (a) `immutable=1` —
-        unsafe here, the daemon writes concurrently; (b) reader tolerates a
-        missing/read-only `-shm`; (c) a rollback journal instead of WAL for this
-        low-write-rate workload. Pick one, with a test.
-      - Route all read-only entry points (`load_latest_*`, `db info`,
-        `db history`) through the RO connection; keep writers (fetch, supplements,
-        daemon, migrate) on the existing RW + WAL path.
-      - **Acceptance:** as a non-owner user, `uv run gdoc2netcfg db info` and a
-        `generate`/`validate` against a `root`-owned `discovery.db` succeed
-        **without `sudo`**. Add a test that reads a DB the test process cannot
-        write.
+- [x] **Fix the read pathway to not require RW access to the DB.** RESOLVED on
+      branch `worktree-db-read-pathway` (2026-06-08): switched `BaseDatabase`
+      from WAL to **DELETE (rollback) journal** + explicit `busy_timeout`, and
+      added a `read_only` open path (`mode=ro` URI, no journal pragma) wired into
+      `_build_pipeline`, `db info`, and `db history`; writers (fetch, supplements,
+      daemon, migrate) stay RW.  Empirically verified `mode=ro` alone fails on a
+      live WAL DB (reader must write `-shm`) and `immutable=1` is unsafe with the
+      live writer, so DELETE was the only safe option.  Tests cover DELETE mode,
+      busy_timeout, read-only reads of an unwritable file, write rejection, and
+      WAL→DELETE conversion on reopen.  **Deploy note:** existing production DBs
+      are WAL — they must be converted before the daemon (which now opens
+      read-only at startup) restarts: stop daemon → `db migrate` (any RW open
+      converts WAL→DELETE) → start daemon.
 - [ ] **Migrate on each site:** `cd /opt/gdoc2netcfg && uv run gdoc2netcfg db
       migrate`, then `db info` to confirm the imported history. (Run as the user
       that owns `.cache/` — currently `root` on both sites.)

@@ -1,8 +1,10 @@
 """Base database class for SQLite storage with historical data retention.
 
-Provides connection management, WAL mode, schema versioning, and the
-shared ``scans`` table that tracks every scan/fetch operation. Both
-ConfigDB and DiscoveryDB inherit from this class.
+Provides connection management, DELETE-journal mode, schema versioning, and
+the shared ``scans`` table that tracks every scan/fetch operation. Both
+ConfigDB and DiscoveryDB inherit from this class.  DELETE (rollback) journal
+is used rather than WAL so a read-only open needs no write access — letting a
+non-owner read a root-owned database (see ``read_only`` in ``__init__``).
 
 The scans table is an audit trail: every scan creates a row (even if
 nothing changed). Data tables reference scans via scan_id and only
@@ -49,14 +51,23 @@ class SchemaVersionError(Exception):
 
 
 class BaseDatabase:
-    """Manages a single SQLite database with WAL mode and scan tracking.
+    """Manages a single SQLite database with DELETE-journal mode and scan tracking.
 
     Subclasses must override ``_create_tables()`` to define their
     data-specific tables (called once when the database is first created).
+
+    Pass ``read_only=True`` to open an existing database without any write
+    access (used by read-only commands against a root-owned DB).
     """
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, *, read_only: bool = False) -> None:
         self._db_path = db_path
+        self._read_only = read_only
+
+        if read_only:
+            self._connect_read_only(db_path)
+            return
+
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
         is_new = not db_path.exists()
@@ -64,7 +75,13 @@ class BaseDatabase:
         # management.  All transactions are managed explicitly via
         # BEGIN/COMMIT/ROLLBACK in save methods.
         self._conn = sqlite3.connect(str(db_path), isolation_level=None)
-        self._conn.execute("PRAGMA journal_mode=WAL")
+        # DELETE (rollback) journal, NOT WAL.  WAL forces every reader to write
+        # the -shm wal-index, which a non-owner of a root-owned DB cannot do;
+        # DELETE has no -shm, so a read-only open (see _connect_read_only) needs
+        # no write access at all.  busy_timeout absorbs the brief writer/reader
+        # lock contention DELETE introduces (it serializes writes against reads).
+        self._conn.execute("PRAGMA journal_mode=DELETE")
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute("PRAGMA foreign_keys=ON")
 
         if is_new:
@@ -73,6 +90,24 @@ class BaseDatabase:
             self._check_schema_version()
 
         self.cleanup_incomplete_scans()
+
+    def _connect_read_only(self, db_path: Path) -> None:
+        """Open an existing DELETE-mode database read-only — no write access needed.
+
+        Uses a ``mode=ro`` URI so SQLite never writes the database file, and
+        relies on DELETE journal mode (no -shm sidecar to create).  This lets a
+        non-owner read a root-owned database.  None of the write-path setup
+        (parent-dir creation, schema creation, incomplete-scan cleanup) runs.
+        """
+        if not db_path.exists():
+            raise FileNotFoundError(
+                f"Cannot open {db_path} read-only: file does not exist."
+            )
+        self._conn = sqlite3.connect(
+            f"file:{db_path}?mode=ro", uri=True, isolation_level=None,
+        )
+        self._conn.execute("PRAGMA busy_timeout=5000")
+        self._check_schema_version()
 
     # ------------------------------------------------------------------
     # Schema management

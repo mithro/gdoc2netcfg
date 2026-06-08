@@ -39,7 +39,7 @@ def db(tmp_path: Path) -> ConcreteDB:
     d.close()
 
 
-# -- Connection & WAL ------------------------------------------------------
+# -- Connection & journal mode --------------------------------------------
 
 class TestConnection:
     def test_creates_database_file(self, tmp_path: Path):
@@ -55,9 +55,29 @@ class TestConnection:
         assert db_path.exists()
         d.close()
 
-    def test_wal_mode_enabled(self, db: ConcreteDB):
+    def test_delete_journal_mode(self, db: ConcreteDB):
+        # DELETE (rollback) journal, NOT WAL: a WAL reader must write the -shm
+        # wal-index, which a non-owner of a root-owned DB cannot do.  DELETE has
+        # no -shm, so a read-only open needs zero write access.
         cur = db.connection.execute("PRAGMA journal_mode")
-        assert cur.fetchone()[0] == "wal"
+        assert cur.fetchone()[0] == "delete"
+
+    def test_busy_timeout_set(self, db: ConcreteDB):
+        # A non-zero busy_timeout lets readers/writers wait out the brief lock
+        # contention DELETE mode introduces (it serializes writes vs reads).
+        cur = db.connection.execute("PRAGMA busy_timeout")
+        assert cur.fetchone()[0] >= 1000
+
+    def test_reopen_converts_wal_to_delete(self, tmp_path: Path):
+        # Existing production DBs are WAL; re-opening them RW with this code must
+        # convert them to DELETE.  The deploy relies on this to migrate live DBs.
+        path = tmp_path / "conv.db"
+        d = ConcreteDB(path)
+        d.connection.execute("PRAGMA journal_mode=WAL")  # simulate an old WAL db
+        d.close()
+        d2 = ConcreteDB(path)
+        assert d2.connection.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        d2.close()
 
     def test_foreign_keys_enabled(self, db: ConcreteDB):
         cur = db.connection.execute("PRAGMA foreign_keys")
@@ -357,3 +377,53 @@ class TestScanHistory:
         history = db.scan_history()
         assert history[0]["id"] == id2  # most recent first
         assert history[1]["id"] == id1
+
+
+# -- Read-only access ------------------------------------------------------
+
+class TestReadOnly:
+    """A read-only open must work without ANY write access to the DB file, so a
+    non-owner can read a root-owned database (the WAL->DELETE switch enables this).
+    """
+
+    def test_read_only_reads_data(self, tmp_path: Path):
+        path = tmp_path / "ro.db"
+        d = ConcreteDB(path)
+        sid = d.begin_scan("test")
+        d.finish_scan(sid, host_count=1, changed_count=0)
+        d.close()
+
+        ro = ConcreteDB(path, read_only=True)
+        assert len(ro.scan_history()) == 1
+        ro.close()
+
+    def test_read_only_open_on_unwritable_file(self, tmp_path: Path):
+        # Acceptance case: a DB the opening process cannot write at all.
+        path = tmp_path / "ro.db"
+        d = ConcreteDB(path)
+        sid = d.begin_scan("test")
+        d.finish_scan(sid, host_count=1, changed_count=0)
+        d.close()
+        path.chmod(0o444)
+        try:
+            # A read-write open must fail — writers genuinely need write access.
+            with pytest.raises(sqlite3.OperationalError):
+                ConcreteDB(path)
+            # A read-only open must succeed and read the data.
+            ro = ConcreteDB(path, read_only=True)
+            assert len(ro.scan_history()) == 1
+            ro.close()
+        finally:
+            path.chmod(0o644)
+
+    def test_read_only_rejects_writes(self, tmp_path: Path):
+        path = tmp_path / "ro.db"
+        ConcreteDB(path).close()
+        ro = ConcreteDB(path, read_only=True)
+        with pytest.raises(sqlite3.OperationalError):
+            ro.begin_scan("nope")
+        ro.close()
+
+    def test_read_only_missing_file_raises(self, tmp_path: Path):
+        with pytest.raises(FileNotFoundError):
+            ConcreteDB(tmp_path / "does-not-exist.db", read_only=True)

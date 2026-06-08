@@ -33,6 +33,7 @@ def open_databases(
     cache_dir: Path,
     *,
     migrate: bool = False,
+    read_only: bool = False,
 ) -> DatabasePair:
     """Open (or create) both SQLite databases.
 
@@ -40,6 +41,9 @@ def open_databases(
         cache_dir: Path to the cache directory (e.g. ``.cache/``).
         migrate: If True and the databases don't exist, import
             existing flat files as the initial historical snapshot.
+        read_only: If True, open both databases read-only — no write access
+            required (lets a non-owner read root-owned DBs).  Both files must
+            already exist; ``migrate`` has no effect.
 
     Returns:
         A ``DatabasePair`` with both databases open and ready.
@@ -50,10 +54,10 @@ def open_databases(
     config_is_new = not config_path.exists()
     discovery_is_new = not discovery_path.exists()
 
-    config_db = ConfigDB(config_path)
-    discovery_db = DiscoveryDB(discovery_path)
+    config_db = ConfigDB(config_path, read_only=read_only)
+    discovery_db = DiscoveryDB(discovery_path, read_only=read_only)
 
-    if migrate and (config_is_new or discovery_is_new):
+    if migrate and not read_only and (config_is_new or discovery_is_new):
         from gdoc2netcfg.storage.migration import import_flat_files
 
         import_flat_files(

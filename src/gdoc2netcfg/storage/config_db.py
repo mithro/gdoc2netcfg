@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from pathlib import Path
 
 from gdoc2netcfg.storage.base import BaseDatabase
 
@@ -60,9 +59,6 @@ CREATE INDEX IF NOT EXISTS idx_vlan_key ON vlan_definitions(vlan_id);
 
 class ConfigDB(BaseDatabase):
     """SQLite storage for spreadsheet configuration data."""
-
-    def __init__(self, db_path: Path) -> None:
-        super().__init__(db_path)
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:
         for stmt in (

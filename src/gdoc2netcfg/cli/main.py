@@ -138,17 +138,20 @@ def _save_to_discovery_db(
 
 
 def _open_databases(config):
-    """Open the SQLite databases if either exists, returning DatabasePair or None.
+    """Open both SQLite databases read-only if both exist, returning a pair or None.
 
-    If only one database file exists (e.g. config.db but not discovery.db),
-    the missing one is created as empty.  This is intentional — both databases
-    are needed for the pipeline to function, and creating an empty DB is
-    harmless (load_latest_* returns None for empty DBs).
+    The pipeline only *reads* supplement data, so the databases are opened
+    read-only — this works even when they are root-owned and the caller is a
+    non-root user.  Both files must exist (a read-only open cannot create a
+    missing one); otherwise we fall back to the flat-file caches.
     """
     from gdoc2netcfg.storage import open_databases
 
-    if config.cache.config_db_path.exists() or config.cache.discovery_db_path.exists():
-        return open_databases(config.cache.directory)
+    if (
+        config.cache.config_db_path.exists()
+        and config.cache.discovery_db_path.exists()
+    ):
+        return open_databases(config.cache.directory, read_only=True)
     return None
 
 
@@ -560,6 +563,7 @@ def _load_or_run_reachability(
     Tries DiscoveryDB first (if available), then flat-file cache.
     On fresh scan, saves to both DB and flat file.
     """
+    from gdoc2netcfg.storage.discovery_db import DiscoveryDB
     from gdoc2netcfg.supplements.reachability import (
         check_all_hosts_reachability,
         load_reachability_cache,
@@ -567,7 +571,6 @@ def _load_or_run_reachability(
         print_reachability_status,
         save_reachability_cache,
     )
-    from gdoc2netcfg.storage.discovery_db import DiscoveryDB
 
     cache_path = Path(config.cache.directory) / "reachability.json"
 
@@ -1707,7 +1710,10 @@ def cmd_tasmota_show(args: argparse.Namespace) -> int:
     known = {k: v for k, v in tasmota_data.items() if not k.startswith(_UNKNOWN_PREFIX)}
     unknown = {k: v for k, v in tasmota_data.items() if k.startswith(_UNKNOWN_PREFIX)}
 
-    for hostname, data in sorted(known.items(), key=lambda kv: _natural_sort_key(kv[1].get("device_name", ""))):
+    for hostname, data in sorted(
+        known.items(),
+        key=lambda kv: _natural_sort_key(kv[1].get("device_name", "")),
+    ):
         print(f"\n{'='*60}")
         print(f"{hostname}")
         print("=" * 60)
@@ -1795,7 +1801,9 @@ def cmd_tasmota_configure(args: argparse.Namespace) -> int:
     if args.configure_all:
         tasmota_hosts = sorted(
             [h for h in hosts if h.tasmota_data is not None],
-            key=lambda h: _natural_sort_key(h.tasmota_data.device_name if h.tasmota_data else h.hostname),
+            key=lambda h: _natural_sort_key(
+                h.tasmota_data.device_name if h.tasmota_data else h.hostname
+            ),
         )
         success, fail = configure_all_tasmota_devices(
             tasmota_hosts, config.tasmota, dry_run=dry_run, verbose=True,
@@ -2167,7 +2175,7 @@ def cmd_db_info(args: argparse.Namespace) -> int:
         print(f"{label} DB: {db_path} ({size_kb:.1f} KB)")
 
         try:
-            with BaseDatabase(db_path) as db:
+            with BaseDatabase(db_path, read_only=True) as db:
                 cur = db.connection.execute(
                     "SELECT scan_type, COUNT(*) as cnt, "
                     "MIN(started_at) as oldest, MAX(started_at) as newest "
@@ -2204,7 +2212,7 @@ def cmd_db_history(args: argparse.Namespace) -> int:
         print("Run 'gdoc2netcfg db migrate' first.", file=sys.stderr)
         return 1
 
-    pair = open_databases(config.cache.directory)
+    pair = open_databases(config.cache.directory, read_only=True)
     try:
         # Collect scans from both databases
         all_scans = []

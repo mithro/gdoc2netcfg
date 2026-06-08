@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from pathlib import Path
 
 from gdoc2netcfg.storage.base import BaseDatabase
 
@@ -126,9 +125,6 @@ CREATE INDEX IF NOT EXISTS idx_tasmota_host ON tasmota_data(hostname);
 
 class DiscoveryDB(BaseDatabase):
     """SQLite storage for supplement scan results."""
-
-    def __init__(self, db_path: Path) -> None:
-        super().__init__(db_path)
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:
         for stmt in (

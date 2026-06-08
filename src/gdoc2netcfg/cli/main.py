@@ -77,7 +77,18 @@ def _fetch_or_load_csvs(config, use_cache: bool = False):
     return results
 
 
-def _enrich_site_from_vlan_sheet(config, csv_data: list[tuple[str, str]]) -> None:
+def _enrich_site_from_sheets(config, csv_data: list[tuple[str, str]]) -> None:
+    """Enrich config.site from fetched sheets.
+
+    Coordinator: populates VLANs/subdomains from the VLAN Allocations sheet
+    and the valid-site list (all_sites) from the Sites sheet.  The two run
+    independently so a missing VLAN sheet never skips the site list.
+    """
+    _enrich_vlans_from_sheet(config, csv_data)
+    _enrich_all_sites_from_sheet(config, csv_data)
+
+
+def _enrich_vlans_from_sheet(config, csv_data: list[tuple[str, str]]) -> None:
     """Parse the VLAN Allocations sheet and populate site VLANs/subdomains.
 
     Finds the 'vlan_allocations' CSV in csv_data, parses it, builds
@@ -106,6 +117,33 @@ def _enrich_site_from_vlan_sheet(config, csv_data: list[tuple[str, str]]) -> Non
 
     config.site.vlans = vlans
     config.site.network_subdomains = subdomains
+
+
+def _enrich_all_sites_from_sheet(config, csv_data: list[tuple[str, str]]) -> None:
+    """Set Site.all_sites from the Sites sheet.
+
+    The Sites sheet is the source of truth for valid site names.  When it
+    is present, its site list overrides the TOML all_sites; when absent
+    (not configured / fetch failed), the TOML all_sites is kept as a
+    fallback.
+    """
+    from gdoc2netcfg.sources.sites_parser import parse_sites, site_names
+
+    sites_csv = None
+    for name, text in csv_data:
+        if name == "sites":
+            sites_csv = text
+            break
+
+    if sites_csv is None:
+        return
+
+    sites = parse_sites(sites_csv)
+    if not sites:
+        print("Warning: Sites sheet is empty, keeping TOML all_sites", file=sys.stderr)
+        return
+
+    config.site.all_sites = site_names(sites)
 
 
 def _save_to_discovery_db(
@@ -186,12 +224,12 @@ def _build_pipeline(config):
         csv_data = _fetch_or_load_csvs(config, use_cache=True)
 
         # Enrich site config from VLAN Allocations sheet
-        _enrich_site_from_vlan_sheet(config, csv_data)
+        _enrich_site_from_sheets(config, csv_data)
 
         # Parse device records (exclude vlan_allocations — not a device sheet)
         all_records = []
         for name, csv_text in csv_data:
-            if name == "vlan_allocations":
+            if name in ("vlan_allocations", "sites"):
                 continue
             records = parse_csv(csv_text, name)
             all_records.extend(records)
@@ -515,7 +553,7 @@ def cmd_info(args: argparse.Namespace) -> int:
 
     # Load VLANs from sheet if available
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
-    _enrich_site_from_vlan_sheet(config, csv_data)
+    _enrich_site_from_sheets(config, csv_data)
 
     print(f"Site:   {config.site.name} (site_octet={config.site.site_octet})")
     print(f"Domain: {config.site.domain}")
@@ -648,7 +686,7 @@ def _reachability_build_hosts(config):
     from gdoc2netcfg.sources.parser import parse_csv
 
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
-    _enrich_site_from_vlan_sheet(config, csv_data)
+    _enrich_site_from_sheets(config, csv_data)
     all_records = []
     for name, csv_text in csv_data:
         if name == "vlan_allocations":
@@ -749,7 +787,7 @@ def _scan_ssh_host_keys_pipeline(
 
     # We need a minimal pipeline to get hosts with IPs
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
-    _enrich_site_from_vlan_sheet(config, csv_data)
+    _enrich_site_from_sheets(config, csv_data)
     all_records = []
     for name, csv_text in csv_data:
         if name == "vlan_allocations":
@@ -828,7 +866,7 @@ def cmd_ssl_certs(args: argparse.Namespace) -> int:
 
     # Minimal pipeline to get hosts with IPs
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
-    _enrich_site_from_vlan_sheet(config, csv_data)
+    _enrich_site_from_sheets(config, csv_data)
     all_records = []
     for name, csv_text in csv_data:
         if name == "vlan_allocations":
@@ -895,7 +933,7 @@ def cmd_snmp_host(args: argparse.Namespace) -> int:
 
     # Minimal pipeline to get hosts with IPs
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
-    _enrich_site_from_vlan_sheet(config, csv_data)
+    _enrich_site_from_sheets(config, csv_data)
     all_records = []
     for name, csv_text in csv_data:
         if name == "vlan_allocations":
@@ -978,7 +1016,7 @@ def cmd_bmc_firmware(args: argparse.Namespace) -> int:
 
     # Minimal pipeline to get hosts with IPs
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
-    _enrich_site_from_vlan_sheet(config, csv_data)
+    _enrich_site_from_sheets(config, csv_data)
     all_records = []
     for name, csv_text in csv_data:
         if name == "vlan_allocations":
@@ -1045,7 +1083,7 @@ def cmd_snmp_switch(args: argparse.Namespace) -> int:
 
     # Minimal pipeline to get hosts with IPs
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
-    _enrich_site_from_vlan_sheet(config, csv_data)
+    _enrich_site_from_sheets(config, csv_data)
     all_records = []
     for name, csv_text in csv_data:
         if name == "vlan_allocations":
@@ -1138,7 +1176,7 @@ def cmd_bridge_scan(args: argparse.Namespace) -> int:
 
     # Build hosts from cached CSVs
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
-    _enrich_site_from_vlan_sheet(config, csv_data)
+    _enrich_site_from_sheets(config, csv_data)
     all_records = []
     for name, csv_text in csv_data:
         if name == "vlan_allocations":
@@ -1222,7 +1260,7 @@ def cmd_bridge_show(args: argparse.Namespace) -> int:
 
     # Build hosts from cached CSVs
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
-    _enrich_site_from_vlan_sheet(config, csv_data)
+    _enrich_site_from_sheets(config, csv_data)
     all_records = []
     for name, csv_text in csv_data:
         if name == "vlan_allocations":
@@ -1519,7 +1557,7 @@ def cmd_nsdp_scan(args: argparse.Namespace) -> int:
 
     # Minimal pipeline to get hosts with IPs
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
-    _enrich_site_from_vlan_sheet(config, csv_data)
+    _enrich_site_from_sheets(config, csv_data)
     all_records = []
     for name, csv_text in csv_data:
         if name == "vlan_allocations":
@@ -1639,7 +1677,7 @@ def cmd_tasmota_scan(args: argparse.Namespace) -> int:
 
     # Minimal pipeline to get hosts with IPs
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
-    _enrich_site_from_vlan_sheet(config, csv_data)
+    _enrich_site_from_sheets(config, csv_data)
     all_records = []
     for name, csv_text in csv_data:
         if name == "vlan_allocations":
@@ -1781,7 +1819,7 @@ def cmd_tasmota_configure(args: argparse.Namespace) -> int:
 
     # Minimal pipeline to get hosts
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
-    _enrich_site_from_vlan_sheet(config, csv_data)
+    _enrich_site_from_sheets(config, csv_data)
     all_records = []
     for name, csv_text in csv_data:
         if name == "vlan_allocations":
@@ -2075,7 +2113,7 @@ def cmd_password(args: argparse.Namespace) -> int:
     )
 
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
-    _enrich_site_from_vlan_sheet(config, csv_data)
+    _enrich_site_from_sheets(config, csv_data)
     all_records = []
     for name, csv_text in csv_data:
         if name == "vlan_allocations":

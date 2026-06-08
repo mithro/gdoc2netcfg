@@ -179,14 +179,12 @@ class TestGenerateCronEntries:
         assert len(gen) == 1
         assert gen[0].schedule == "*/15 * * * *"
 
-    def test_reachability_schedule(self):
-        """Reachability should run every 30 minutes."""
+    def test_no_reachability_entry(self):
+        """Reachability is handled by the systemd daemon (5 min), not cron."""
         from gdoc2netcfg.cli.cron import generate_cron_entries
 
         entries = generate_cron_entries()
-        reach = [e for e in entries if e.lock_name == "reachability"]
-        assert len(reach) == 1
-        assert reach[0].schedule == "*/30 * * * *"
+        assert [e for e in entries if "reachability" in e.command] == []
 
     def test_sshfp_schedule(self):
         """SSHFP should run daily at 02:00."""
@@ -206,23 +204,35 @@ class TestGenerateCronEntries:
         assert len(ssl) == 1
         assert ssl[0].schedule == "5 2 * * *"
 
-    def test_snmp_schedule(self):
-        """SNMP should run daily at 03:00."""
+    def test_snmp_host_schedule(self):
+        """snmp-host should run daily at 03:00 (was the stale 'snmp')."""
         from gdoc2netcfg.cli.cron import generate_cron_entries
 
         entries = generate_cron_entries()
-        snmp = [e for e in entries if e.lock_name == "snmp"]
+        snmp = [e for e in entries if e.lock_name == "snmp-host"]
         assert len(snmp) == 1
         assert snmp[0].schedule == "0 3 * * *"
+        assert snmp[0].command == "gdoc2netcfg snmp-host"
 
     def test_bridge_schedule(self):
-        """Bridge should run daily at 03:05."""
+        """Bridge (unified SNMP+NSDP switch scan) should run daily at 03:05."""
         from gdoc2netcfg.cli.cron import generate_cron_entries
 
         entries = generate_cron_entries()
         bridge = [e for e in entries if e.lock_name == "bridge"]
         assert len(bridge) == 1
         assert bridge[0].schedule == "5 3 * * *"
+        assert bridge[0].command == "gdoc2netcfg bridge scan"
+
+    def test_tasmota_schedule(self):
+        """tasmota scan should run daily at 02:10."""
+        from gdoc2netcfg.cli.cron import generate_cron_entries
+
+        entries = generate_cron_entries()
+        tasmota = [e for e in entries if e.lock_name == "tasmota"]
+        assert len(tasmota) == 1
+        assert tasmota[0].schedule == "10 2 * * *"
+        assert tasmota[0].command == "gdoc2netcfg tasmota scan"
 
     def test_bmc_firmware_schedule(self):
         """BMC firmware should run weekly on Sunday at 04:00."""

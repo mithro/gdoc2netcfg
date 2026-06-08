@@ -71,7 +71,17 @@ def detect_project_root(start: Path | None = None) -> Path:
 
 
 def generate_cron_entries() -> list[CronEntry]:
-    """Generate the list of cron entries for the agreed schedule."""
+    """Generate the list of cron entries for the agreed schedule.
+
+    Each command persists its results to the SQLite databases (delta-based),
+    so scheduling them builds up historical data over time.  Reachability is
+    intentionally NOT here — it is handled by the ``gdoc2netcfg-reachability``
+    systemd daemon (every 5 minutes), which also publishes to MQTT.
+
+    Under the production "everything root" model the databases are root-owned,
+    so install this as root (``sudo gdoc2netcfg cron install``) — the scans
+    need write access to the DBs.
+    """
     return [
         # Every 15 minutes: fetch + generate
         CronEntry(
@@ -85,13 +95,6 @@ def generate_cron_entries() -> list[CronEntry]:
             command="gdoc2netcfg generate",
             lock_name="generate",
             comment="Generate config files from cached data",
-        ),
-        # Every 30 minutes: reachability
-        CronEntry(
-            schedule="*/30 * * * *",
-            command="gdoc2netcfg reachability",
-            lock_name="reachability",
-            comment="Ping all hosts to refresh reachability cache",
         ),
         # Daily 02:00: sshfp
         CronEntry(
@@ -107,19 +110,26 @@ def generate_cron_entries() -> list[CronEntry]:
             lock_name="ssl-certs",
             comment="Scan SSL/TLS certificates",
         ),
-        # Daily 03:00: snmp
+        # Daily 02:10: tasmota
+        CronEntry(
+            schedule="10 2 * * *",
+            command="gdoc2netcfg tasmota scan",
+            lock_name="tasmota",
+            comment="Scan IoT VLAN for Tasmota devices",
+        ),
+        # Daily 03:00: snmp-host
         CronEntry(
             schedule="0 3 * * *",
-            command="gdoc2netcfg snmp",
-            lock_name="snmp",
-            comment="Scan SNMP data",
+            command="gdoc2netcfg snmp-host",
+            lock_name="snmp-host",
+            comment="Scan hosts for SNMP system info",
         ),
-        # Daily 03:05: bridge
+        # Daily 03:05: bridge (unified switch data: SNMP-switch + NSDP)
         CronEntry(
             schedule="5 3 * * *",
-            command="gdoc2netcfg bridge",
+            command="gdoc2netcfg bridge scan",
             lock_name="bridge",
-            comment="Scan bridge/topology data",
+            comment="Scan switches for bridge/topology data (SNMP + NSDP)",
         ),
         # Weekly Sunday 04:00: bmc-firmware
         CronEntry(

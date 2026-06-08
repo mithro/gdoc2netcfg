@@ -13,13 +13,15 @@ name = "welland"
 domain = "welland.mithis.com"
 public_ipv4 = "87.121.95.37"
 site_octet = 1  # Second octet: 10.1.X.X for Welland, 10.2.X.X for Monarto
-all_sites = ["welland", "monarto", "ps1"]  # Valid values for the "Site" column
+all_sites = ["welland", "monarto", "ps1"]  # Fallback only; the Sites sheet is the source of truth
 
 [sheets]
 # Google Sheets published CSV URLs for each data source (read-only, no auth required)
 network = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=1476589425&single=true&output=csv"
 iot = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=1695016218&single=true&output=csv"
 vlan_allocations = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=208407908&single=true&output=csv"
+# Sites tab: drives all_sites (valid "Site" values) and is cross-checked against [site]/[ipv6].
+sites = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=582797138&single=true&output=csv"
 # Edit URL of the same spreadsheet — used by 'zigbee update-sheet' for write access.
 # Get this from your browser's address bar while the sheet is open.
 # spreadsheet_url = "https://docs.google.com/spreadsheets/d/{ID}/edit"

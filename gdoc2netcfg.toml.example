@@ -13,7 +13,7 @@ name = "welland"
 domain = "welland.mithis.com"
 public_ipv4 = "87.121.95.37"
 site_octet = 1  # Second octet: 10.1.X.X for Welland, 10.2.X.X for Monarto
-all_sites = ["welland", "monarto", "ps1"]  # Fallback only; the Sites sheet is the source of truth
+# all_sites (valid "Site" values) is read from the Sites sheet — see [sheets] below.
 
 [sheets]
 # Google Sheets published CSV URLs for each data source (read-only, no auth required)

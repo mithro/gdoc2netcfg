@@ -124,9 +124,9 @@ class PipelineConfig:
 def _build_site(data: dict) -> Site:
     """Build a Site from parsed TOML data.
 
-    VLANs and network_subdomains are left empty here — they are
-    populated later from the VLAN Allocations spreadsheet sheet
-    by the pipeline in cli/main.py.
+    VLANs, network_subdomains and all_sites are left empty here — they are
+    populated later by the pipeline (cli/main.py) from the VLAN Allocations
+    and Sites spreadsheet sheets.
     """
     site_data = data.get("site", {})
 
@@ -140,13 +140,10 @@ def _build_site(data: dict) -> Site:
         for p in ipv6_data.get("disabled_prefixes", [])
     )
 
-    all_sites = tuple(s.lower() for s in site_data.get("all_sites", []))
-
     return Site(
         name=site_data.get("name", ""),
         domain=site_data.get("domain", ""),
         site_octet=site_data.get("site_octet", 0),
-        all_sites=all_sites,
         ipv6_prefixes=ipv6_prefixes,
         public_ipv4=site_data.get("public_ipv4"),
     )

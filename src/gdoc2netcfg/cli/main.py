@@ -120,12 +120,13 @@ def _enrich_vlans_from_sheet(config, csv_data: list[tuple[str, str]]) -> None:
 
 
 def _enrich_all_sites_from_sheet(config, csv_data: list[tuple[str, str]]) -> None:
-    """Set Site.all_sites from the Sites sheet.
+    """Set Site.all_sites from the Sites sheet (the source of truth).
 
-    The Sites sheet is the source of truth for valid site names.  When it
-    is present, its site list overrides the TOML all_sites; when absent
-    (not configured / fetch failed), the TOML all_sites is kept as a
-    fallback.
+    No TOML fallback.  If a Sites sheet is configured under [sheets] but is
+    unavailable or empty, that is a hard error — an empty all_sites would
+    silently disable site validation (see ip_remap._validate_site_values).
+    If no Sites sheet is configured at all, all_sites is left empty and site
+    validation is simply skipped (the historical optional behaviour).
     """
     from gdoc2netcfg.sources.sites_parser import parse_sites, site_config_drift, site_names
 
@@ -136,12 +137,16 @@ def _enrich_all_sites_from_sheet(config, csv_data: list[tuple[str, str]]) -> Non
             break
 
     if sites_csv is None:
-        return
+        if any(s.name == "sites" for s in config.sheets):
+            raise ValueError(
+                "Sites sheet is configured under [sheets] but unavailable "
+                "(fetch failed and no cache); it is the source of truth for all_sites."
+            )
+        return  # Not configured: all_sites stays empty, site validation skipped.
 
     sites = parse_sites(sites_csv)
     if not sites:
-        print("Warning: Sites sheet is empty, keeping TOML all_sites", file=sys.stderr)
-        return
+        raise ValueError("Sites sheet has no valid site rows (all_sites would be empty).")
 
     config.site.all_sites = site_names(sites)
 

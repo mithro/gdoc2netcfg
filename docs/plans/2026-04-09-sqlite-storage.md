@@ -131,15 +131,42 @@ Commits: `f6ff5e8` `efbee8f`.
 
 ## Remaining work — production cutover  `[ ]`
 
-The feature is implemented and unit-tested but **never deployed**; both flat
-files and the DB are currently written in parallel. To finish:
+The feature is implemented and unit-tested. Deployment to welland began
+2026-06-08: the branch is rebased and FF-able, and `/opt/gdoc2netcfg/.cache/`
+was chowned **entirely to `root`** (the only recurring writer is the root
+reachability daemon; no `tim` cron touches `.cache`). Because reads currently
+require *write* access (see the read-pathway task below), "everything root" is
+the chosen access model — all CLI on `/opt` must run via `sudo`. Both flat files
+and the DB are still written in parallel. To finish:
 
-- [ ] **Verify green:** run `uv run pytest tests/test_storage` and
-      `uv run ruff check src/ tests/` on this branch; confirm the full suite
-      passes after rebasing onto current `main`.
-- [ ] **Rebase onto `origin/main`.** This branch is based on `013a711`; `main`
-      has since advanced to `71a433e` (the zigbee commits). Rebase and re-run
-      tests before merge.
+- [x] **Verify green:** full suite **1524 passed** and `ruff` clean on the
+      rebased branch (2026-06-08).
+- [x] **Rebase onto `origin/main`.** Rebased onto `c6fd05d`; the single
+      `cli/main.py` conflict (db vs. zigbee subparsers) was resolved keeping
+      both. Now 0-behind / 22-ahead of `main`, FF-able (2026-06-08).
+- [ ] **Fix the read pathway to not require RW access to the DB.**
+      `BaseDatabase.__init__` (`base.py:67`) issues `PRAGMA journal_mode=WAL` — a
+      *write* — on every open, and WAL readers also need write access to the
+      `-shm` wal-index. So every read (`load_latest_*` in `_build_pipeline`,
+      `db info`, `db history`) needs read **and write** access to the DB, which is
+      what forces all CLI through `sudo` under the root-owned model. Decouple
+      reads from write access:
+      - Add a read-only connection that opens
+        `sqlite3.connect("file:{path}?mode=ro", uri=True)` and does **not** run
+        the WAL pragma (journal mode is a persisted DB property set by the
+        writer; a reader must not try to change it).
+      - Resolve the WAL `-shm` constraint: a plain `mode=ro` open of a *live* WAL
+        database still wants to map/create `-shm`. Evaluate (a) `immutable=1` —
+        unsafe here, the daemon writes concurrently; (b) reader tolerates a
+        missing/read-only `-shm`; (c) a rollback journal instead of WAL for this
+        low-write-rate workload. Pick one, with a test.
+      - Route all read-only entry points (`load_latest_*`, `db info`,
+        `db history`) through the RO connection; keep writers (fetch, supplements,
+        daemon, migrate) on the existing RW + WAL path.
+      - **Acceptance:** as a non-owner user, `uv run gdoc2netcfg db info` and a
+        `generate`/`validate` against a `root`-owned `discovery.db` succeed
+        **without `sudo`**. Add a test that reads a DB the test process cannot
+        write.
 - [ ] **Migrate on each site:** `cd /opt/gdoc2netcfg && uv run gdoc2netcfg db
       migrate`, then `db info` to confirm the imported history. (Run as the user
       that owns `.cache/` — currently `root` on both sites.)

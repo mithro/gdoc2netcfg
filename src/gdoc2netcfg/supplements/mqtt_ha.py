@@ -770,6 +770,30 @@ def publish_all_hosts(
 # Daemon
 # ---------------------------------------------------------------------------
 
+def _rebuild_hosts(config: PipelineConfig, previous_hosts, cycle: int):
+    """Rebuild the host list from the current cached CSVs + supplements.
+
+    Returns the freshly built hosts on success. The first build must succeed
+    (there is no good state to fall back to) and propagates on failure; on a
+    later cycle a failure is logged and the previous host list is kept, so a
+    bad data edit degrades to staleness rather than taking monitoring down.
+    """
+    from gdoc2netcfg.cli.main import _build_pipeline
+
+    try:
+        _, hosts, _inventory, _result = _build_pipeline(config)
+        return hosts
+    except Exception as exc:
+        if previous_hosts is None:
+            raise
+        print(
+            f"Warning: pipeline rebuild failed (cycle {cycle}); "
+            f"keeping previous host list: {exc}",
+            file=sys.stderr,
+        )
+        return previous_hosts
+
+
 def run_daemon(
     config: PipelineConfig,
     interval: int = 300,
@@ -799,9 +823,6 @@ def run_daemon(
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
 
-    # Build pipeline once
-    from gdoc2netcfg.cli.main import _build_pipeline
-
     mqtt_config = config.tasmota
 
     # Set up persistent MQTT connection with LWT
@@ -825,9 +846,9 @@ def run_daemon(
     client.loop_start()
 
     try:
-        _, hosts, _inventory, _result = _build_pipeline(config)
         cache_path = Path(config.cache.directory) / "reachability.json"
 
+        hosts = None
         cycle = 0
         while not stop_event.is_set():
             cycle += 1
@@ -836,6 +857,10 @@ def run_daemon(
                     f"\n--- Cycle {cycle} ---",
                     file=sys.stderr,
                 )
+
+            # Rebuild from the current cached CSVs + supplements each cycle so
+            # host-list / supplement changes are picked up without a restart.
+            hosts = _rebuild_hosts(config, hosts, cycle)
 
             # Scan reachability
             reachability = check_all_hosts_reachability(

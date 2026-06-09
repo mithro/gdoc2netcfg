@@ -225,12 +225,13 @@ def _row_list_to_tuples(
 
 def enrich_hosts_with_snmp(
     hosts: list[Host],
-    snmp_cache: dict[str, dict],
+    snmp_cache: dict[str, dict] | None,
 ) -> None:
     """Attach cached SNMP data to Host objects.
 
     Modifies hosts in-place by setting host.snmp_data.
     """
+    snmp_cache = snmp_cache or {}
     for host in hosts:
         info = snmp_cache.get(host.hostname)
         if info is not None:

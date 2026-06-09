@@ -250,7 +250,7 @@ def scan_nsdp(
 
 def enrich_hosts_with_nsdp(
     hosts: list[Host],
-    nsdp_cache: dict[str, dict],
+    nsdp_cache: dict[str, dict] | None,
 ) -> None:
     """Attach cached NSDP data to Host objects.
 
@@ -261,6 +261,7 @@ def enrich_hosts_with_nsdp(
     information (serial number, QoS, mirroring, etc.). This enrichment runs
     after bridge enrichment, so switch_data from SNMP will be overwritten.
     """
+    nsdp_cache = nsdp_cache or {}
     for host in hosts:
         info = nsdp_cache.get(host.hostname)
         if info is not None:

@@ -820,12 +820,13 @@ def scan_bridge(
 
 def enrich_hosts_with_bridge_data(
     hosts: list[Host],
-    bridge_cache: dict[str, dict],
+    bridge_cache: dict[str, dict] | None,
 ) -> None:
     """Attach cached bridge data to Host objects.
 
     Modifies hosts in-place by setting host.bridge_data and host.switch_data.
     """
+    bridge_cache = bridge_cache or {}
     for host in hosts:
         info = bridge_cache.get(host.hostname)
         if info is None:

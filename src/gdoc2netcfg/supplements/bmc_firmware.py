@@ -239,12 +239,13 @@ def scan_bmc_firmware(
 
 def enrich_hosts_with_bmc_firmware(
     hosts: list[Host],
-    fw_cache: dict[str, dict],
+    fw_cache: dict[str, dict] | None,
 ) -> None:
     """Attach cached BMC firmware info to Host objects.
 
     Modifies hosts in-place by setting host.bmc_firmware_info.
     """
+    fw_cache = fw_cache or {}
     for host in hosts:
         info = fw_cache.get(host.hostname)
         if info is not None:

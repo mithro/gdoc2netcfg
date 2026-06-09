@@ -290,7 +290,7 @@ def save_tasmota_cache(cache_path: Path, data: dict[str, dict]) -> None:
 
 def enrich_hosts_with_tasmota(
     hosts: list[Host],
-    tasmota_cache: dict[str, dict],
+    tasmota_cache: dict[str, dict] | None,
 ) -> None:
     """Attach cached Tasmota data to Host objects.
 
@@ -302,6 +302,7 @@ def enrich_hosts_with_tasmota(
         hosts: All hosts from the pipeline.
         tasmota_cache: Mapping of hostname to Tasmota data dict.
     """
+    tasmota_cache = tasmota_cache or {}
     for host in hosts:
         info = tasmota_cache.get(host.hostname)
         if info is None:

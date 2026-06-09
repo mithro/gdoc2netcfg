@@ -223,12 +223,13 @@ def scan_ssl_certs(
 
 def enrich_hosts_with_ssl_certs(
     hosts: list[Host],
-    cert_data: dict[str, dict],
+    cert_data: dict[str, dict] | None,
 ) -> None:
     """Attach cached SSL cert info to Host objects.
 
     Modifies hosts in-place by setting host.ssl_cert_info.
     """
+    cert_data = cert_data or {}
     for host in hosts:
         info = cert_data.get(host.hostname)
         if info is not None:

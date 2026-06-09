@@ -344,13 +344,14 @@ def scan_ssh_host_keys(
 
 def enrich_hosts_with_ssh_host_keys(
     hosts: list[Host],
-    host_keys_data: dict[str, list[str]],
+    host_keys_data: dict[str, list[str]] | None,
 ) -> None:
     """Attach cached SSH host keys and derived SSHFP records to Host objects.
 
     Modifies hosts in-place by setting host.ssh_host_keys and
     host.sshfp_records (derived from the raw keys).
     """
+    host_keys_data = host_keys_data or {}
     for host in hosts:
         keys = host_keys_data.get(host.hostname, [])
         host.ssh_host_keys = keys

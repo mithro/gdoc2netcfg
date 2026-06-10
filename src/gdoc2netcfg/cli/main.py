@@ -206,6 +206,28 @@ def _load_latest_from_db(config, loader: str):
         db.close()
 
 
+_SUPPLEMENT_CACHE_MAX_AGE = 300.0
+
+
+def _fresh_scan_age(config, scan_type: str) -> float | None:
+    """Age of the latest completed *scan_type* scan, if fresh enough to reuse.
+
+    Returns the age in seconds when a completed scan younger than the
+    cache window exists, else None (no DBs, no completed scan, or stale)
+    — i.e. None means a live scan should run.
+    """
+    db = _open_databases(config)
+    if db is None:
+        return None
+    try:
+        age = db.discovery.latest_scan_age(scan_type)
+    finally:
+        db.close()
+    if age is not None and age < _SUPPLEMENT_CACHE_MAX_AGE:
+        return age
+    return None
+
+
 def _open_databases(config):
     """Open both SQLite databases read-only if both exist, returning a pair or None.
 
@@ -785,24 +807,31 @@ def _scan_ssh_host_keys_pipeline(
     reachability = _load_or_run_reachability(config, hosts, force=force)
     _print_reachability_summary(reachability, hosts)
 
-    cache_path = Path(config.cache.directory) / "ssh_host_keys.json"
-    host_keys_data, ssh_errors = scan_ssh_host_keys(
-        hosts,
-        cache_path=cache_path,
-        force=force,
-        verbose=True,
-        reachability=reachability,
-    )
+    age = None if force else _fresh_scan_age(config, "ssh_host_keys")
+    if age is not None:
+        print(
+            f"Using cached ssh_host_keys scan ({age:.0f}s old).",
+            file=sys.stderr,
+        )
+        host_keys_data = (
+            _load_latest_from_db(config, "load_latest_ssh_host_keys") or {}
+        )
+        ssh_errors: list[str] = []
+    else:
+        host_keys_data, ssh_errors = scan_ssh_host_keys(
+            hosts,
+            _load_latest_from_db(config, "load_latest_ssh_host_keys"),
+            verbose=True,
+            reachability=reachability,
+        )
+        # Persist the hosts that scanned BEFORE failing loud, so a single
+        # unscannable host can't discard every good result.
+        if host_keys_data:
+            _save_to_discovery_db(
+                config, "ssh_host_keys", "save_ssh_host_keys", host_keys_data,
+            )
 
     enrich_hosts_with_ssh_host_keys(hosts, host_keys_data)
-
-    # Persist the hosts that scanned (the flat cache is written inside the
-    # scan; mirror it to the DB) BEFORE failing loud, so a single
-    # unscannable host can't discard every good result.
-    if host_keys_data:
-        _save_to_discovery_db(
-            config, "ssh_host_keys", "save_ssh_host_keys", host_keys_data,
-        )
 
     raise_for_ssh_errors(ssh_errors)
 

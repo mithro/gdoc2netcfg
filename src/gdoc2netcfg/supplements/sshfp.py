@@ -15,7 +15,6 @@ import base64
 import hashlib
 import json
 import subprocess
-import time
 from pathlib import Path
 
 from gdoc2netcfg.models.host import Host
@@ -205,11 +204,9 @@ def save_ssh_host_keys_cache(
 
 def scan_ssh_host_keys(
     hosts: list[Host],
-    cache_path: Path,
-    force: bool = False,
-    max_age: float = 300,
-    verbose: bool = False,
+    baseline: dict[str, list[str]] | None,
     *,
+    verbose: bool = False,
     reachability: dict[str, HostReachability],
 ) -> tuple[dict[str, list[str]], list[str]]:
     """Scan reachable hosts for SSH public keys.
@@ -220,42 +217,30 @@ def scan_ssh_host_keys(
 
     Args:
         hosts: Host objects with IPs to scan.
-        cache_path: Path to ssh_host_keys.json cache file.
-        force: Force re-scan even if cache is fresh.
-        max_age: Maximum cache age in seconds (default 5 minutes).
+        baseline: Last-known keys (from the DiscoveryDB).  Fresh results
+            are merged over it; a host that fails to scan retains its
+            baseline entry.
         verbose: Print progress to stderr.
         reachability: Pre-computed reachability data from the
             reachability pass. Only reachable hosts are scanned.
 
     Returns:
         A ``(host_keys, errors)`` tuple. ``host_keys`` maps hostname →
-        list of SSH public key lines (existing cache merged with fresh
+        list of SSH public key lines (the baseline merged with fresh
         successes; a host that fails to scan retains its last-known keys).
         ``errors`` is a list of per-host failure messages — empty on full
         success.
 
         Per-host failures are RETURNED, not raised, so the caller can
-        persist the hosts that DID scan (flat + DB) before failing loud via
+        persist the hosts that DID scan before failing loud via
         ``raise_for_ssh_errors``. A host with an open SSH port that returns
         no keys, or that returns different keys from different IPs, is
-        recorded as an error (its existing data left untouched), not
+        recorded as an error (its baseline entry left untouched), not
         silently skipped.
     """
     import sys
 
-    host_keys = load_ssh_host_keys_cache(cache_path)
-
-    # Check if cache is fresh enough
-    if not force and cache_path.exists():
-        age = time.time() - cache_path.stat().st_mtime
-        if age < max_age:
-            if verbose:
-                print(
-                    f"ssh_host_keys.json last updated {age:.0f}s ago,"
-                    f" using cache.",
-                    file=sys.stderr,
-                )
-            return host_keys, []
+    host_keys = dict(baseline or {})
 
     sorted_hosts = sorted(
         hosts, key=lambda h: h.hostname.split(".")[::-1],
@@ -338,11 +323,10 @@ def scan_ssh_host_keys(
             next(iter(per_ip_keys.values())),
         )
 
-    # Persist everything we DID learn — existing cache merged with fresh
-    # successes; hosts that failed retain their last-known keys — BEFORE
-    # surfacing errors, so one unreachable host can't discard every good
-    # result. The caller fails loud via raise_for_ssh_errors(errors).
-    save_ssh_host_keys_cache(cache_path, host_keys)
+    # host_keys holds everything we DID learn — the baseline merged with
+    # fresh successes; hosts that failed retain their last-known keys.
+    # The caller persists it and then fails loud via raise_for_ssh_errors,
+    # so one unreachable host can't discard every good result.
     return host_keys, errors
 
 

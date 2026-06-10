@@ -2,7 +2,9 @@
 
 Connects to each configured site's MQTT broker, subscribes to Z2M's
 retained bridge/devices and bridge/info topics, and collects per-device
-availability state.  Results are cached to .cache/zigbee_<site>.json.
+availability state.  Results are persisted to discovery.db by the CLI
+(scan_type ``zigbee``), keyed by IEEE address for devices and
+``_bridge/<site>`` for bridge info.
 """
 
 from __future__ import annotations
@@ -13,11 +15,27 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from gdoc2netcfg.config import ZigbeeConfig, ZigbeeSiteConfig
+
+
+BRIDGE_KEY_PREFIX = "_bridge/"
+
+
+def bridge_key(site_name: str) -> str:
+    """DB key for a site's Zigbee2MQTT bridge-info entry."""
+    return f"{BRIDGE_KEY_PREFIX}{site_name}"
+
+
+def is_bridge_key(key: str) -> bool:
+    """True if *key* is a bridge-info entry rather than a device."""
+    return key.startswith(BRIDGE_KEY_PREFIX)
+
+
+class ZigbeeScanError(Exception):
+    """Raised after a zigbee scan when one or more sites failed."""
 
 
 @dataclass(frozen=True)
@@ -266,66 +284,67 @@ def scan_zigbee_site(
     return devices, bridge_info
 
 
-def scan_all_sites(
+def scan_zigbee(
     zigbee_config: ZigbeeConfig,
-    cache_dir: Path,
-    force: bool = False,
+    baseline: dict[str, dict] | None,
+    *,
     verbose: bool = False,
-) -> dict[str, tuple[list[ZigbeeDevice], ZigbeeBridgeInfo | None]]:
-    """Scan all configured Zigbee2MQTT sites.
+) -> tuple[dict[str, dict], list[str]]:
+    """Scan all configured Zigbee2MQTT sites via MQTT.
 
-    Caches results to .cache/zigbee_<site>.json per site.
-    Returns dict mapping site_name -> (devices, bridge_info).
-    Skips cache if force=True.
+    Returns ``(data, errors)``.  *data* starts from *baseline* and maps
+    IEEE address -> device dict plus ``_bridge/<site>`` -> bridge-info
+    dict.  A successfully scanned site REPLACES all its baseline entries
+    — the retained MQTT topics are the authoritative full device list,
+    so a device absent from them has been removed from that Z2M
+    instance.  A failed site keeps its baseline entries and adds an
+    error string instead.  The caller persists *data* first, then fails
+    loud via raise_for_zigbee_errors — so one unreachable broker can't
+    discard the other site's results.
     """
     if not zigbee_config.sites:
         raise RuntimeError("No zigbee sites configured in gdoc2netcfg.toml")
 
-    results: dict[str, tuple[list[ZigbeeDevice], ZigbeeBridgeInfo | None]] = {}
+    data = dict(baseline or {})
+    errors: list[str] = []
 
     for site_cfg in zigbee_config.sites:
-        cache_path = cache_dir / f"zigbee_{site_cfg.name}.json"
-
-        if not force and cache_path.exists():
-            cached = load_zigbee_cache(cache_path)
-            if cached.get("devices") is not None:
-                devices = [ZigbeeDevice(**d) for d in cached["devices"]]
-                bridge_raw = cached.get("bridge")
-                bridge: ZigbeeBridgeInfo | None = (
-                    ZigbeeBridgeInfo(**bridge_raw) if bridge_raw else None
-                )
-                results[site_cfg.name] = (devices, bridge)
-                if verbose:
-                    print(
-                        f"  [{site_cfg.name}] Loaded {len(devices)} device(s) from cache",
-                        file=sys.stderr,
-                    )
-                continue
-
         if not site_cfg.mqtt_host:
             raise RuntimeError(
                 f"No mqtt_host configured for zigbee site '{site_cfg.name}'"
             )
 
-        devices, bridge = scan_zigbee_site(site_cfg.name, site_cfg, verbose=verbose)
+        try:
+            devices, bridge = scan_zigbee_site(
+                site_cfg.name, site_cfg, verbose=verbose,
+            )
+        except (RuntimeError, OSError) as e:
+            errors.append(f"{site_cfg.name}: {e}")
+            continue
 
-        cache_data = {
-            "scanned_at": datetime.now(tz=timezone.utc).isoformat(),
-            "bridge": asdict(bridge) if bridge else None,
-            "devices": [asdict(d) for d in devices],
+        data = {
+            key: entry for key, entry in data.items()
+            if entry["site"] != site_cfg.name
         }
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        with open(cache_path, "w") as f:
-            json.dump(cache_data, f, indent="  ", sort_keys=True)
+        for device in devices:
+            data[device.ieee_address] = asdict(device)
+        if bridge is not None:
+            data[bridge_key(site_cfg.name)] = asdict(bridge)
 
-        results[site_cfg.name] = (devices, bridge)
-
-    return results
+    return data, errors
 
 
-def load_zigbee_cache(cache_path: Path) -> dict:
-    """Load cached Zigbee scan data from disk.  Returns {} if not found."""
-    if not cache_path.exists():
-        return {}
-    with open(cache_path) as f:
-        return json.load(f)
+def raise_for_zigbee_errors(errors: list[str]) -> None:
+    """Fail loud if a zigbee scan reported per-site errors.
+
+    scan_zigbee keeps the results of the sites that succeeded and
+    RETURNS the per-site failures instead of raising, so the caller can
+    save the good results first and then surface the failures here.
+    This keeps both "never silently discard data" and "fail loud"
+    satisfied.
+    """
+    if errors:
+        raise ZigbeeScanError(
+            f"{len(errors)} zigbee site scan error(s):\n"
+            + "\n".join(f"  - {e}" for e in errors)
+        )

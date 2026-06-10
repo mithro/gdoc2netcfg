@@ -14,6 +14,7 @@ INSERT rows when values actually change (delta-based storage).
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -63,9 +64,11 @@ class BaseDatabase:
     # tables change.
     SCHEMA_VERSION = 1
 
-    # target_version -> DDL statements upgrading from target_version - 1.
-    # Applied in order by a read-write open of an older database.
-    SCHEMA_UPGRADES: dict[int, list[str]] = {}
+    # target_version -> upgrade steps from target_version - 1, applied
+    # in order by a read-write open of an older database.  Each step is
+    # either a DDL string or a callable(conn) for data migrations that
+    # need more than SQL.
+    SCHEMA_UPGRADES: dict[int, list[str | Callable[[sqlite3.Connection], None]]] = {}
 
     def __init__(self, db_path: Path, *, read_only: bool = False) -> None:
         self._db_path = db_path
@@ -200,8 +203,11 @@ class BaseDatabase:
                         f"{on_disk} but no upgrade step to version "
                         f"{version} is registered."
                     )
-                for stmt in steps:
-                    self._conn.execute(stmt)
+                for step in steps:
+                    if callable(step):
+                        step(self._conn)
+                    else:
+                        self._conn.execute(step)
             self._conn.execute(
                 "UPDATE _meta SET value = ? WHERE key = 'schema_version'",
                 (str(self.SCHEMA_VERSION),),

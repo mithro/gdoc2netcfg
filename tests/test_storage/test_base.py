@@ -38,6 +38,60 @@ def db(tmp_path: Path) -> ConcreteDB:
     d.close()
 
 
+# -- Callable upgrade steps -------------------------------------------------
+
+class TestCallableUpgradeSteps:
+    """SCHEMA_UPGRADES entries may be callables for data migrations."""
+
+    def test_callable_step_runs_with_connection(self, tmp_path: Path):
+        path = tmp_path / "v1.db"
+        ConcreteDB(path).close()
+
+        def migrate(conn: sqlite3.Connection) -> None:
+            conn.execute("CREATE TABLE migrated (x INTEGER)")
+            conn.execute("INSERT INTO migrated (x) VALUES (42)")
+
+        class UpgradedDB(ConcreteDB):
+            SCHEMA_VERSION = 2
+            SCHEMA_UPGRADES = {
+                2: ["CREATE TABLE ddl_step (y INTEGER)", migrate],
+            }
+
+        d = UpgradedDB(path)
+        assert d.connection.execute(
+            "SELECT x FROM migrated"
+        ).fetchone() == (42,)
+        d.connection.execute("SELECT y FROM ddl_step")  # table exists
+        d.close()
+
+    def test_failing_callable_rolls_back(self, tmp_path: Path):
+        path = tmp_path / "v1.db"
+        ConcreteDB(path).close()
+
+        def explode(conn: sqlite3.Connection) -> None:
+            conn.execute("CREATE TABLE half_done (x INTEGER)")
+            raise ValueError("conversion found unexpected data")
+
+        class BrokenUpgradeDB(ConcreteDB):
+            SCHEMA_VERSION = 2
+            SCHEMA_UPGRADES = {2: [explode]}
+
+        with pytest.raises(ValueError, match="unexpected data"):
+            BrokenUpgradeDB(path)
+
+        # The database is untouched: still v1, no half-created table.
+        d = ConcreteDB(path)
+        version = d.connection.execute(
+            "SELECT value FROM _meta WHERE key = 'schema_version'"
+        ).fetchone()[0]
+        assert int(version) == 1
+        tables = {r[0] for r in d.connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )}
+        assert "half_done" not in tables
+        d.close()
+
+
 # -- Connection & journal mode --------------------------------------------
 
 class TestConnection:

@@ -18,6 +18,7 @@ uv run gdoc2netcfg generate nagios            # Generate Nagios monitoring confi
 uv run gdoc2netcfg generate nginx             # Generate nginx reverse proxy configs
 uv run gdoc2netcfg generate topology          # Generate Graphviz DOT topology diagram
 uv run gdoc2netcfg generate known_hosts        # Generate SSH known_hosts file
+uv run gdoc2netcfg generate tayga             # Generate TAYGA NAT64 config for IPv6-incapable hosts
 uv run gdoc2netcfg validate             # Run constraint validation
 uv run gdoc2netcfg info                 # Show pipeline configuration
 uv run gdoc2netcfg reachability         # Ping all hosts and report up/down
@@ -117,6 +118,10 @@ BMCs (Baseboard Management Controllers) are physically separate machines attache
 ### IPv4→IPv6 Mapping
 
 Dual-stack addressing uses the scheme: `10.AA.BB.CCC` → `{prefix}AABB::CCC` where AA is unpadded and BB is zero-padded to 2 digits. Prefixes are configured under `[ipv6]` in the site's `gdoc2netcfg.toml`.
+
+### IPv6 Capability & TAYGA NAT64
+
+Some IoT devices (Espressif/Sonoff hardware) have no IPv6 stack. `derivations/ipv6_capability.py` flags them (`Host.ipv6_capable`) from a built-in Espressif/ITEAD MAC OUI set plus `[ipv6_capability]` config (extra `incapable_ouis`, and `incapable_hardware_patterns` regexes matched against the Hardware column). Incapable hosts keep their derived AAAA records but are skipped for DHCPv6 by the internal dnsmasq generator; the `tayga` generator instead produces TAYGA NAT64 config (`tayga.conf` map entries per IP endpoint) plus systemd-networkd TUN files (`{tun}.netdev`, `{tun}.network`) so the gateway translates IPv6 traffic to their IPv4. Design and plan live in `docs/plans/2026-02-28-ipv6-nat64-iot-*.md`.
 
 ### Split-Horizon DNS
 

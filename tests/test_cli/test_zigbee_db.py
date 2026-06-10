@@ -1,4 +1,9 @@
-"""cmd_zigbee_* read from and persist to discovery.db only (#8)."""
+"""cmd_zigbee_* read from and persist to discovery.db only (#8).
+
+Zigbee data is stored as one document per site ({"bridge": ...,
+"devices": {ieee: ...}}), mirroring the per-site cache files it
+replaced.
+"""
 
 import argparse
 from unittest.mock import patch
@@ -21,7 +26,7 @@ from gdoc2netcfg.storage import open_databases
 from gdoc2netcfg.supplements.zigbee import ZigbeeScanError
 
 
-def _config(tmp_path) -> PipelineConfig:
+def _config(tmp_path, *site_names: str) -> PipelineConfig:
     cache_dir = tmp_path / ".cache"
     cache_dir.mkdir()
     return PipelineConfig(
@@ -29,38 +34,50 @@ def _config(tmp_path) -> PipelineConfig:
         spreadsheet_url="https://docs.google.com/spreadsheets/d/x/edit",
         cache=CacheConfig(directory=cache_dir),
         zigbee=ZigbeeConfig(
-            sites=[ZigbeeSiteConfig(name="welland", mqtt_host="mqtt.example")],
+            sites=[
+                ZigbeeSiteConfig(name=name, mqtt_host=f"mqtt.{name}.example")
+                for name in (site_names or ("welland",))
+            ],
             credentials_file="client_secret.json",
         ),
     )
 
 
-_DEVICE = {
-    "site": "welland",
-    "ieee_address": "0x01",
-    "friendly_name": "kitchen_temp",
-    "object_id": "kitchen_temp",
-    "device_type": "EndDevice",
-    "model_id": "WSDCGQ12LM",
-    "manufacturer": "Xiaomi",
-    "model": "Aqara temperature sensor",
-    "power_source": "Battery",
-    "software_build_id": "100",
-    "date_code": "",
-    "last_seen": None,
-    "link_quality": 80,
-    "availability": "online",
-    "network_address": 1234,
-}
+def _device(site: str, ieee: str, **overrides) -> dict:
+    d = {
+        "site": site,
+        "ieee_address": ieee,
+        "friendly_name": "kitchen_temp",
+        "object_id": "kitchen_temp",
+        "device_type": "EndDevice",
+        "model_id": "WSDCGQ12LM",
+        "manufacturer": "Xiaomi",
+        "model": "Aqara temperature sensor",
+        "power_source": "Battery",
+        "software_build_id": "100",
+        "date_code": "",
+        "last_seen": None,
+        "link_quality": 80,
+        "availability": "online",
+        "network_address": 1234,
+    }
+    d.update(overrides)
+    return d
 
-_BRIDGE = {
-    "site": "welland",
-    "z2m_version": "1.38.0",
-    "coordinator_ieee": "0x00aa",
-    "coordinator_type": "ConBee II",
-    "channel": 15,
-    "pan_id": "0x1a62",
-}
+
+def _site_doc(site: str, *devices: dict, bridge: bool = True) -> dict:
+    bridge_info = {
+        "site": site,
+        "z2m_version": "1.38.0",
+        "coordinator_ieee": "0x00aa",
+        "coordinator_type": "ConBee II",
+        "channel": 15,
+        "pan_id": "0x1a62",
+    }
+    return {
+        "bridge": bridge_info if bridge else None,
+        "devices": {d["ieee_address"]: d for d in devices},
+    }
 
 
 def _seed_db(config: PipelineConfig, data: dict) -> None:
@@ -83,7 +100,9 @@ def _load_db(config: PipelineConfig) -> dict | None:
 class TestZigbeeScan:
     def test_fresh_db_scan_is_reused(self, tmp_path, capsys):
         config = _config(tmp_path)
-        _seed_db(config, {"0x01": _DEVICE, "_bridge/welland": _BRIDGE})
+        _seed_db(config, {
+            "welland": _site_doc("welland", _device("welland", "0x01")),
+        })
         args = argparse.Namespace(config=None, force=False)
 
         with patch("gdoc2netcfg.cli.main._load_config", return_value=config), \
@@ -100,31 +119,33 @@ class TestZigbeeScan:
 
     def test_live_scan_persists_to_db(self, tmp_path):
         config = _config(tmp_path)
+        data = {"welland": _site_doc("welland", _device("welland", "0x01"))}
         args = argparse.Namespace(config=None, force=True)
 
         with patch("gdoc2netcfg.cli.main._load_config", return_value=config), \
              patch(
                  "gdoc2netcfg.supplements.zigbee.scan_zigbee",
-                 return_value=({"0x01": _DEVICE}, []),
+                 return_value=(data, []),
              ):
             rc = cmd_zigbee_scan(args)
 
         assert rc == 0
-        assert _load_db(config) == {"0x01": _DEVICE}
+        assert _load_db(config) == data
 
     def test_partial_failure_persists_then_fails_loud(self, tmp_path):
         config = _config(tmp_path)
+        data = {"welland": _site_doc("welland", _device("welland", "0x01"))}
         args = argparse.Namespace(config=None, force=True)
 
         with patch("gdoc2netcfg.cli.main._load_config", return_value=config), \
              patch(
                  "gdoc2netcfg.supplements.zigbee.scan_zigbee",
-                 return_value=({"0x01": _DEVICE}, ["monarto: timeout"]),
+                 return_value=(data, ["monarto: timeout"]),
              ), pytest.raises(ZigbeeScanError, match="monarto"):
             cmd_zigbee_scan(args)
 
         # The successful site's data was saved before the raise.
-        assert _load_db(config) == {"0x01": _DEVICE}
+        assert _load_db(config) == data
 
     def test_no_sites_configured_errors(self, tmp_path, capsys):
         config = _config(tmp_path)
@@ -141,7 +162,9 @@ class TestZigbeeScan:
 class TestZigbeeShow:
     def test_show_reads_db(self, tmp_path, capsys):
         config = _config(tmp_path)
-        _seed_db(config, {"0x01": _DEVICE, "_bridge/welland": _BRIDGE})
+        _seed_db(config, {
+            "welland": _site_doc("welland", _device("welland", "0x01")),
+        })
         args = argparse.Namespace(config=None)
 
         with patch("gdoc2netcfg.cli.main._load_config", return_value=config):
@@ -167,7 +190,9 @@ class TestZigbeeShow:
 class TestZigbeeUpdateSheet:
     def test_update_sheet_reads_db(self, tmp_path):
         config = _config(tmp_path)
-        _seed_db(config, {"0x01": _DEVICE, "_bridge/welland": _BRIDGE})
+        _seed_db(config, {
+            "welland": _site_doc("welland", _device("welland", "0x01")),
+        })
         args = argparse.Namespace(config=None, dry_run=True)
 
         with patch("gdoc2netcfg.cli.main._load_config", return_value=config), \
@@ -182,6 +207,34 @@ class TestZigbeeUpdateSheet:
         _, devices, bridge_infos = mock_update.call_args.args[:3]
         assert [d.ieee_address for d in devices] == ["0x01"]
         assert bridge_infos["welland"].coordinator_type == "ConBee II"
+
+    def test_update_sheet_projects_one_view_per_device(self, tmp_path):
+        """A device in both sites' registries becomes ONE sheet row,
+        using the best view (online beats offline)."""
+        config = _config(tmp_path, "welland", "monarto")
+        _seed_db(config, {
+            "welland": _site_doc(
+                "welland",
+                _device("welland", "0x01", availability="offline"),
+            ),
+            "monarto": _site_doc(
+                "monarto",
+                _device("monarto", "0x01", availability="online"),
+            ),
+        })
+        args = argparse.Namespace(config=None, dry_run=True)
+
+        with patch("gdoc2netcfg.cli.main._load_config", return_value=config), \
+             patch(
+                 "gdoc2netcfg.supplements.zigbee_sheet.update_zigbee_sheet",
+                 return_value=1,
+             ) as mock_update:
+            rc = cmd_zigbee_update_sheet(args)
+
+        assert rc == 0
+        _, devices, _bridge_infos = mock_update.call_args.args[:3]
+        assert len(devices) == 1
+        assert devices[0].site == "monarto"  # the online view won
 
     def test_update_sheet_without_data_errors(self, tmp_path, capsys):
         config = _config(tmp_path)

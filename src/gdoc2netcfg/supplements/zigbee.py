@@ -3,8 +3,11 @@
 Connects to each configured site's MQTT broker, subscribes to Z2M's
 retained bridge/devices and bridge/info topics, and collects per-device
 availability state.  Results are persisted to discovery.db by the CLI
-(scan_type ``zigbee``), keyed by IEEE address for devices and
-``_bridge/<site>`` for bridge info.
+(scan_type ``zigbee``) as ONE DOCUMENT PER SITE — ``{"bridge": ...,
+"devices": {ieee: ...}}`` — mirroring the per-site cache files this
+replaced.  Sites are independent: scanning one site never touches
+another site's document, and a device listed by two sites (moved
+without removing the old Z2M entry) keeps both registry views.
 """
 
 from __future__ import annotations
@@ -19,19 +22,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from gdoc2netcfg.config import ZigbeeConfig, ZigbeeSiteConfig
-
-
-BRIDGE_KEY_PREFIX = "_bridge/"
-
-
-def bridge_key(site_name: str) -> str:
-    """DB key for a site's Zigbee2MQTT bridge-info entry."""
-    return f"{BRIDGE_KEY_PREFIX}{site_name}"
-
-
-def is_bridge_key(key: str) -> bool:
-    """True if *key* is a bridge-info entry rather than a device."""
-    return key.startswith(BRIDGE_KEY_PREFIX)
 
 
 class ZigbeeScanError(Exception):
@@ -292,26 +282,31 @@ def scan_zigbee(
 ) -> tuple[dict[str, dict], list[str]]:
     """Scan all configured Zigbee2MQTT sites via MQTT.
 
-    Returns ``(data, errors)``.  *data* starts from *baseline* and maps
-    IEEE address -> device dict plus ``_bridge/<site>`` -> bridge-info
-    dict.  A successfully scanned site REPLACES all its baseline entries
-    — the retained MQTT topics are the authoritative full device list,
-    so a device absent from them has been removed from that Z2M
-    instance.  A failed site keeps its baseline entries and adds an
-    error string instead.  The caller persists *data* first, then fails
-    loud via raise_for_zigbee_errors — so one unreachable broker can't
-    discard the other site's results.
+    Returns ``(data, errors)``.  *data* maps site name -> ``{"bridge":
+    bridge-info | None, "devices": {ieee: device}}`` — one document per
+    site, like the per-site cache files this replaced.  A successfully
+    scanned site's document is REPLACED WHOLESALE — the retained MQTT
+    topics are the authoritative full device list, so a device absent
+    from them has been removed from that Z2M instance.  A failed site
+    keeps its baseline document and adds an error string instead.  The
+    caller persists *data* first, then fails loud via
+    raise_for_zigbee_errors — so one unreachable broker can't discard
+    the other site's results.
 
-    A device reported by MORE THAN ONE site (a stale registry entry
-    left behind when a device moved between sites) is resolved
-    deterministically — online beats offline, then newest last_seen —
-    with a warning naming the duplicate so the stale Z2M entry gets
-    cleaned up.
+    Baseline entries for sites no longer in the config are dropped
+    (the save tombstones them); a device listed by two sites (moved
+    between sites without removing the old registry entry) keeps both
+    sites' views — consumers needing one view per device pick via
+    best_device_view.
     """
     if not zigbee_config.sites:
         raise RuntimeError("No zigbee sites configured in gdoc2netcfg.toml")
 
-    data = dict(baseline or {})
+    configured = {site_cfg.name for site_cfg in zigbee_config.sites}
+    data = {
+        site: doc for site, doc in (baseline or {}).items()
+        if site in configured
+    }
     errors: list[str] = []
 
     for site_cfg in zigbee_config.sites:
@@ -328,48 +323,33 @@ def scan_zigbee(
             errors.append(f"{site_cfg.name}: {e}")
             continue
 
-        data = {
-            key: entry for key, entry in data.items()
-            if entry["site"] != site_cfg.name
+        data[site_cfg.name] = {
+            "bridge": asdict(bridge) if bridge is not None else None,
+            "devices": {d.ieee_address: asdict(d) for d in devices},
         }
-        for device in devices:
-            new = asdict(device)
-            existing = data.get(device.ieee_address)
-            if existing is not None and existing["site"] != new["site"]:
-                data[device.ieee_address] = _resolve_cross_site_duplicate(
-                    existing, new,
-                )
-            else:
-                data[device.ieee_address] = new
-        if bridge is not None:
-            data[bridge_key(site_cfg.name)] = asdict(bridge)
 
     return data, errors
 
 
-def _resolve_cross_site_duplicate(existing: dict, new: dict) -> dict:
-    """Pick one view of a device reported by two sites, loudly.
+def best_device_view(views: list[dict]) -> dict:
+    """Pick the authoritative view of a device listed by several sites.
 
-    Both Z2M registries listing the same IEEE address means a device
-    was moved between sites and the old registry entry was never
-    removed.  Prefer the view that is online, then the most recently
-    seen one (the freshly scanned view wins a full tie).  Warn either
-    way — the losing entry is stale and should be removed from its
-    site's Zigbee2MQTT instance.
+    The store keeps every site's registry view of a device; consumers
+    that need exactly one (the Google Sheet has one row per IEEE
+    address) prefer the view that is online, then the most recently
+    seen, then the last in *views* order.
     """
+    if not views:
+        raise ValueError("best_device_view called with no views")
+
     def preference(entry: dict) -> tuple:
         return (entry["availability"] == "online", entry["last_seen"] or 0)
 
-    keep = max(new, existing, key=preference)
-    drop = existing if keep is new else new
-    print(
-        f"Warning: {keep['ieee_address']} ({keep['friendly_name']}) is in "
-        f"both {existing['site']} and {new['site']} Z2M registries — "
-        f"keeping {keep['site']} ({keep['availability']}); remove the "
-        f"stale {drop['site']} entry.",
-        file=sys.stderr,
-    )
-    return keep
+    best = views[0]
+    for view in views[1:]:
+        if preference(view) >= preference(best):
+            best = view
+    return best
 
 
 def raise_for_zigbee_errors(errors: list[str]) -> None:

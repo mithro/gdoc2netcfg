@@ -2015,7 +2015,6 @@ def cmd_zigbee_scan(args: argparse.Namespace) -> int:
         return 1
 
     from gdoc2netcfg.supplements.zigbee import (
-        is_bridge_key,
         raise_for_zigbee_errors,
         scan_zigbee,
     )
@@ -2040,9 +2039,11 @@ def cmd_zigbee_scan(args: argparse.Namespace) -> int:
         if zigbee_data:
             _save_to_discovery_db(config, "zigbee", "save_zigbee", zigbee_data)
 
-    device_count = sum(1 for key in zigbee_data if not is_bridge_key(key))
-    sites = {entry["site"] for entry in zigbee_data.values()}
-    print(f"\nFound {device_count} Zigbee device(s) across {len(sites)} site(s).")
+    device_count = sum(len(doc["devices"]) for doc in zigbee_data.values())
+    print(
+        f"\nFound {device_count} Zigbee device(s) across "
+        f"{len(zigbee_data)} site(s)."
+    )
 
     raise_for_zigbee_errors(errors)
     return 0
@@ -2052,26 +2053,12 @@ def cmd_zigbee_show(args: argparse.Namespace) -> int:
     """Show cached Zigbee device data."""
     config = _load_config(args)
 
-    from gdoc2netcfg.supplements.zigbee import (
-        ZigbeeBridgeInfo,
-        ZigbeeDevice,
-        is_bridge_key,
-    )
+    from gdoc2netcfg.supplements.zigbee import ZigbeeBridgeInfo, ZigbeeDevice
 
     zigbee_data = _load_latest_from_db(config, "load_latest_zigbee")
     if not zigbee_data:
         print("No Zigbee data cached. Run 'gdoc2netcfg zigbee scan' first.")
         return 1
-
-    devices_by_site: dict[str, list[ZigbeeDevice]] = {}
-    bridges: dict[str, ZigbeeBridgeInfo] = {}
-    for key, entry in zigbee_data.items():
-        if is_bridge_key(key):
-            bridges[entry["site"]] = ZigbeeBridgeInfo(**entry)
-        else:
-            devices_by_site.setdefault(entry["site"], []).append(
-                ZigbeeDevice(**entry)
-            )
 
     db = _open_databases(config)
     scanned_at = ""
@@ -2083,9 +2070,9 @@ def cmd_zigbee_show(args: argparse.Namespace) -> int:
         if history:
             scanned_at = history[0]["finished_at"]
 
-    for site_name in sorted(set(devices_by_site) | set(bridges)):
-        devices = devices_by_site.get(site_name, [])
-        bridge = bridges.get(site_name)
+    for site_name, doc in sorted(zigbee_data.items()):
+        bridge = ZigbeeBridgeInfo(**doc["bridge"]) if doc["bridge"] else None
+        devices = [ZigbeeDevice(**d) for d in doc["devices"].values()]
 
         print(f"\n{'='*60}")
         print(f"Site: {site_name}  (scanned {scanned_at})")
@@ -2134,22 +2121,30 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
     from gdoc2netcfg.supplements.zigbee import (
         ZigbeeBridgeInfo,
         ZigbeeDevice,
-        is_bridge_key,
+        best_device_view,
     )
     from gdoc2netcfg.supplements.zigbee_sheet import update_zigbee_sheet
 
     zigbee_data = _load_latest_from_db(config, "load_latest_zigbee") or {}
 
-    all_devices: list[ZigbeeDevice] = []
+    # The sheet has one row per IEEE address, but a device listed by
+    # two sites (moved without removing the old Z2M entry) has a view
+    # in each site's document — project to the best view per device.
     bridge_infos: dict[str, ZigbeeBridgeInfo | None] = {}
-    for key, entry in sorted(zigbee_data.items()):
-        if is_bridge_key(key):
-            bridge_infos[entry["site"]] = ZigbeeBridgeInfo(**entry)
-        else:
-            all_devices.append(ZigbeeDevice(**entry))
+    views_by_ieee: dict[str, list[dict]] = {}
+    for site_name, doc in sorted(zigbee_data.items()):
+        bridge_infos[site_name] = (
+            ZigbeeBridgeInfo(**doc["bridge"]) if doc["bridge"] else None
+        )
+        for ieee, device in doc["devices"].items():
+            views_by_ieee.setdefault(ieee, []).append(device)
+    all_devices: list[ZigbeeDevice] = [
+        ZigbeeDevice(**best_device_view(views))
+        for _ieee, views in sorted(views_by_ieee.items())
+    ]
 
     for site_cfg in config.zigbee.sites:
-        if not any(d.site == site_cfg.name for d in all_devices):
+        if site_cfg.name not in zigbee_data:
             print(
                 f"Warning: no data for site '{site_cfg.name}'. "
                 "Run 'gdoc2netcfg zigbee scan' first.",

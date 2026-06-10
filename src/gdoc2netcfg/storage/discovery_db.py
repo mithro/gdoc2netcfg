@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 
 from gdoc2netcfg.storage.base import BaseDatabase
 
@@ -123,7 +124,10 @@ CREATE INDEX IF NOT EXISTS idx_tasmota_scan ON tasmota_data(scan_id);
 CREATE INDEX IF NOT EXISTS idx_tasmota_host ON tasmota_data(hostname);
 """
 
-# Keyed by IEEE address for devices, "_bridge/<site>" for bridge info.
+# Keyed by site name — one JSON document per site ({"bridge": ...,
+# "devices": {ieee: device}}), mirroring the per-site cache files this
+# replaced.  Sites are independent: a scan replaces only its own site's
+# document.
 _ZIGBEE_DATA_SQL = """\
 CREATE TABLE IF NOT EXISTS zigbee_data (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -624,25 +628,27 @@ class DiscoveryDB(BaseDatabase):
         table: str,
         scan_id: int,
         data: dict[str, dict],
-        ignore_fields: frozenset[str] = frozenset(),
+        comparison_key: Callable[[object], str] = None,  # type: ignore[assignment]
     ) -> int:
         """Generic delta-based save for JSON-blob supplement tables.
 
-        Compares canonical JSON (``json.dumps(sort_keys=True)``) per host.
-        Top-level *ignore_fields* are excluded from the comparison (but
-        still stored) — for fields that change on nearly every scan, so
-        noise alone never triggers a new row (mirroring reachability's
-        status-not-RTT comparison).
+        Compares canonical JSON (``json.dumps(sort_keys=True)``) per
+        host.  *comparison_key* overrides what is compared (the full
+        value is always stored) — for data whose fields change on
+        nearly every scan, so noise alone never triggers a new row
+        (mirroring reachability's status-not-RTT comparison).
         """
+        if comparison_key is None:
+            comparison_key = _canonical_json
         latest = self._latest_json_blobs(table)
         changed = 0
         cur = self._conn.cursor()
         try:
             cur.execute("BEGIN")
             for hostname, host_data in data.items():
-                if hostname in latest and _blob_comparison_key(
-                    json.loads(latest[hostname]), ignore_fields
-                ) == _blob_comparison_key(host_data, ignore_fields):
+                if hostname in latest and comparison_key(
+                    json.loads(latest[hostname])
+                ) == comparison_key(host_data):
                     continue
                 changed += 1
                 cur.execute(
@@ -784,24 +790,24 @@ class DiscoveryDB(BaseDatabase):
 
     # -- Zigbee --
 
-    # Fields that change on nearly every scan (activity timestamp and
-    # radio noise) — excluded from change detection so daily scans don't
-    # re-insert every device.  The stored values are as-of the last
-    # meaningful change, like reachability's RTT.
-    _ZIGBEE_VOLATILE_FIELDS = frozenset({"last_seen", "link_quality"})
-
     def save_zigbee(self, scan_id: int, data: dict[str, dict]) -> int:
-        """Store zigbee data, delta-based, tombstoning removed entries.
+        """Store zigbee data, delta-based per SITE, tombstoning removed sites.
 
-        *data* maps IEEE address -> device dict plus ``_bridge/<site>``
-        -> bridge-info dict, and must be the authoritative full state —
-        scan_zigbee carries baseline entries for failed sites forward,
-        so a key absent here has been removed from its Zigbee2MQTT
-        instance and is tombstoned.
+        *data* maps site name -> ``{"bridge": bridge-info | None,
+        "devices": {ieee: device}}`` — one document per site, mirroring
+        the per-site cache files this replaced.  Each scanned site's
+        document replaces its predecessor wholesale (so a device
+        removed from that Z2M instance drops out); scan_zigbee carries
+        failed sites' baseline documents forward, so a site absent
+        here has been removed from the config and is tombstoned.
+
+        Delta comparison ignores each device's last_seen/link_quality
+        (they churn every scan); stored values are as-of the last
+        meaningful change, like reachability's RTT.
         """
         changed = self._save_json_blob(
             "zigbee_data", scan_id, data,
-            ignore_fields=self._ZIGBEE_VOLATILE_FIELDS,
+            comparison_key=_zigbee_comparison_key,
         )
         changed += self._tombstone_missing_json_blob(
             "zigbee_data", scan_id, set(data),
@@ -862,16 +868,35 @@ class DiscoveryDB(BaseDatabase):
 
 # -- Helpers ---------------------------------------------------------------
 
-def _blob_comparison_key(data: object, ignore_fields: frozenset[str]) -> str:
-    """Canonical JSON for change detection, volatile fields removed.
+def _canonical_json(data: object) -> str:
+    """Canonical JSON for change detection.
 
     Non-dict payloads (e.g. a null tombstone) compare as-is — so a
     tombstoned key never compares equal to real data and resurrection
     inserts a fresh row.
     """
-    if ignore_fields and isinstance(data, dict):
-        data = {k: v for k, v in data.items() if k not in ignore_fields}
     return json.dumps(data, sort_keys=True)
+
+
+# Device fields that change on nearly every scan (activity timestamp
+# and radio noise) — excluded from zigbee change detection so hourly
+# scans don't re-insert every site document.
+_ZIGBEE_VOLATILE_FIELDS = frozenset({"last_seen", "link_quality"})
+
+
+def _zigbee_comparison_key(doc: object) -> str:
+    """Canonical JSON of a zigbee site document, per-device volatile
+    fields removed."""
+    if isinstance(doc, dict) and isinstance(doc.get("devices"), dict):
+        doc = dict(doc)
+        doc["devices"] = {
+            ieee: {
+                k: v for k, v in device.items()
+                if k not in _ZIGBEE_VOLATILE_FIELDS
+            }
+            for ieee, device in doc["devices"].items()
+        }
+    return _canonical_json(doc)
 
 
 def _extract_interfaces(hr: object) -> list[list[tuple]]:

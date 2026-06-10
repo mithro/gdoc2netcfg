@@ -638,8 +638,8 @@ class TestReachabilityTombstones:
 # -- Zigbee ------------------------------------------------------------------
 
 class TestZigbee:
-    """Zigbee-specific JSON-blob behaviour: volatile-field-insensitive
-    deltas and tombstoning of removed devices."""
+    """Zigbee site documents: per-device volatile-insensitive deltas
+    and tombstoning of removed sites."""
 
     def _device(self, site: str, ieee: str, **overrides) -> dict:
         d = {
@@ -672,6 +672,12 @@ class TestZigbee:
             "pan_id": "0x1a62",
         }
 
+    def _site_doc(self, site: str, *devices: dict) -> dict:
+        return {
+            "bridge": self._bridge(site),
+            "devices": {d["ieee_address"]: d for d in devices},
+        }
+
     def _save(self, db: DiscoveryDB, data: dict) -> int:
         s = db.begin_scan("zigbee")
         changed = db.save_zigbee(s, data)
@@ -680,80 +686,151 @@ class TestZigbee:
 
     def test_save_and_load(self, db: DiscoveryDB):
         data = {
-            "0x01": self._device("welland", "0x01"),
-            "_bridge/welland": self._bridge("welland"),
+            "welland": self._site_doc(
+                "welland", self._device("welland", "0x01"),
+            ),
+            "monarto": self._site_doc(
+                "monarto", self._device("monarto", "0x02"),
+            ),
         }
         changed = self._save(db, data)
         assert changed == 2
-        loaded = db.load_latest_zigbee()
-        assert loaded == data
+        assert db.load_latest_zigbee() == data
 
     def test_load_returns_none_with_no_scans(self, db: DiscoveryDB):
         assert db.load_latest_zigbee() is None
 
-    def test_delta_ignores_volatile_fields(self, db: DiscoveryDB):
+    def test_delta_ignores_volatile_device_fields(self, db: DiscoveryDB):
         """last_seen / link_quality churn alone never inserts a new row."""
-        self._save(db, {"0x01": self._device("welland", "0x01")})
+        self._save(db, {
+            "welland": self._site_doc(
+                "welland", self._device("welland", "0x01"),
+            ),
+        })
         changed = self._save(db, {
-            "0x01": self._device(
-                "welland", "0x01", last_seen=2000, link_quality=60,
+            "welland": self._site_doc(
+                "welland",
+                self._device("welland", "0x01", last_seen=2000,
+                             link_quality=60),
             ),
         })
         assert changed == 0
 
     def test_delta_detects_availability_change(self, db: DiscoveryDB):
-        self._save(db, {"0x01": self._device("welland", "0x01")})
+        self._save(db, {
+            "welland": self._site_doc(
+                "welland", self._device("welland", "0x01"),
+            ),
+        })
         changed = self._save(db, {
-            "0x01": self._device("welland", "0x01", availability="offline"),
+            "welland": self._site_doc(
+                "welland",
+                self._device("welland", "0x01", availability="offline"),
+            ),
         })
         assert changed == 1
         loaded = db.load_latest_zigbee()
-        assert loaded["0x01"]["availability"] == "offline"
+        assert (
+            loaded["welland"]["devices"]["0x01"]["availability"] == "offline"
+        )
 
     def test_volatile_fields_stored_on_real_change(self, db: DiscoveryDB):
         """When a row IS inserted, it carries the latest volatile values."""
-        self._save(db, {"0x01": self._device("welland", "0x01")})
         self._save(db, {
-            "0x01": self._device(
-                "welland", "0x01", availability="offline", last_seen=2000,
+            "welland": self._site_doc(
+                "welland", self._device("welland", "0x01"),
             ),
         })
-        assert db.load_latest_zigbee()["0x01"]["last_seen"] == 2000
-
-    def test_removed_device_is_tombstoned(self, db: DiscoveryDB):
         self._save(db, {
-            "0x01": self._device("welland", "0x01"),
-            "0x02": self._device("welland", "0x02", object_id="plug_1"),
+            "welland": self._site_doc(
+                "welland",
+                self._device("welland", "0x01", availability="offline",
+                             last_seen=2000),
+            ),
         })
-        changed = self._save(db, {"0x01": self._device("welland", "0x01")})
+        loaded = db.load_latest_zigbee()
+        assert loaded["welland"]["devices"]["0x01"]["last_seen"] == 2000
+
+    def test_unchanged_site_gets_no_row(self, db: DiscoveryDB):
+        """Sites are independent — a change at one site never re-inserts
+        the other site's document."""
+        welland = self._site_doc("welland", self._device("welland", "0x01"))
+        self._save(db, {
+            "welland": welland,
+            "monarto": self._site_doc(
+                "monarto", self._device("monarto", "0x02"),
+            ),
+        })
+        changed = self._save(db, {
+            "welland": welland,
+            "monarto": self._site_doc(
+                "monarto",
+                self._device("monarto", "0x02", availability="offline"),
+            ),
+        })
+        assert changed == 1  # monarto only
+
+    def test_removed_device_drops_out_of_site_doc(self, db: DiscoveryDB):
+        """Device removal is wholesale-replace within the site document
+        — no tombstone machinery involved."""
+        self._save(db, {
+            "welland": self._site_doc(
+                "welland",
+                self._device("welland", "0x01"),
+                self._device("welland", "0x02"),
+            ),
+        })
+        changed = self._save(db, {
+            "welland": self._site_doc(
+                "welland", self._device("welland", "0x01"),
+            ),
+        })
+        assert changed == 1  # the site doc changed
+        loaded = db.load_latest_zigbee()
+        assert set(loaded["welland"]["devices"]) == {"0x01"}
+
+    def test_removed_site_is_tombstoned(self, db: DiscoveryDB):
+        welland = self._site_doc("welland", self._device("welland", "0x01"))
+        self._save(db, {
+            "welland": welland,
+            "monarto": self._site_doc(
+                "monarto", self._device("monarto", "0x02"),
+            ),
+        })
+        changed = self._save(db, {"welland": welland})
         assert changed == 1  # the tombstone
-        assert set(db.load_latest_zigbee()) == {"0x01"}
+        assert set(db.load_latest_zigbee()) == {"welland"}
 
     def test_tombstone_history_retained(self, db: DiscoveryDB):
-        self._save(db, {"0x01": self._device("welland", "0x01"),
-                        "0x02": self._device("welland", "0x02")})
-        self._save(db, {"0x01": self._device("welland", "0x01")})
-        changes = db.host_changes("zigbee_data", "0x02", scan_type="zigbee")
+        welland = self._site_doc("welland", self._device("welland", "0x01"))
+        monarto = self._site_doc("monarto", self._device("monarto", "0x02"))
+        self._save(db, {"welland": welland, "monarto": monarto})
+        self._save(db, {"welland": welland})
+        changes = db.host_changes("zigbee_data", "monarto", scan_type="zigbee")
         assert len(changes) == 2
         assert changes[0][1] is None  # newest: the tombstone
-        assert changes[1][1]["ieee_address"] == "0x02"
+        assert changes[1][1] == monarto
 
     def test_tombstone_is_idempotent(self, db: DiscoveryDB):
-        self._save(db, {"0x01": self._device("welland", "0x01"),
-                        "0x02": self._device("welland", "0x02")})
-        self._save(db, {"0x01": self._device("welland", "0x01")})
-        changed = self._save(db, {"0x01": self._device("welland", "0x01")})
+        welland = self._site_doc("welland", self._device("welland", "0x01"))
+        self._save(db, {
+            "welland": welland,
+            "monarto": self._site_doc(
+                "monarto", self._device("monarto", "0x02"),
+            ),
+        })
+        self._save(db, {"welland": welland})
+        changed = self._save(db, {"welland": welland})
         assert changed == 0
 
     def test_resurrection(self, db: DiscoveryDB):
-        device = self._device("welland", "0x02")
-        self._save(db, {"0x01": self._device("welland", "0x01"),
-                        "0x02": device})
-        self._save(db, {"0x01": self._device("welland", "0x01")})
-        changed = self._save(db, {"0x01": self._device("welland", "0x01"),
-                                  "0x02": device})
-        assert changed == 1  # the resurrected device
-        assert set(db.load_latest_zigbee()) == {"0x01", "0x02"}
+        welland = self._site_doc("welland", self._device("welland", "0x01"))
+        monarto = self._site_doc("monarto", self._device("monarto", "0x02"))
+        self._save(db, {"welland": welland, "monarto": monarto})
+        self._save(db, {"welland": welland})
+        changed = self._save(db, {"welland": welland, "monarto": monarto})
+        assert changed == 1  # the resurrected site
+        assert set(db.load_latest_zigbee()) == {"welland", "monarto"}
 
     def test_empty_data_fails_loud(self, db: DiscoveryDB):
         s = db.begin_scan("zigbee")

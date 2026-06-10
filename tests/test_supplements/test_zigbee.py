@@ -1,12 +1,14 @@
 """Tests for the zigbee supplement's scan/merge behaviour.
 
 scan_zigbee_site (the MQTT layer) is mocked; these tests cover the
-baseline-merge semantics: per-site authoritative replace, failed sites
-keeping their baseline entries, and the persist-then-fail-loud error
-contract.
+per-site document semantics: each site's document is independent and
+replaced wholesale by its own scan, failed sites keep their baseline
+document, and the persist-then-fail-loud error contract.
 """
 
 from __future__ import annotations
+
+from dataclasses import asdict
 
 import pytest
 
@@ -16,8 +18,7 @@ from gdoc2netcfg.supplements.zigbee import (
     ZigbeeBridgeInfo,
     ZigbeeDevice,
     ZigbeeScanError,
-    bridge_key,
-    is_bridge_key,
+    best_device_view,
     raise_for_zigbee_errors,
     scan_zigbee,
 )
@@ -56,18 +57,18 @@ def _bridge(site: str) -> ZigbeeBridgeInfo:
     )
 
 
+def _site_doc(site: str, *devices: ZigbeeDevice, bridge: bool = True) -> dict:
+    return {
+        "bridge": asdict(_bridge(site)) if bridge else None,
+        "devices": {d.ieee_address: asdict(d) for d in devices},
+    }
+
+
 def _config(*site_names: str) -> ZigbeeConfig:
     return ZigbeeConfig(sites=[
         ZigbeeSiteConfig(name=name, mqtt_host=f"mqtt.{name}.example")
         for name in site_names
     ])
-
-
-class TestBridgeKey:
-    def test_roundtrip(self):
-        assert bridge_key("welland") == "_bridge/welland"
-        assert is_bridge_key("_bridge/welland")
-        assert not is_bridge_key("0x00124b0001020304")
 
 
 class TestScanZigbee:
@@ -80,18 +81,17 @@ class TestScanZigbee:
         with pytest.raises(RuntimeError, match="No mqtt_host"):
             scan_zigbee(config, None)
 
-    def test_scan_builds_keyed_data(self, monkeypatch):
-        monkeypatch.setattr(
-            zigbee, "scan_zigbee_site",
-            lambda name, cfg, verbose=False: (
-                [_device("welland", "0x01")], _bridge("welland"),
-            ),
-        )
-        data, errors = scan_zigbee(_config("welland"), None)
+    def test_scan_builds_one_document_per_site(self, monkeypatch):
+        def fake_scan(name, cfg, verbose=False):
+            return [_device(name, f"0x{name}")], _bridge(name)
+
+        monkeypatch.setattr(zigbee, "scan_zigbee_site", fake_scan)
+        data, errors = scan_zigbee(_config("welland", "monarto"), None)
         assert errors == []
-        assert set(data) == {"0x01", "_bridge/welland"}
-        assert data["0x01"]["object_id"] == "kitchen_temp"
-        assert data["_bridge/welland"]["z2m_version"] == "1.38.0"
+        assert set(data) == {"welland", "monarto"}
+        assert set(data["welland"]["devices"]) == {"0xwelland"}
+        assert data["welland"]["bridge"]["z2m_version"] == "1.38.0"
+        assert set(data["monarto"]["devices"]) == {"0xmonarto"}
 
     def test_scan_without_bridge_info(self, monkeypatch):
         monkeypatch.setattr(
@@ -101,31 +101,36 @@ class TestScanZigbee:
             ),
         )
         data, errors = scan_zigbee(_config("welland"), None)
-        assert set(data) == {"0x01"}
+        assert data["welland"]["bridge"] is None
+        assert set(data["welland"]["devices"]) == {"0x01"}
 
-    def test_successful_site_replaces_its_baseline(self, monkeypatch):
-        """A removed device drops out; other sites' entries survive."""
+    def test_site_scan_replaces_only_its_own_document(self, monkeypatch):
+        """A removed device drops out of its site's document; the other
+        site's document is rebuilt from its own scan alone."""
         baseline = {
-            "0x01": {"site": "welland", "ieee_address": "0x01"},
-            "0x02": {"site": "welland", "ieee_address": "0x02"},
-            "_bridge/welland": {"site": "welland", "z2m_version": "1.0"},
-            "0x99": {"site": "monarto", "ieee_address": "0x99"},
-        }
-        monkeypatch.setattr(
-            zigbee, "scan_zigbee_site",
-            lambda name, cfg, verbose=False: (
-                [_device("welland", "0x01")], _bridge("welland"),
+            "welland": _site_doc(
+                "welland",
+                _device("welland", "0x01"),
+                _device("welland", "0x02"),
             ),
-        )
-        data, errors = scan_zigbee(_config("welland"), baseline)
+            "monarto": _site_doc("monarto", _device("monarto", "0x99")),
+        }
+
+        def fake_scan(name, cfg, verbose=False):
+            if name == "welland":
+                # 0x02 has been removed from welland's Z2M registry.
+                return [_device("welland", "0x01")], _bridge("welland")
+            return [_device("monarto", "0x99")], _bridge("monarto")
+
+        monkeypatch.setattr(zigbee, "scan_zigbee_site", fake_scan)
+        data, errors = scan_zigbee(_config("welland", "monarto"), baseline)
         assert errors == []
-        # 0x02 was removed from Z2M; 0x99 (monarto, unscanned) survives.
-        assert set(data) == {"0x01", "_bridge/welland", "0x99"}
+        assert set(data["welland"]["devices"]) == {"0x01"}
+        assert data["monarto"] == baseline["monarto"]
 
     def test_failed_site_keeps_baseline_and_reports(self, monkeypatch):
         baseline = {
-            "0x01": {"site": "welland", "ieee_address": "0x01"},
-            "0x99": {"site": "monarto", "ieee_address": "0x99"},
+            "monarto": _site_doc("monarto", _device("monarto", "0x99")),
         }
 
         def fake_scan(name, cfg, verbose=False):
@@ -137,7 +142,36 @@ class TestScanZigbee:
         data, errors = scan_zigbee(_config("welland", "monarto"), baseline)
         assert len(errors) == 1
         assert "monarto" in errors[0]
-        assert "0x99" in data  # baseline retained for the failed site
+        assert data["monarto"] == baseline["monarto"]  # retained
+        assert set(data["welland"]["devices"]) == {"0x01"}
+
+    def test_unconfigured_baseline_site_is_dropped(self, monkeypatch):
+        """A site removed from the config drops out (the save then
+        tombstones it) — as do pre-site-keyed legacy entries."""
+        baseline = {
+            "welland": _site_doc("welland", _device("welland", "0x01")),
+            "oldsite": _site_doc("oldsite", _device("oldsite", "0x42")),
+        }
+        monkeypatch.setattr(
+            zigbee, "scan_zigbee_site",
+            lambda name, cfg, verbose=False: (
+                [_device("welland", "0x01")], _bridge("welland"),
+            ),
+        )
+        data, _ = scan_zigbee(_config("welland"), baseline)
+        assert set(data) == {"welland"}
+
+    def test_device_in_both_registries_keeps_both_views(self, monkeypatch):
+        """A device moved between sites without removing the old Z2M
+        entry appears in both site documents — sites are independent."""
+        def fake_scan(name, cfg, verbose=False):
+            avail = "online" if name == "monarto" else "offline"
+            return [_device(name, "0x01", availability=avail)], None
+
+        monkeypatch.setattr(zigbee, "scan_zigbee_site", fake_scan)
+        data, _ = scan_zigbee(_config("welland", "monarto"), None)
+        assert data["welland"]["devices"]["0x01"]["availability"] == "offline"
+        assert data["monarto"]["devices"]["0x01"]["availability"] == "online"
 
     def test_connection_oserror_is_collected(self, monkeypatch):
         def fake_scan(name, cfg, verbose=False):
@@ -149,65 +183,32 @@ class TestScanZigbee:
         assert len(errors) == 1
 
 
-class TestCrossSiteDuplicates:
-    """A device in two Z2M registries (moved without cleanup) resolves
-    deterministically: online wins, then newest last_seen — loudly."""
+class TestBestDeviceView:
+    """The one-view-per-IEEE projection used by the sheet update."""
 
-    def test_online_view_wins(self, monkeypatch, capsys):
-        def fake_scan(name, cfg, verbose=False):
-            if name == "welland":
-                return [_device("welland", "0x01", availability="offline")], None
-            return [_device("monarto", "0x01", availability="online")], None
+    def test_online_wins(self):
+        offline = asdict(_device("welland", "0x01", availability="offline",
+                                 last_seen=9000))
+        online = asdict(_device("monarto", "0x01", availability="online",
+                                last_seen=100))
+        assert best_device_view([offline, online])["site"] == "monarto"
+        assert best_device_view([online, offline])["site"] == "monarto"
 
-        monkeypatch.setattr(zigbee, "scan_zigbee_site", fake_scan)
-        data, errors = scan_zigbee(_config("welland", "monarto"), None)
-        assert errors == []
-        assert data["0x01"]["site"] == "monarto"
-        err = capsys.readouterr().err
-        assert "both welland and monarto" in err
-        assert "remove the stale welland entry" in err
+    def test_newest_last_seen_wins_when_both_offline(self):
+        older = asdict(_device("welland", "0x01", availability="offline",
+                               last_seen=100))
+        newer = asdict(_device("monarto", "0x01", availability="offline",
+                               last_seen=9000))
+        assert best_device_view([older, newer])["site"] == "monarto"
+        assert best_device_view([newer, older])["site"] == "monarto"
 
-    def test_online_wins_regardless_of_site_order(self, monkeypatch):
-        def fake_scan(name, cfg, verbose=False):
-            if name == "welland":
-                return [_device("welland", "0x01", availability="online")], None
-            return [_device("monarto", "0x01", availability="offline")], None
+    def test_single_view(self):
+        view = asdict(_device("welland", "0x01"))
+        assert best_device_view([view]) == view
 
-        monkeypatch.setattr(zigbee, "scan_zigbee_site", fake_scan)
-        data, _ = scan_zigbee(_config("welland", "monarto"), None)
-        assert data["0x01"]["site"] == "welland"
-
-    def test_newest_last_seen_wins_when_both_offline(self, monkeypatch):
-        def fake_scan(name, cfg, verbose=False):
-            if name == "welland":
-                return [_device("welland", "0x01", availability="offline",
-                                last_seen=5000)], None
-            return [_device("monarto", "0x01", availability="offline",
-                            last_seen=2000)], None
-
-        monkeypatch.setattr(zigbee, "scan_zigbee_site", fake_scan)
-        data, _ = scan_zigbee(_config("welland", "monarto"), None)
-        assert data["0x01"]["site"] == "welland"
-
-    def test_baseline_entry_defended_when_its_site_fails(self, monkeypatch):
-        """A stale ghost must not clobber the failed site's good baseline."""
-        from dataclasses import asdict
-
-        baseline = {
-            "0x01": asdict(_device("monarto", "0x01", availability="online",
-                                   last_seen=9000)),
-        }
-
-        def fake_scan(name, cfg, verbose=False):
-            if name == "monarto":
-                raise RuntimeError("Timeout")
-            return [_device("welland", "0x01", availability="offline",
-                            last_seen=100)], None
-
-        monkeypatch.setattr(zigbee, "scan_zigbee_site", fake_scan)
-        data, errors = scan_zigbee(_config("welland", "monarto"), baseline)
-        assert len(errors) == 1
-        assert data["0x01"]["site"] == "monarto"  # baseline view kept
+    def test_no_views_fails_loud(self):
+        with pytest.raises(ValueError, match="no views"):
+            best_device_view([])
 
 
 class TestRaiseForZigbeeErrors:

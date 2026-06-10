@@ -809,6 +809,14 @@ def run_daemon(
         check_all_hosts_reachability,
     )
 
+    # Apply any pending schema upgrades up front — the per-cycle pipeline
+    # rebuild opens the databases read-only, which fails loud on an older
+    # schema and cannot upgrade it.  A read-write open upgrades in place
+    # (and creates the databases on a fresh site).
+    from gdoc2netcfg.storage import open_databases
+
+    open_databases(config.cache.directory).close()
+
     stop_event = threading.Event()
 
     def signal_handler(signum, frame):

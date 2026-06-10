@@ -146,16 +146,16 @@ The topology generator (`topology.py`) produces a Graphviz DOT diagram of the ph
 
 ### SQLite Storage
 
-Alongside the flat-file caches, supplement and spreadsheet data are stored in two SQLite databases under the cache directory (`storage/` modules):
+Supplement and spreadsheet data are stored in two SQLite databases under the cache directory (`storage/` modules):
 
 - `.cache/config.db` (`ConfigDB`) — spreadsheet data: CSV snapshots, device records, VLAN definitions (scan_type `csv_fetch`).
 - `.cache/discovery.db` (`DiscoveryDB`) — supplement scan results: reachability, SSH host keys, SSL certs, BMC firmware, SNMP, bridge, NSDP, Tasmota (one scan_type each).
 
-Both inherit `BaseDatabase` (`storage/base.py`): WAL mode, schema versioning, and a shared `scans` audit table (one row per scan/fetch). Storage is **delta-based** — data rows are INSERTed only when a value actually changes, so history accrues with bounded growth; reads reconstruct the latest state via `load_latest_*`.
+Both inherit `BaseDatabase` (`storage/base.py`): DELETE journal mode, schema versioning, and a shared `scans` audit table (one row per scan/fetch). Storage is **delta-based** — data rows are INSERTed only when a value actually changes, so history accrues with bounded growth; reads reconstruct the latest state via `load_latest_*`.
 
-`cmd_fetch`, the supplement scans, and the reachability daemon write to **both** the flat files and the DBs (parallel write). `_build_pipeline` loads supplements from `discovery.db` when present, falling back to the flat-file cache per supplement (the fallback is None-guarded, not exception-guarded). Seed the DBs from existing flat files once per site with `db migrate` (`storage/migration.py`); inspect with `db info` / `db history`.
+**`discovery.db` is the sole source for supplement data.** Supplement scans take their last-known baseline from the DB and the CLI persists results back to the DB only — the flat supplement `.json` caches are neither read nor written. `_build_pipeline` and the show/publish commands load supplements via `load_latest_*` (a supplement with no completed scan contributes no enrichment). Scan freshness is the age of the latest completed scan per scan_type (`scans` table, 5-minute window) instead of file mtimes. `cmd_fetch` still writes the CSVs to both the flat cache (the parser input) and `config.db`. The one-time `db migrate` importer (`storage/migration.py`) seeds the DBs from pre-cutover flat files; inspect with `db info` / `db history`.
 
-> **WAL caveat:** `BaseDatabase.__init__` runs `PRAGMA journal_mode=WAL` — a *write* — on every open, and WAL readers also need write access to the `-shm` sidecar. So even read-only commands require write access to the DB files; this drives the production ownership model (see *SQLite databases* under Production Deployment).
+> **Journal mode:** the DBs use `journal_mode=DELETE` (not WAL), so a read-only open (`mode=ro` URI) needs no write access at all — a non-root user can read the root-owned production DBs. Writes serialize against reads; a 5s `busy_timeout` absorbs the contention.
 
 ### Models
 
@@ -277,7 +277,7 @@ sudo bash -c 'cd /opt/gdoc2netcfg && .venv/bin/gdoc2netcfg db migrate'   # one-t
 sudo bash -c 'cd /opt/gdoc2netcfg && .venv/bin/gdoc2netcfg db info'      # verify
 ```
 
-**Ownership = everything root.** The reachability daemon runs as root, so `/opt/gdoc2netcfg/.cache` and `.venv` are owned by `root`. Because opening a WAL database is a write (the WAL caveat under *SQLite Storage*), a non-root user cannot open a root-owned DB at all — so **every gdoc2netcfg command on `/opt` that touches a DB must run via `sudo`**, using the direct `.venv/bin/gdoc2netcfg` (not `uv run`, which would re-sync the root-owned venv). The reachability daemon writes a new `reachability` scan to `discovery.db` each 5-minute cycle; the other supplements only gain history when their scan commands are run.
+**Ownership: root writes, anyone reads.** The reachability daemon runs as root, so `/opt/gdoc2netcfg/.cache` and `.venv` are owned by `root`. Reads are sudo-free — the DBs use DELETE journal and read-only opens (see *Journal mode* under *SQLite Storage*), so commands that only read (`generate`, `validate`, `password`, `db info`, `db history`, the show commands) work as a normal user. Commands that **write** the DBs (the supplement scan commands, `fetch`, `db migrate`) must run via `sudo`, using the direct `.venv/bin/gdoc2netcfg` (not `uv run`, which would re-sync the root-owned venv). The reachability daemon writes a new `reachability` scan to `discovery.db` each 5-minute cycle; the other supplements only gain history when their scan commands are run.
 
 ### dnsmasq
 
@@ -365,4 +365,4 @@ The command reads from the local CSV cache (`gdoc2netcfg fetch` must have been r
 
 ### Other
 
-The SSH host key cache lives at `.cache/ssh_host_keys.json`. SSHFP records are derived from these keys at runtime.
+SSH host keys live in `discovery.db` (scan_type `ssh_host_keys`). SSHFP records are derived from these keys at runtime.

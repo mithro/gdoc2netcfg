@@ -214,26 +214,22 @@ def _build_pipeline(config):
 
     Returns (records, hosts, inventory, validation_result).
 
-    Loads supplement data from SQLite databases when available,
-    falling back to flat-file caches for supplements not yet migrated.
+    Loads supplement data from the SQLite databases — the sole source.
+    A supplement with no completed scan in the DB (or absent DBs, e.g. a
+    fresh site) contributes no enrichment.
     """
     from gdoc2netcfg.constraints.validators import validate_all
     from gdoc2netcfg.derivations.host_builder import build_hosts, build_inventory
     from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.bmc_firmware import (
         enrich_hosts_with_bmc_firmware,
-        load_bmc_firmware_cache,
         refine_bmc_hardware_type,
     )
-    from gdoc2netcfg.supplements.snmp import enrich_hosts_with_snmp, load_snmp_cache
-    from gdoc2netcfg.supplements.sshfp import (
-        enrich_hosts_with_ssh_host_keys,
-        load_ssh_host_keys_cache,
-    )
-    from gdoc2netcfg.supplements.ssl_certs import enrich_hosts_with_ssl_certs, load_ssl_cert_cache
+    from gdoc2netcfg.supplements.snmp import enrich_hosts_with_snmp
+    from gdoc2netcfg.supplements.sshfp import enrich_hosts_with_ssh_host_keys
+    from gdoc2netcfg.supplements.ssl_certs import enrich_hosts_with_ssl_certs
 
     db = _open_databases(config)
-    cache_dir = Path(config.cache.directory)
 
     try:
         # Fetch or load CSVs
@@ -260,63 +256,43 @@ def _build_pipeline(config):
         # Build inventory (aggregate derivations)
         inventory = build_inventory(hosts, config.site)
 
-        # Load supplement data: try DB first, fall back to flat file.
-        # Each load_latest_* returns None if no completed scan exists in DB.
-        # Reachability is not loaded here — it's a live-scan gate loaded
-        # separately by cmd_reachability.  Will be wired in Phase 3.
+        # Load supplement data from the DB — the sole source.  Each
+        # load_latest_* returns None if no completed scan exists; the
+        # enrichers tolerate None (no enrichment).  Reachability is not
+        # loaded here — it's a live-scan gate loaded separately by
+        # cmd_reachability.
 
-        # SSH host keys
-        ssh_keys_data = db.discovery.load_latest_ssh_host_keys() if db else None
-        if ssh_keys_data is None:
-            ssh_keys_data = load_ssh_host_keys_cache(cache_dir / "ssh_host_keys.json")
-        enrich_hosts_with_ssh_host_keys(hosts, ssh_keys_data)
-
-        # SSL certs
-        ssl_data = db.discovery.load_latest_ssl_certs() if db else None
-        if ssl_data is None:
-            ssl_data = load_ssl_cert_cache(cache_dir / "ssl_certs.json")
-        enrich_hosts_with_ssl_certs(hosts, ssl_data)
-
-        # BMC firmware
-        bmc_fw_data = db.discovery.load_latest_bmc_firmware() if db else None
-        if bmc_fw_data is None:
-            bmc_fw_data = load_bmc_firmware_cache(cache_dir / "bmc_firmware.json")
-        enrich_hosts_with_bmc_firmware(hosts, bmc_fw_data)
+        enrich_hosts_with_ssh_host_keys(
+            hosts, db.discovery.load_latest_ssh_host_keys() if db else None,
+        )
+        enrich_hosts_with_ssl_certs(
+            hosts, db.discovery.load_latest_ssl_certs() if db else None,
+        )
+        enrich_hosts_with_bmc_firmware(
+            hosts, db.discovery.load_latest_bmc_firmware() if db else None,
+        )
         refine_bmc_hardware_type(hosts)
-
-        # SNMP
-        snmp_data = db.discovery.load_latest_snmp() if db else None
-        if snmp_data is None:
-            snmp_data = load_snmp_cache(cache_dir / "snmp.json")
-        enrich_hosts_with_snmp(hosts, snmp_data)
-
-        # Bridge
-        from gdoc2netcfg.supplements.bridge import enrich_hosts_with_bridge_data
-        from gdoc2netcfg.supplements.snmp_common import load_json_cache
-
-        bridge_data = db.discovery.load_latest_bridge() if db else None
-        if bridge_data is None:
-            bridge_data = load_json_cache(cache_dir / "bridge.json")
-        enrich_hosts_with_bridge_data(hosts, bridge_data)
-
-        # NSDP
-        from gdoc2netcfg.supplements.nsdp import enrich_hosts_with_nsdp, load_nsdp_cache
-
-        nsdp_data = db.discovery.load_latest_nsdp() if db else None
-        if nsdp_data is None:
-            nsdp_data = load_nsdp_cache(cache_dir / "nsdp.json")
-        enrich_hosts_with_nsdp(hosts, nsdp_data)
-
-        # Tasmota
-        from gdoc2netcfg.supplements.tasmota import (
-            enrich_hosts_with_tasmota,
-            load_tasmota_cache,
+        enrich_hosts_with_snmp(
+            hosts, db.discovery.load_latest_snmp() if db else None,
         )
 
-        tasmota_data = db.discovery.load_latest_tasmota() if db else None
-        if tasmota_data is None:
-            tasmota_data = load_tasmota_cache(cache_dir / "tasmota.json")
-        enrich_hosts_with_tasmota(hosts, tasmota_data)
+        from gdoc2netcfg.supplements.bridge import enrich_hosts_with_bridge_data
+
+        enrich_hosts_with_bridge_data(
+            hosts, db.discovery.load_latest_bridge() if db else None,
+        )
+
+        from gdoc2netcfg.supplements.nsdp import enrich_hosts_with_nsdp
+
+        enrich_hosts_with_nsdp(
+            hosts, db.discovery.load_latest_nsdp() if db else None,
+        )
+
+        from gdoc2netcfg.supplements.tasmota import enrich_hosts_with_tasmota
+
+        enrich_hosts_with_tasmota(
+            hosts, db.discovery.load_latest_tasmota() if db else None,
+        )
 
         # Validate
         result = validate_all(all_records, hosts, inventory)

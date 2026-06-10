@@ -2274,9 +2274,17 @@ def cmd_db_info(args: argparse.Namespace) -> int:
     config_path = config.cache.config_db_path
     discovery_path = config.cache.discovery_db_path
 
-    from gdoc2netcfg.storage.base import BaseDatabase, SchemaVersionError
+    from gdoc2netcfg.storage.base import SchemaVersionError
+    from gdoc2netcfg.storage.config_db import ConfigDB
+    from gdoc2netcfg.storage.discovery_db import DiscoveryDB
 
-    for label, db_path in [("Config", config_path), ("Discovery", discovery_path)]:
+    # Each database must be opened with its own class — the schema
+    # version check compares against the class's SCHEMA_VERSION, so a
+    # generic BaseDatabase open (version 1) rejects any upgraded DB.
+    for label, db_class, db_path in [
+        ("Config", ConfigDB, config_path),
+        ("Discovery", DiscoveryDB, discovery_path),
+    ]:
         if not db_path.exists():
             print(f"{label} DB: not created yet")
             continue
@@ -2285,7 +2293,7 @@ def cmd_db_info(args: argparse.Namespace) -> int:
         print(f"{label} DB: {db_path} ({size_kb:.1f} KB)")
 
         try:
-            with BaseDatabase(db_path, read_only=True) as db:
+            with db_class(db_path, read_only=True) as db:
                 cur = db.connection.execute(
                     "SELECT scan_type, COUNT(*) as cnt, "
                     "MIN(started_at) as oldest, MAX(started_at) as newest "
@@ -2300,7 +2308,7 @@ def cmd_db_info(args: argparse.Namespace) -> int:
                         print(f"  {scan_type}: {cnt} scans ({oldest_date} to {newest_date})")
                 else:
                     print("  No completed scans.")
-        except (SchemaVersionError, Exception) as e:
+        except SchemaVersionError as e:
             print(f"  Error reading database: {e}", file=sys.stderr)
 
     return 0

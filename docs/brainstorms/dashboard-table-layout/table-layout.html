@@ -1,0 +1,128 @@
+<h2>Network Reachability Dashboard — Table Layout</h2>
+<p class="subtitle">One card per network (VLAN subdomain). This mockup shows the "net" network.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Network Infrastructure (net) — 41 hosts</div>
+  <div class="mockup-body" style="overflow-x:auto; font-size:13px; font-family:monospace;">
+    <table style="width:100%; border-collapse:collapse; white-space:nowrap;">
+      <thead>
+        <tr style="border-bottom:2px solid #555; text-align:left;">
+          <th style="padding:4px 8px;">St</th>
+          <th style="padding:4px 8px;">Host</th>
+          <th style="padding:4px 8px;">Interface</th>
+          <th style="padding:4px 8px;">Stack</th>
+          <th style="padding:4px 8px;">IPv4</th>
+          <th style="padding:4px 8px;">IPv6 (suffix)</th>
+          <th style="padding:4px 8px;">MAC</th>
+          <th style="padding:4px 8px;">RTT</th>
+          <th style="padding:4px 8px;">Location</th>
+          <th style="padding:4px 8px;">Controls</th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- big-storage: multi-interface host -->
+        <tr style="border-top:1px solid #444;">
+          <td style="padding:3px 8px;">🟢</td>
+          <td style="padding:3px 8px; font-weight:bold;">big-storage</td>
+          <td style="padding:3px 8px;">default</td>
+          <td style="padding:3px 8px; color:#4a4;">dual</td>
+          <td style="padding:3px 8px;">10.1.5.150</td>
+          <td style="padding:3px 8px;">::150</td>
+          <td style="padding:3px 8px;">ac:1f:6b:aa:50:53</td>
+          <td style="padding:3px 8px; text-align:right;">0.3</td>
+          <td style="padding:3px 8px;">Back Shed</td>
+          <td style="padding:3px 8px;"></td>
+        </tr>
+        <tr>
+          <td style="padding:3px 8px;">🟢</td>
+          <td style="padding:3px 8px;"></td>
+          <td style="padding:3px 8px;">10g1</td>
+          <td style="padding:3px 8px; color:#4a4;">dual</td>
+          <td style="padding:3px 8px;">10.1.11.154</td>
+          <td style="padding:3px 8px;">::154</td>
+          <td style="padding:3px 8px;">0c:c4:7a:f4:10:e4</td>
+          <td style="padding:3px 8px; text-align:right;">0.1</td>
+          <td style="padding:3px 8px;"></td>
+          <td style="padding:3px 8px;"></td>
+        </tr>
+        <tr>
+          <td style="padding:3px 8px;">🟢</td>
+          <td style="padding:3px 8px;"></td>
+          <td style="padding:3px 8px;">25g1</td>
+          <td style="padding:3px 8px; color:#4a4;">dual</td>
+          <td style="padding:3px 8px;">10.1.7.15</td>
+          <td style="padding:3px 8px;">::15</td>
+          <td style="padding:3px 8px;">0c:c4:7a:d6:6d:b6</td>
+          <td style="padding:3px 8px; text-align:right;">0.1</td>
+          <td style="padding:3px 8px;"></td>
+          <td style="padding:3px 8px;"></td>
+        </tr>
+        <tr>
+          <td style="padding:3px 8px;">🔴</td>
+          <td style="padding:3px 8px;"></td>
+          <td style="padding:3px 8px;">dual_100g_top</td>
+          <td style="padding:3px 8px; color:#a44;">unreach</td>
+          <td style="padding:3px 8px;">10.1.11.158</td>
+          <td style="padding:3px 8px;">::158</td>
+          <td style="padding:3px 8px;">00:07:43:39:8f:48</td>
+          <td style="padding:3px 8px; text-align:right;">—</td>
+          <td style="padding:3px 8px;"></td>
+          <td style="padding:3px 8px;"></td>
+        </tr>
+        <!-- bmc.big-storage: single interface -->
+        <tr style="border-top:1px solid #444;">
+          <td style="padding:3px 8px;">🟢</td>
+          <td style="padding:3px 8px; font-weight:bold;">bmc.big-storage</td>
+          <td style="padding:3px 8px;">default</td>
+          <td style="padding:3px 8px; color:#4a4;">dual</td>
+          <td style="padding:3px 8px;">10.1.5.150</td>
+          <td style="padding:3px 8px;">::150</td>
+          <td style="padding:3px 8px;">ac:1f:6b:aa:50:53</td>
+          <td style="padding:3px 8px; text-align:right;">0.3</td>
+          <td style="padding:3px 8px;">Back Shed</td>
+          <td style="padding:3px 8px;"></td>
+        </tr>
+        <!-- sw-netgear-s3300-1: single, down -->
+        <tr style="border-top:1px solid #444;">
+          <td style="padding:3px 8px;">⚫</td>
+          <td style="padding:3px 8px; font-weight:bold; opacity:0.5;">sw-netgear-s3300-1</td>
+          <td style="padding:3px 8px; opacity:0.5;">default</td>
+          <td style="padding:3px 8px; opacity:0.5;">unavail</td>
+          <td style="padding:3px 8px; opacity:0.5;">10.1.5.25</td>
+          <td style="padding:3px 8px; opacity:0.5;">::25</td>
+          <td style="padding:3px 8px; opacity:0.5;">bc:a5:11:b8:ec:f1</td>
+          <td style="padding:3px 8px; text-align:right; opacity:0.5;">—</td>
+          <td style="padding:3px 8px; opacity:0.5;">Shed Rack</td>
+          <td style="padding:3px 8px; opacity:0.5;">au-plug-26</td>
+        </tr>
+        <!-- desktop: down, controlled by plug -->
+        <tr style="border-top:1px solid #444;">
+          <td style="padding:3px 8px;">🔴</td>
+          <td style="padding:3px 8px; font-weight:bold; opacity:0.6;">desktop</td>
+          <td style="padding:3px 8px; opacity:0.6;">default</td>
+          <td style="padding:3px 8px; color:#a44; opacity:0.6;">unreach</td>
+          <td style="padding:3px 8px; opacity:0.6;">10.1.11.124</td>
+          <td style="padding:3px 8px; opacity:0.6;">::124</td>
+          <td style="padding:3px 8px; opacity:0.6;">40:a8:f0:46:f2:cf</td>
+          <td style="padding:3px 8px; text-align:right; opacity:0.6;">—</td>
+          <td style="padding:3px 8px; opacity:0.6;">Office</td>
+          <td style="padding:3px 8px; opacity:0.6;">au-plug-20</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div style="margin-top:24px;">
+  <h3>Notes on this layout</h3>
+  <ul>
+    <li><strong>Status icons:</strong> 🟢 on / 🔴 off / ⚫ unavailable (plug off or publisher down)</li>
+    <li><strong>Host name:</strong> shown only on first interface row, bold. Subsequent interfaces have blank host cell.</li>
+    <li><strong>Host separator:</strong> thin border between hosts for readability</li>
+    <li><strong>IPv6 suffix:</strong> common prefix (e.g. <code>2404:e80:a137:105</code>) stripped, showing only <code>::150</code>. Prefix shown once in the card header.</li>
+    <li><strong>Stack column:</strong> abbreviated — "dual" / "v4" / "v6" / "unreach" / "unavail"</li>
+    <li><strong>Down hosts:</strong> dimmed with opacity for visual de-emphasis</li>
+    <li><strong>Controls column:</strong> shows which Tasmota plug powers this device (if any)</li>
+    <li><strong>Location column:</strong> from spreadsheet Physical Location field</li>
+  </ul>
+</div>

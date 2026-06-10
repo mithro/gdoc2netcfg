@@ -1,0 +1,126 @@
+<h2>Network Reachability Dashboard — Sortable Table</h2>
+<p class="subtitle">Column headers are navigation links that switch to a re-sorted view. Active sort has ▾ indicator.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Network Infrastructure (net) — IPv6 prefix: 2404:e80:a137:105</div>
+  <div class="mockup-body" style="overflow-x:auto; font-size:13px; font-family:monospace;">
+    <table style="width:100%; border-collapse:collapse; white-space:nowrap;">
+      <thead>
+        <tr style="border-bottom:2px solid #555; text-align:left;">
+          <th style="padding:4px 8px;"><a href="#" style="color:#7af;">St</a></th>
+          <th style="padding:4px 8px;"><a href="#" style="color:#fc0;">Host ▾</a></th>
+          <th style="padding:4px 8px;">Iface</th>
+          <th style="padding:4px 8px;"><a href="#" style="color:#7af;">Stack</a></th>
+          <th style="padding:4px 8px;">IPv4</th>
+          <th style="padding:4px 8px;">IPv6</th>
+          <th style="padding:4px 8px;">MAC</th>
+          <th style="padding:4px 8px;"><a href="#" style="color:#7af;">RTT</a></th>
+          <th style="padding:4px 8px;">Location</th>
+          <th style="padding:4px 8px;">Controls</th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- big-storage: multi-interface, online -->
+        <tr style="border-top:1px solid #444;">
+          <td style="padding:3px 8px;">🟢</td>
+          <td style="padding:3px 8px; font-weight:bold;">big-storage</td>
+          <td style="padding:3px 8px;">default</td>
+          <td style="padding:3px 8px; color:#6d6;">dual</td>
+          <td style="padding:3px 8px;">10.1.5.150</td>
+          <td style="padding:3px 8px; opacity:0.7;">::150</td>
+          <td style="padding:3px 8px; opacity:0.7;">ac:1f:6b:aa:50:53</td>
+          <td style="padding:3px 8px; text-align:right;">0.3</td>
+          <td style="padding:3px 8px;">Back Shed</td>
+          <td style="padding:3px 8px;">au-plug-24</td>
+        </tr>
+        <tr>
+          <td style="padding:3px 8px;">🟢</td>
+          <td style="padding:3px 8px;"></td>
+          <td style="padding:3px 8px;">10g1</td>
+          <td style="padding:3px 8px; color:#6d6;">dual</td>
+          <td style="padding:3px 8px;">10.1.11.154</td>
+          <td style="padding:3px 8px; opacity:0.7;">::154</td>
+          <td style="padding:3px 8px; opacity:0.7;">0c:c4:7a:f4:10:e4</td>
+          <td style="padding:3px 8px; text-align:right;">0.1</td>
+          <td style="padding:3px 8px;"></td>
+          <td style="padding:3px 8px;"></td>
+        </tr>
+        <tr>
+          <td style="padding:3px 8px;">🟢</td>
+          <td style="padding:3px 8px;"></td>
+          <td style="padding:3px 8px;">25g1</td>
+          <td style="padding:3px 8px; color:#6d6;">dual</td>
+          <td style="padding:3px 8px;">10.1.7.15</td>
+          <td style="padding:3px 8px; opacity:0.7;">::15</td>
+          <td style="padding:3px 8px; opacity:0.7;">0c:c4:7a:d6:6d:b6</td>
+          <td style="padding:3px 8px; text-align:right;">0.1</td>
+          <td style="padding:3px 8px;"></td>
+          <td style="padding:3px 8px;"></td>
+        </tr>
+        <tr>
+          <td style="padding:3px 8px;">🔴</td>
+          <td style="padding:3px 8px;"></td>
+          <td style="padding:3px 8px;">100g_top</td>
+          <td style="padding:3px 8px; color:#d66;">down</td>
+          <td style="padding:3px 8px; opacity:0.5;">10.1.11.158</td>
+          <td style="padding:3px 8px; opacity:0.5;">::158</td>
+          <td style="padding:3px 8px; opacity:0.5;">00:07:43:39:8f:48</td>
+          <td style="padding:3px 8px; text-align:right; opacity:0.5;">—</td>
+          <td style="padding:3px 8px;"></td>
+          <td style="padding:3px 8px;"></td>
+        </tr>
+        <!-- bmc.big-storage -->
+        <tr style="border-top:1px solid #444;">
+          <td style="padding:3px 8px;">🟢</td>
+          <td style="padding:3px 8px; font-weight:bold;">bmc.big-storage</td>
+          <td style="padding:3px 8px;">default</td>
+          <td style="padding:3px 8px; color:#6d6;">dual</td>
+          <td style="padding:3px 8px;">10.1.5.150</td>
+          <td style="padding:3px 8px; opacity:0.7;">::150</td>
+          <td style="padding:3px 8px; opacity:0.7;">ac:1f:6b:aa:50:53</td>
+          <td style="padding:3px 8px; text-align:right;">0.3</td>
+          <td style="padding:3px 8px;">Back Shed</td>
+          <td style="padding:3px 8px;"></td>
+        </tr>
+        <!-- desktop: offline, controlled by plug -->
+        <tr style="border-top:1px solid #444; opacity:0.5;">
+          <td style="padding:3px 8px;">🔴</td>
+          <td style="padding:3px 8px; font-weight:bold;">desktop</td>
+          <td style="padding:3px 8px;">default</td>
+          <td style="padding:3px 8px; color:#d66;">down</td>
+          <td style="padding:3px 8px;">10.1.11.124</td>
+          <td style="padding:3px 8px;">::124</td>
+          <td style="padding:3px 8px;">40:a8:f0:46:f2:cf</td>
+          <td style="padding:3px 8px; text-align:right;">—</td>
+          <td style="padding:3px 8px;">Office</td>
+          <td style="padding:3px 8px;">au-plug-20</td>
+        </tr>
+        <!-- sw-netgear: unavailable (plug off) -->
+        <tr style="border-top:1px solid #444; opacity:0.35;">
+          <td style="padding:3px 8px;">⚫</td>
+          <td style="padding:3px 8px; font-weight:bold;">sw-netgear-s3300-1</td>
+          <td style="padding:3px 8px;">default</td>
+          <td style="padding:3px 8px;">—</td>
+          <td style="padding:3px 8px;">10.1.5.25</td>
+          <td style="padding:3px 8px;">::25</td>
+          <td style="padding:3px 8px;">bc:a5:11:b8:ec:f1</td>
+          <td style="padding:3px 8px; text-align:right;">—</td>
+          <td style="padding:3px 8px;">Shed Rack</td>
+          <td style="padding:3px 8px;">au-plug-26</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div style="margin-top:24px;">
+  <h3>Design summary</h3>
+  <ul>
+    <li><strong>Clickable sort headers:</strong> "Host ▾" (gold = active sort), "St", "Stack", "RTT" (blue = clickable). Each links to a pre-sorted view.</li>
+    <li><strong>3 views generated:</strong> by-name (default), by-status (online first), by-rtt (fastest first). Same tables, different row order.</li>
+    <li><strong>IPv6 suffix:</strong> common prefix shown in card header, only suffix (::NNN) in cells</li>
+    <li><strong>Visual hierarchy:</strong> Online rows at full opacity, offline at 0.5, unavailable at 0.35</li>
+    <li><strong>One card per network:</strong> net (41 hosts), int (5), iot (82), roam (20), pwr (3), etc.</li>
+    <li><strong>Controls column:</strong> which Tasmota plug powers this device</li>
+  </ul>
+</div>

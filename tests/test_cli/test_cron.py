@@ -251,13 +251,13 @@ class TestGenerateCronEntries:
         assert [e for e in entries if "zigbee" in e.command] == []
 
     def test_zigbee_schedule_when_configured(self):
-        """zigbee scan should run daily at 02:15 where sites are configured."""
+        """zigbee scan should run hourly where sites are configured."""
         from gdoc2netcfg.cli.cron import generate_cron_entries
 
         entries = generate_cron_entries(zigbee=True)
         zigbee = [e for e in entries if e.lock_name == "zigbee"]
         assert len(zigbee) == 1
-        assert zigbee[0].schedule == "15 2 * * *"
+        assert zigbee[0].schedule == "15 * * * *"
         assert zigbee[0].command == "gdoc2netcfg zigbee scan"
 
     def test_zigbee_configured_reads_toml(self, tmp_path):

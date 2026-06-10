@@ -78,7 +78,7 @@ def generate_cron_entries(*, zigbee: bool = False) -> list[CronEntry]:
     intentionally NOT here — it is handled by the ``gdoc2netcfg-reachability``
     systemd daemon (every 5 minutes), which also publishes to MQTT.
 
-    *zigbee* adds the daily zigbee scan — only the machine whose config
+    *zigbee* adds the hourly zigbee scan — only the machine whose config
     has ``[[zigbee.sites]]`` entries can run it (welland scans both
     sites' MQTT brokers cross-site; monarto has none configured).
 
@@ -121,7 +121,7 @@ def generate_cron_entries(*, zigbee: bool = False) -> list[CronEntry]:
             lock_name="tasmota",
             comment="Scan IoT VLAN for Tasmota devices",
         ),
-        # Daily 02:15: zigbee — appended below when configured
+        # Hourly at :15: zigbee — appended below when configured
         # Daily 03:00: snmp-host
         CronEntry(
             schedule="0 3 * * *",
@@ -146,7 +146,7 @@ def generate_cron_entries(*, zigbee: bool = False) -> list[CronEntry]:
     ]
     if zigbee:
         entries.append(CronEntry(
-            schedule="15 2 * * *",
+            schedule="15 * * * *",
             command="gdoc2netcfg zigbee scan",
             lock_name="zigbee",
             comment="Scan Zigbee2MQTT sites for device data",

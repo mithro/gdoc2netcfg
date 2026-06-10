@@ -1,10 +1,7 @@
 """Tests for the CLI entry point."""
 
 import argparse
-import json
-import os
 import textwrap
-import time
 from unittest.mock import patch
 
 import pytest
@@ -301,20 +298,21 @@ def _make_config_with_csv(tmp_path):
 
 class TestReachabilityCache:
     @patch("gdoc2netcfg.supplements.reachability.check_reachable")
-    def test_reachability_creates_cache_file(self, mock_ping, tmp_path, capsys):
-        """Running reachability should create .cache/reachability.json."""
+    def test_reachability_saves_to_db_only(self, mock_ping, tmp_path, capsys):
+        """The scan is saved to discovery.db; no flat reachability.json."""
         mock_ping.return_value = PingResult(10, 10, 0.5)
         config, cache_dir = _make_config_with_csv(tmp_path)
 
         result = main(["-c", str(config), "reachability"])
 
         assert result == 0
-        cache_file = cache_dir / "reachability.json"
-        assert cache_file.exists()
-        data = json.loads(cache_file.read_text())
-        assert data["version"] == 2
-        assert "desktop" in data["hosts"]
-        ifaces = data["hosts"]["desktop"]["interfaces"]
+        assert not (cache_dir / "reachability.json").exists()
+
+        from gdoc2netcfg.storage.discovery_db import DiscoveryDB
+        with DiscoveryDB(cache_dir / "discovery.db", read_only=True) as db:
+            data = db.load_latest_reachability()
+        assert "desktop" in data
+        ifaces = data["desktop"]["interfaces"]
         # Single interface with IPv4 + IPv6 pings
         assert len(ifaces) == 1
         ips = [p["ip"] for p in ifaces[0]]
@@ -355,23 +353,22 @@ class TestReachabilityCache:
 
     @patch("gdoc2netcfg.supplements.reachability.check_reachable")
     def test_stale_cache_triggers_rescan(self, mock_ping, tmp_path, capsys):
-        """Expired cache should trigger a fresh scan."""
+        """An expired DB scan should trigger a fresh scan."""
         mock_ping.return_value = PingResult(10, 10, 0.5)
         config, cache_dir = _make_config_with_csv(tmp_path)
 
-        # First run — creates cache
+        # First run — saves a scan to discovery.db
         main(["-c", str(config), "reachability"])
         first_call_count = mock_ping.call_count
 
-        # Backdate the cache file and remove the DB (which has a fresh scan)
-        cache_file = cache_dir / "reachability.json"
-        old_time = time.time() - 600
-        os.utime(cache_file, (old_time, old_time))
-        db_file = cache_dir / "discovery.db"
-        if db_file.exists():
-            db_file.unlink()
+        # Backdate the scan so latest_scan_age exceeds the 5-min window
+        import sqlite3
+        from datetime import UTC, datetime, timedelta
+        old = (datetime.now(UTC) - timedelta(seconds=600)).isoformat()
+        with sqlite3.connect(cache_dir / "discovery.db") as conn:
+            conn.execute("UPDATE scans SET finished_at = ?", (old,))
 
-        # Second run — cache is stale, should re-ping
+        # Second run — scan is stale, should re-ping
         main(["-c", str(config), "reachability"])
 
         assert mock_ping.call_count > first_call_count

@@ -590,22 +590,17 @@ def _load_or_run_reachability(
     Per-host status is always printed to stderr — either progressively
     during the live scan or from cached data after loading.
 
-    Tries DiscoveryDB first (if available), then flat-file cache.
-    On fresh scan, saves to both DB and flat file.
+    The DiscoveryDB is the sole cache: a fresh scan there (<5 min) is
+    reused; otherwise a live scan runs and is saved to the DB.
     """
     from gdoc2netcfg.storage.discovery_db import DiscoveryDB
     from gdoc2netcfg.supplements.reachability import (
         check_all_hosts_reachability,
-        load_reachability_cache,
         parse_reachability_dict,
         print_reachability_status,
-        save_reachability_cache,
     )
 
-    cache_path = Path(config.cache.directory) / "reachability.json"
-
     if not force:
-        # Try DB first for cached data
         db_path = config.cache.discovery_db_path
         if db_path.exists():
             with DiscoveryDB(db_path) as db:
@@ -621,24 +616,9 @@ def _load_or_run_reachability(
                         print_reachability_status(cached)
                         return cached
 
-        # Fall back to flat file
-        result = load_reachability_cache(cache_path)
-        if result is not None:
-            cached, age = result
-            print(
-                f"Using cached reachability ({age:.0f}s old).",
-                file=sys.stderr,
-            )
-            print_reachability_status(cached)
-            return cached
-
     print("Checking host reachability...", file=sys.stderr)
     reachability = check_all_hosts_reachability(hosts, verbose=True)
 
-    # Save to flat file (existing behaviour)
-    save_reachability_cache(cache_path, reachability)
-
-    # Save to DiscoveryDB (using the shared helper)
     _save_to_discovery_db(
         config, "reachability", "save_reachability", reachability,
     )
@@ -2336,7 +2316,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     reach_parser.add_argument(
         "--force", action="store_true",
-        help="Force re-ping even if .cache/reachability.json is <5 min old",
+        help="Force re-ping even if the cached reachability scan is <5 min old",
     )
     reach_subparsers = reach_parser.add_subparsers(dest="reach_command")
 
@@ -2345,7 +2325,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     reach_scan_parser.add_argument(
         "--force", action="store_true",
-        help="Force re-ping even if .cache/reachability.json is <5 min old",
+        help="Force re-ping even if the cached reachability scan is <5 min old",
     )
 
     reach_publish_parser = reach_subparsers.add_parser(

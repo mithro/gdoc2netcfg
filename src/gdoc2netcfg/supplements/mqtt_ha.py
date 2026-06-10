@@ -20,7 +20,6 @@ import signal
 import sys
 import threading
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import paho.mqtt.client as mqtt
@@ -802,13 +801,12 @@ def run_daemon(
     """Run as a daemon: scan reachability and publish to MQTT in a loop.
 
     Handles SIGTERM and SIGINT for clean shutdown.
-    Saves reachability.json cache on each cycle so CLI tools share data.
+    Saves each cycle's scan to the DiscoveryDB so CLI tools share data.
 
     Assumes the caller has already validated that mqtt_host is configured.
     """
     from gdoc2netcfg.supplements.reachability import (
         check_all_hosts_reachability,
-        save_reachability_cache,
     )
 
     stop_event = threading.Event()
@@ -846,8 +844,6 @@ def run_daemon(
     client.loop_start()
 
     try:
-        cache_path = Path(config.cache.directory) / "reachability.json"
-
         hosts = None
         cycle = 0
         while not stop_event.is_set():
@@ -866,9 +862,6 @@ def run_daemon(
             reachability = check_all_hosts_reachability(
                 hosts, verbose=verbose,
             )
-
-            # Save cache for CLI tools (flat file)
-            save_reachability_cache(cache_path, reachability)
 
             # Save to DiscoveryDB (delta-based historical storage)
             from gdoc2netcfg.storage.discovery_db import DiscoveryDB

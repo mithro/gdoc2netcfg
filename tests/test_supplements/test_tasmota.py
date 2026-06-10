@@ -639,12 +639,10 @@ class TestScanTasmota:
 
         from gdoc2netcfg.supplements.tasmota import scan_tasmota
 
-        cache_path = tmp_path / "tasmota.json"
-        result = scan_tasmota([host], cache_path, site, force=True)
+        result = scan_tasmota([host], {}, site)
 
         assert "au-plug-10" in result
         assert result["au-plug-10"]["device_name"] == "au-plug-10"
-        assert cache_path.exists()
 
     @patch("gdoc2netcfg.supplements.tasmota._scan_subnet")
     @patch("gdoc2netcfg.supplements.tasmota._fetch_tasmota_status")
@@ -670,8 +668,7 @@ class TestScanTasmota:
 
         from gdoc2netcfg.supplements.tasmota import scan_tasmota
 
-        cache_path = tmp_path / "tasmota.json"
-        result = scan_tasmota([host], cache_path, site, force=True)
+        result = scan_tasmota([host], {}, site)
 
         assert "_unknown/10.1.90.50" in result
         assert result["_unknown/10.1.90.50"]["device_name"] == "rogue"
@@ -698,30 +695,10 @@ class TestScanTasmota:
 
         from gdoc2netcfg.supplements.tasmota import scan_tasmota
 
-        cache_path = tmp_path / "tasmota.json"
-        result = scan_tasmota([host], cache_path, site, force=True)
+        result = scan_tasmota([host], {}, site)
 
         assert "au-plug-10" in result
         assert "_unknown/10.1.90.10" not in result
-
-    @patch("gdoc2netcfg.supplements.tasmota._scan_subnet")
-    @patch("gdoc2netcfg.supplements.tasmota._fetch_tasmota_status")
-    def test_scan_uses_cache_when_fresh(self, mock_fetch, mock_sweep, tmp_path):
-        from gdoc2netcfg.models.network import Site
-        from gdoc2netcfg.supplements.tasmota import save_tasmota_cache, scan_tasmota
-
-        # Pre-populate cache
-        cache_path = tmp_path / "tasmota.json"
-        existing = {"old-plug": {"device_name": "old"}}
-        save_tasmota_cache(cache_path, existing)
-
-        site = Site(name="welland", domain="welland.mithis.com", site_octet=1)
-        result = scan_tasmota([], cache_path, site, force=False, max_age=9999)
-
-        # Should return cached data without scanning
-        assert result == existing
-        mock_fetch.assert_not_called()
-        mock_sweep.assert_not_called()
 
     @patch("gdoc2netcfg.supplements.tasmota._scan_subnet")
     @patch("gdoc2netcfg.supplements.tasmota._fetch_tasmota_status")
@@ -740,25 +717,23 @@ class TestScanTasmota:
 
         from gdoc2netcfg.supplements.tasmota import scan_tasmota
 
-        cache_path = tmp_path / "tasmota.json"
-        scan_tasmota([host], cache_path, site, force=True)
+        scan_tasmota([host], {}, site)
 
         # Network host should not be probed
         mock_fetch.assert_not_called()
 
     @patch("gdoc2netcfg.supplements.tasmota._scan_subnet")
     @patch("gdoc2netcfg.supplements.tasmota._fetch_tasmota_status")
-    def test_force_clears_stale_unknowns(self, mock_fetch, mock_sweep, tmp_path):
-        """Forced rescan should clear stale _unknown/ entries before re-sweeping."""
+    def test_scan_clears_stale_unknowns(self, mock_fetch, mock_sweep):
+        """A rescan clears stale _unknown/ baseline entries before re-sweeping."""
         from gdoc2netcfg.models.network import VLAN, Site
-        from gdoc2netcfg.supplements.tasmota import save_tasmota_cache, scan_tasmota
+        from gdoc2netcfg.supplements.tasmota import scan_tasmota
 
-        # Pre-populate cache with a stale _unknown entry
-        cache_path = tmp_path / "tasmota.json"
-        save_tasmota_cache(cache_path, {
+        # Baseline holds a stale _unknown entry from a previous scan
+        baseline = {
             "known-plug": {"device_name": "known"},
             "_unknown/10.1.90.99": {"device_name": "stale-rogue", "ip": "10.1.90.99"},
-        })
+        }
 
         mock_fetch.return_value = None
         mock_sweep.return_value = {}  # Sweep finds nothing
@@ -770,11 +745,13 @@ class TestScanTasmota:
             vlans={90: VLAN(id=90, name="iot", subdomain="iot")},
         )
 
-        result = scan_tasmota([], cache_path, site, force=True)
+        result = scan_tasmota([], baseline, site)
 
         # Known entries preserved, stale _unknown/ cleared
         assert "known-plug" in result
         assert "_unknown/10.1.90.99" not in result
+        # The input baseline is not mutated.
+        assert "_unknown/10.1.90.99" in baseline
 
     @patch("gdoc2netcfg.supplements.tasmota._scan_subnet")
     @patch("gdoc2netcfg.supplements.tasmota._fetch_tasmota_status")
@@ -789,8 +766,7 @@ class TestScanTasmota:
 
         from gdoc2netcfg.supplements.tasmota import scan_tasmota
 
-        cache_path = tmp_path / "tasmota.json"
-        scan_tasmota([host], cache_path, site, force=True)
+        scan_tasmota([host], {}, site)
 
         mock_sweep.assert_not_called()
 

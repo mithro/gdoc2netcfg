@@ -1,6 +1,5 @@
 """Tests for the BMC firmware supplement."""
 
-import json
 from unittest.mock import patch
 
 from gdoc2netcfg.derivations.hardware import (
@@ -343,9 +342,8 @@ class TestScanBMCFirmware:
             ),
         }
         host = _make_host()
-        cache_path = tmp_path / "bmc_firmware.json"
         result = scan_bmc_firmware(
-            [host], cache_path, force=True, reachability=reachability,
+            [host], {}, reachability=reachability,
         )
 
         assert "bmc.server" in result
@@ -367,9 +365,8 @@ class TestScanBMCFirmware:
             ),
         }
         host = _make_host()
-        cache_path = tmp_path / "bmc_firmware.json"
         result = scan_bmc_firmware(
-            [host], cache_path, force=True, reachability=reachability,
+            [host], {}, reachability=reachability,
         )
 
         assert result["bmc.server"]["series"] == 9
@@ -378,8 +375,7 @@ class TestScanBMCFirmware:
     @patch("gdoc2netcfg.supplements.bmc_firmware._try_ipmi_credentials")
     def test_scan_skips_non_bmc_hosts(self, mock_try, tmp_path):
         host = _make_host(hardware_type="netgear-switch")
-        cache_path = tmp_path / "bmc_firmware.json"
-        result = scan_bmc_firmware([host], cache_path, force=True)
+        result = scan_bmc_firmware([host], {})
 
         assert result == {}
         mock_try.assert_not_called()
@@ -390,9 +386,8 @@ class TestScanBMCFirmware:
             "bmc.server": HostReachability(hostname="bmc.server", active_ips=()),
         }
         host = _make_host()
-        cache_path = tmp_path / "bmc_firmware.json"
         result = scan_bmc_firmware(
-            [host], cache_path, force=True, reachability=reachability,
+            [host], {}, reachability=reachability,
         )
 
         assert result == {}
@@ -411,36 +406,16 @@ class TestScanBMCFirmware:
             ),
         }
         host = _make_host()
-        cache_path = tmp_path / "bmc_firmware.json"
         scan_bmc_firmware(
-            [host], cache_path, force=True, reachability=reachability,
+            [host], {}, reachability=reachability,
         )
 
         call_args = mock_try.call_args
         assert call_args[0][0] == "10.1.5.10"
 
     @patch("gdoc2netcfg.supplements.bmc_firmware._try_ipmi_credentials")
-    def test_scan_uses_cache_when_fresh(self, mock_try, tmp_path):
-        cache_path = tmp_path / "bmc_firmware.json"
-        existing = {
-            "bmc.server": {
-                "product_name": "X11SPM-T(P)F",
-                "firmware_revision": "1.74",
-                "ipmi_version": "2.0",
-                "series": 11,
-                "snmp_capable": True,
-            }
-        }
-        save_bmc_firmware_cache(cache_path, existing)
-
-        host = _make_host()
-        result = scan_bmc_firmware([host], cache_path, force=False, max_age=9999)
-
-        assert result == existing
-        mock_try.assert_not_called()
-
-    @patch("gdoc2netcfg.supplements.bmc_firmware._try_ipmi_credentials")
-    def test_scan_saves_cache(self, mock_try, tmp_path):
+    def test_scan_merges_baseline(self, mock_try):
+        """Fresh results merge over the baseline; unscanned hosts persist."""
         mock_try.return_value = {
             "Product Name": "X11SPM-T(P)F",
             "Firmware Revision": "1.74",
@@ -452,14 +427,16 @@ class TestScanBMCFirmware:
             ),
         }
         host = _make_host()
-        cache_path = tmp_path / "bmc_firmware.json"
-        scan_bmc_firmware(
-            [host], cache_path, force=True, reachability=reachability,
+        baseline = {"bmc.other": {"product_name": "X9", "series": 9}}
+
+        result = scan_bmc_firmware(
+            [host], baseline, reachability=reachability,
         )
 
-        assert cache_path.exists()
-        loaded = json.loads(cache_path.read_text())
-        assert "bmc.server" in loaded
+        assert "bmc.server" in result
+        assert result["bmc.other"] == {"product_name": "X9", "series": 9}
+        # The input baseline is not mutated.
+        assert "bmc.server" not in baseline
 
     @patch("gdoc2netcfg.supplements.bmc_firmware._try_ipmi_credentials")
     def test_scan_no_ipmi_response(self, mock_try, tmp_path):
@@ -470,9 +447,8 @@ class TestScanBMCFirmware:
             ),
         }
         host = _make_host()
-        cache_path = tmp_path / "bmc_firmware.json"
         result = scan_bmc_firmware(
-            [host], cache_path, force=True, reachability=reachability,
+            [host], {}, reachability=reachability,
         )
 
         assert "bmc.server" not in result
@@ -493,9 +469,8 @@ class TestScanBMCFirmwareMultiIP:
             ),
         }
         host = _make_host()
-        cache_path = tmp_path / "bmc_firmware.json"
         result = scan_bmc_firmware(
-            [host], cache_path, force=True, reachability=reachability,
+            [host], {}, reachability=reachability,
         )
 
         assert "bmc.server" in result
@@ -517,9 +492,8 @@ class TestScanBMCFirmwareMultiIP:
             ),
         }
         host = _make_host()
-        cache_path = tmp_path / "bmc_firmware.json"
         scan_bmc_firmware(
-            [host], cache_path, force=True, reachability=reachability,
+            [host], {}, reachability=reachability,
         )
 
         # Should only try first IP since it succeeded

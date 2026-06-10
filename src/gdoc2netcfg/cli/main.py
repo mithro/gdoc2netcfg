@@ -902,19 +902,21 @@ def cmd_ssl_certs(args: argparse.Namespace) -> int:
     reachability = _load_or_run_reachability(config, hosts, force=args.force)
     _print_reachability_summary(reachability, hosts)
 
-    cache_path = Path(config.cache.directory) / "ssl_certs.json"
-    cert_data = scan_ssl_certs(
-        hosts,
-        cache_path=cache_path,
-        force=args.force,
-        verbose=True,
-        reachability=reachability,
-    )
+    age = None if args.force else _fresh_scan_age(config, "ssl_certs")
+    if age is not None:
+        print(f"Using cached ssl_certs scan ({age:.0f}s old).", file=sys.stderr)
+        cert_data = _load_latest_from_db(config, "load_latest_ssl_certs") or {}
+    else:
+        cert_data = scan_ssl_certs(
+            hosts,
+            _load_latest_from_db(config, "load_latest_ssl_certs"),
+            verbose=True,
+            reachability=reachability,
+        )
+        if cert_data:
+            _save_to_discovery_db(config, "ssl_certs", "save_ssl_certs", cert_data)
 
     enrich_hosts_with_ssl_certs(hosts, cert_data)
-
-    if cert_data:
-        _save_to_discovery_db(config, "ssl_certs", "save_ssl_certs", cert_data)
 
     # Report scan results
     hosts_with_cert = sum(1 for h in hosts if h.ssl_cert_info is not None)
@@ -966,37 +968,41 @@ def cmd_snmp_host(args: argparse.Namespace) -> int:
     _print_reachability_summary(reachability, hosts)
 
     # Scan BMC firmware and reclassify legacy BMCs before SNMP
-    bmc_fw_cache = Path(config.cache.directory) / "bmc_firmware.json"
-    print("\nScanning BMC firmware...", file=sys.stderr)
-    bmc_fw_data = scan_bmc_firmware(
-        hosts,
-        cache_path=bmc_fw_cache,
-        force=args.force,
-        verbose=True,
-        reachability=reachability,
-    )
+    age = None if args.force else _fresh_scan_age(config, "bmc_firmware")
+    if age is not None:
+        print(f"Using cached bmc_firmware scan ({age:.0f}s old).", file=sys.stderr)
+        bmc_fw_data = _load_latest_from_db(config, "load_latest_bmc_firmware") or {}
+    else:
+        print("\nScanning BMC firmware...", file=sys.stderr)
+        bmc_fw_data = scan_bmc_firmware(
+            hosts,
+            _load_latest_from_db(config, "load_latest_bmc_firmware"),
+            verbose=True,
+            reachability=reachability,
+        )
+        if bmc_fw_data:
+            _save_to_discovery_db(
+                config, "bmc_firmware", "save_bmc_firmware", bmc_fw_data,
+            )
     enrich_hosts_with_bmc_firmware(hosts, bmc_fw_data)
     refine_bmc_hardware_type(hosts)
 
-    if bmc_fw_data:
-        _save_to_discovery_db(
-            config, "bmc_firmware", "save_bmc_firmware", bmc_fw_data,
+    age = None if args.force else _fresh_scan_age(config, "snmp")
+    if age is not None:
+        print(f"Using cached snmp scan ({age:.0f}s old).", file=sys.stderr)
+        snmp_data = _load_latest_from_db(config, "load_latest_snmp") or {}
+    else:
+        print("\nScanning SNMP...", file=sys.stderr)
+        snmp_data = scan_snmp(
+            hosts,
+            _load_latest_from_db(config, "load_latest_snmp"),
+            verbose=True,
+            reachability=reachability,
         )
-
-    cache_path = Path(config.cache.directory) / "snmp.json"
-    print("\nScanning SNMP...", file=sys.stderr)
-    snmp_data = scan_snmp(
-        hosts,
-        cache_path=cache_path,
-        force=args.force,
-        verbose=True,
-        reachability=reachability,
-    )
+        if snmp_data:
+            _save_to_discovery_db(config, "snmp", "save_snmp", snmp_data)
 
     enrich_hosts_with_snmp(hosts, snmp_data)
-
-    if snmp_data:
-        _save_to_discovery_db(config, "snmp", "save_snmp", snmp_data)
 
     # Run validation
     validation_result = validate_snmp_availability(hosts, reachability)
@@ -1049,24 +1055,26 @@ def cmd_bmc_firmware(args: argparse.Namespace) -> int:
     _print_reachability_summary(reachability, hosts)
 
     # Scan BMC firmware
-    cache_path = Path(config.cache.directory) / "bmc_firmware.json"
-    print("\nScanning BMC firmware...", file=sys.stderr)
-    fw_data = scan_bmc_firmware(
-        hosts,
-        cache_path=cache_path,
-        force=args.force,
-        verbose=True,
-        reachability=reachability,
-    )
+    age = None if args.force else _fresh_scan_age(config, "bmc_firmware")
+    if age is not None:
+        print(f"Using cached bmc_firmware scan ({age:.0f}s old).", file=sys.stderr)
+        fw_data = _load_latest_from_db(config, "load_latest_bmc_firmware") or {}
+    else:
+        print("\nScanning BMC firmware...", file=sys.stderr)
+        fw_data = scan_bmc_firmware(
+            hosts,
+            _load_latest_from_db(config, "load_latest_bmc_firmware"),
+            verbose=True,
+            reachability=reachability,
+        )
+        if fw_data:
+            _save_to_discovery_db(
+                config, "bmc_firmware", "save_bmc_firmware", fw_data,
+            )
 
     # Enrich and refine
     enrich_hosts_with_bmc_firmware(hosts, fw_data)
     refine_bmc_hardware_type(hosts)
-
-    if fw_data:
-        _save_to_discovery_db(
-            config, "bmc_firmware", "save_bmc_firmware", fw_data,
-        )
 
     # Report
     bmcs_total = sum(
@@ -1115,20 +1123,22 @@ def cmd_snmp_switch(args: argparse.Namespace) -> int:
     reachability = _load_or_run_reachability(config, hosts, force=args.force)
     _print_reachability_summary(reachability, hosts)
 
-    cache_path = Path(config.cache.directory) / "bridge.json"
-    print("\nScanning bridge data...", file=sys.stderr)
-    bridge_data = scan_bridge(
-        hosts,
-        cache_path=cache_path,
-        force=args.force,
-        verbose=True,
-        reachability=reachability,
-    )
+    age = None if args.force else _fresh_scan_age(config, "bridge")
+    if age is not None:
+        print(f"Using cached bridge scan ({age:.0f}s old).", file=sys.stderr)
+        bridge_data = _load_latest_from_db(config, "load_latest_bridge") or {}
+    else:
+        print("\nScanning bridge data...", file=sys.stderr)
+        bridge_data = scan_bridge(
+            hosts,
+            _load_latest_from_db(config, "load_latest_bridge"),
+            verbose=True,
+            reachability=reachability,
+        )
+        if bridge_data:
+            _save_to_discovery_db(config, "bridge", "save_bridge", bridge_data)
 
     enrich_hosts_with_bridge_data(hosts, bridge_data)
-
-    if bridge_data:
-        _save_to_discovery_db(config, "bridge", "save_bridge", bridge_data)
 
     # Run bridge validations
     from gdoc2netcfg.constraints.bridge_validation import (
@@ -1209,33 +1219,37 @@ def cmd_bridge_scan(args: argparse.Namespace) -> int:
     _print_reachability_summary(reachability, hosts)
 
     # SNMP bridge scan
-    bridge_cache = Path(config.cache.directory) / "bridge.json"
-    print("\nScanning bridge data via SNMP...", file=sys.stderr)
-    bridge_data = scan_bridge(
-        hosts,
-        cache_path=bridge_cache,
-        force=args.force,
-        verbose=True,
-        reachability=reachability,
-    )
+    age = None if args.force else _fresh_scan_age(config, "bridge")
+    if age is not None:
+        print(f"Using cached bridge scan ({age:.0f}s old).", file=sys.stderr)
+        bridge_data = _load_latest_from_db(config, "load_latest_bridge") or {}
+    else:
+        print("\nScanning bridge data via SNMP...", file=sys.stderr)
+        bridge_data = scan_bridge(
+            hosts,
+            _load_latest_from_db(config, "load_latest_bridge"),
+            verbose=True,
+            reachability=reachability,
+        )
+        if bridge_data:
+            _save_to_discovery_db(config, "bridge", "save_bridge", bridge_data)
     enrich_hosts_with_bridge_data(hosts, bridge_data)
 
-    if bridge_data:
-        _save_to_discovery_db(config, "bridge", "save_bridge", bridge_data)
-
     # NSDP scan
-    nsdp_cache = Path(config.cache.directory) / "nsdp.json"
-    print("\nScanning switches via NSDP...", file=sys.stderr)
-    nsdp_data = scan_nsdp(
-        hosts,
-        cache_path=nsdp_cache,
-        force=args.force,
-        verbose=True,
-    )
+    age = None if args.force else _fresh_scan_age(config, "nsdp")
+    if age is not None:
+        print(f"Using cached nsdp scan ({age:.0f}s old).", file=sys.stderr)
+        nsdp_data = _load_latest_from_db(config, "load_latest_nsdp") or {}
+    else:
+        print("\nScanning switches via NSDP...", file=sys.stderr)
+        nsdp_data = scan_nsdp(
+            hosts,
+            _load_latest_from_db(config, "load_latest_nsdp"),
+            verbose=True,
+        )
+        if nsdp_data:
+            _save_to_discovery_db(config, "nsdp", "save_nsdp", nsdp_data)
     enrich_hosts_with_nsdp(hosts, nsdp_data)
-
-    if nsdp_data:
-        _save_to_discovery_db(config, "nsdp", "save_nsdp", nsdp_data)
 
     # Run bridge validations
     inventory = build_inventory(hosts, config.site)
@@ -1583,18 +1597,20 @@ def cmd_nsdp_scan(args: argparse.Namespace) -> int:
 
     hosts = build_hosts(all_records, config.site)
 
-    cache_path = Path(config.cache.directory) / "nsdp.json"
-    nsdp_data = scan_nsdp(
-        hosts,
-        cache_path=cache_path,
-        force=args.force,
-        verbose=True,
-    )
+    age = None if args.force else _fresh_scan_age(config, "nsdp")
+    if age is not None:
+        print(f"Using cached nsdp scan ({age:.0f}s old).", file=sys.stderr)
+        nsdp_data = _load_latest_from_db(config, "load_latest_nsdp") or {}
+    else:
+        nsdp_data = scan_nsdp(
+            hosts,
+            _load_latest_from_db(config, "load_latest_nsdp"),
+            verbose=True,
+        )
+        if nsdp_data:
+            _save_to_discovery_db(config, "nsdp", "save_nsdp", nsdp_data)
 
     enrich_hosts_with_nsdp(hosts, nsdp_data)
-
-    if nsdp_data:
-        _save_to_discovery_db(config, "nsdp", "save_nsdp", nsdp_data)
 
     # Report - count only Netgear switches
     netgear_hosts = [h for h in hosts if h.hardware_type in NSDP_HARDWARE_TYPES]
@@ -1700,21 +1716,23 @@ def cmd_tasmota_scan(args: argparse.Namespace) -> int:
 
     hosts = build_hosts(all_records, config.site)
 
-    cache_path = Path(config.cache.directory) / "tasmota.json"
-    tasmota_data = scan_tasmota(
-        hosts,
-        cache_path=cache_path,
-        site=config.site,
-        force=args.force,
-        verbose=True,
-    )
+    age = None if args.force else _fresh_scan_age(config, "tasmota")
+    if age is not None:
+        print(f"Using cached tasmota scan ({age:.0f}s old).", file=sys.stderr)
+        tasmota_data = _load_latest_from_db(config, "load_latest_tasmota") or {}
+    else:
+        tasmota_data = scan_tasmota(
+            hosts,
+            _load_latest_from_db(config, "load_latest_tasmota"),
+            site=config.site,
+            verbose=True,
+        )
+        if tasmota_data:
+            _save_to_discovery_db(
+                config, "tasmota", "save_tasmota", tasmota_data,
+            )
 
     enrich_hosts_with_tasmota(hosts, tasmota_data)
-
-    if tasmota_data:
-        _save_to_discovery_db(
-            config, "tasmota", "save_tasmota", tasmota_data,
-        )
 
     # Report
     iot_hosts = [h for h in hosts if h.sheet_type == "IoT"]

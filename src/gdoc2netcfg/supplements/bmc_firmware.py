@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -151,9 +150,8 @@ def save_bmc_firmware_cache(cache_path: Path, data: dict[str, dict]) -> None:
 
 def scan_bmc_firmware(
     hosts: list[Host],
-    cache_path: Path,
-    force: bool = False,
-    max_age: float = 300,
+    baseline: dict[str, dict] | None,
+    *,
     verbose: bool = False,
     reachability: dict[str, HostReachability] | None = None,
 ) -> dict[str, dict]:
@@ -163,9 +161,8 @@ def scan_bmc_firmware(
 
     Args:
         hosts: Host objects with hardware_type set.
-        cache_path: Path to bmc_firmware.json cache file.
-        force: Force re-scan even if cache is fresh.
-        max_age: Maximum cache age in seconds (default 5 minutes).
+        baseline: Last-known firmware data (from the DiscoveryDB).  Fresh
+            results are merged over it; the caller persists the result.
         verbose: Print progress to stderr.
         reachability: Pre-computed reachability data from the
             reachability pass. Only reachable hosts are scanned.
@@ -175,18 +172,7 @@ def scan_bmc_firmware(
     """
     import sys
 
-    fw_data = load_bmc_firmware_cache(cache_path)
-
-    # Check if cache is fresh enough
-    if not force and cache_path.exists():
-        age = time.time() - cache_path.stat().st_mtime
-        if age < max_age:
-            if verbose:
-                print(
-                    f"bmc_firmware.json last updated {age:.0f}s ago, using cache.",
-                    file=sys.stderr,
-                )
-            return fw_data
+    fw_data = dict(baseline or {})
 
     sorted_hosts = sorted(hosts, key=lambda h: h.hostname.split(".")[::-1])
     name_width = max((len(h.hostname) for h in sorted_hosts), default=0)
@@ -233,7 +219,6 @@ def scan_bmc_firmware(
             if verbose:
                 print("no-ipmi", file=sys.stderr)
 
-    save_bmc_firmware_cache(cache_path, fw_data)
     return fw_data
 
 

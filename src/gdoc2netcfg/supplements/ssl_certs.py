@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import socket
 import ssl
-import time
 from pathlib import Path
 
 from cryptography import x509
@@ -144,9 +143,8 @@ def save_ssl_cert_cache(cache_path: Path, data: dict[str, dict]) -> None:
 
 def scan_ssl_certs(
     hosts: list[Host],
-    cache_path: Path,
-    force: bool = False,
-    max_age: float = 300,
+    baseline: dict[str, dict] | None,
+    *,
     verbose: bool = False,
     reachability: dict[str, HostReachability] | None = None,
 ) -> dict[str, dict]:
@@ -154,9 +152,8 @@ def scan_ssl_certs(
 
     Args:
         hosts: Host objects with IPs to scan.
-        cache_path: Path to ssl_certs.json cache file.
-        force: Force re-scan even if cache is fresh.
-        max_age: Maximum cache age in seconds (default 5 minutes).
+        baseline: Last-known cert data (from the DiscoveryDB).  Fresh
+            results are merged over it; the caller persists the result.
         verbose: Print progress to stderr.
         reachability: Pre-computed reachability data from the
             reachability pass. Only reachable hosts are scanned.
@@ -166,15 +163,7 @@ def scan_ssl_certs(
     """
     import sys
 
-    certs = load_ssl_cert_cache(cache_path)
-
-    # Check if cache is fresh enough
-    if not force and cache_path.exists():
-        age = time.time() - cache_path.stat().st_mtime
-        if age < max_age:
-            if verbose:
-                print(f"ssl_certs.json last updated {age:.0f}s ago, using cache.", file=sys.stderr)
-            return certs
+    certs = dict(baseline or {})
 
     sorted_hosts = sorted(hosts, key=lambda h: h.hostname.split(".")[::-1])
     name_width = max((len(h.hostname) for h in sorted_hosts), default=0)
@@ -217,7 +206,6 @@ def scan_ssl_certs(
             if verbose:
                 print("fetch-failed", file=sys.stderr)
 
-    save_ssl_cert_cache(cache_path, certs)
     return certs
 
 

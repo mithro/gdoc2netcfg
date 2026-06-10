@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import sys
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -115,9 +114,8 @@ def save_nsdp_cache(cache_path: Path, data: dict[str, dict]) -> None:
 
 def scan_nsdp(
     hosts: list[Host],
-    cache_path: Path,
-    force: bool = False,
-    max_age: float = 300,
+    baseline: dict[str, dict] | None,
+    *,
     verbose: bool = False,
 ) -> dict[str, dict]:
     """Scan Netgear switches via NSDP unicast queries.
@@ -128,23 +126,14 @@ def scan_nsdp(
     Args:
         hosts: Host objects — only those with hardware_type in
             NSDP_HARDWARE_TYPES will be queried.
-        cache_path: Path to nsdp.json cache file.
-        force: Force re-scan even if cache is fresh.
-        max_age: Maximum cache age in seconds (default 5 minutes).
+        baseline: Last-known NSDP data (from the DiscoveryDB).  Fresh
+            results are merged over it; the caller persists the result.
         verbose: Print progress to stderr.
 
     Returns:
         Mapping of hostname to NSDP data dict.
     """
-    nsdp_data = load_nsdp_cache(cache_path)
-
-    # Check if cache is fresh enough
-    if not force and cache_path.exists():
-        age = time.time() - cache_path.stat().st_mtime
-        if age < max_age:
-            if verbose:
-                print(f"nsdp.json last updated {age:.0f}s ago, using cache.", file=sys.stderr)
-            return nsdp_data
+    nsdp_data = dict(baseline or {})
 
     # Build list of (hostname, ip) pairs for switches to query
     switches_to_query: list[tuple[str, str]] = []
@@ -244,7 +233,6 @@ def scan_nsdp(
     except OSError as e:
         print(f"Error during NSDP scan: {e}", file=sys.stderr)
 
-    save_nsdp_cache(cache_path, nsdp_data)
     return nsdp_data
 
 

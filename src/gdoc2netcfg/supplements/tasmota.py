@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import re
 import sys
-import time
 import urllib.error
 import urllib.request
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -156,53 +155,37 @@ def _scan_subnet(
 
 def scan_tasmota(
     hosts: list[Host],
-    cache_path: Path,
+    baseline: dict[str, dict] | None,
     site: Site,
-    force: bool = False,
-    max_age: float = 300,
+    *,
     verbose: bool = False,
 ) -> dict[str, dict]:
     """Scan for Tasmota devices: known hosts + subnet sweep.
 
     Phase 1: Probe known IoT hosts by their spreadsheet IP.
     Phase 2: Sweep the IoT subnet to find unregistered devices.
-    Merge results. Cache to tasmota.json.
+    Merge results; the caller persists them.
 
     Known hosts are keyed by hostname. Unknown devices are keyed
     as "_unknown/{ip}".
 
     Args:
         hosts: All hosts from the pipeline.
-        cache_path: Path to tasmota.json.
+        baseline: Last-known Tasmota data (from the DiscoveryDB).  Fresh
+            results are merged over it.
         site: Site configuration (for subnet computation).
-        force: Force re-scan even if cache is fresh.
-        max_age: Maximum cache age in seconds.
         verbose: Print progress to stderr.
 
     Returns:
         Mapping of hostname (or _unknown/ip) to Tasmota data dict.
     """
-    tasmota_data = load_tasmota_cache(cache_path)
-
-    # Clear stale _unknown/ entries on forced rescan — the sweep will
-    # rediscover any that still exist, and stale entries from old IPs
+    # Drop stale _unknown/ entries from the baseline — the sweep below
+    # rediscovers any that still exist, and stale entries from old IPs
     # would otherwise accumulate indefinitely.
-    if force:
-        tasmota_data = {
-            k: v for k, v in tasmota_data.items()
-            if not k.startswith(_UNKNOWN_PREFIX)
-        }
-
-    # Check cache freshness
-    if not force and cache_path.exists():
-        age = time.time() - cache_path.stat().st_mtime
-        if age < max_age:
-            if verbose:
-                print(
-                    f"tasmota.json last updated {age:.0f}s ago, using cache.",
-                    file=sys.stderr,
-                )
-            return tasmota_data
+    tasmota_data = {
+        k: v for k, v in (baseline or {}).items()
+        if not k.startswith(_UNKNOWN_PREFIX)
+    }
 
     # Build IP→hostname index for known IoT hosts
     iot_hosts: list[tuple[str, str]] = []  # (hostname, ip)
@@ -269,7 +252,6 @@ def scan_tasmota(
             file=sys.stderr,
         )
 
-    save_tasmota_cache(cache_path, tasmota_data)
     return tasmota_data
 
 

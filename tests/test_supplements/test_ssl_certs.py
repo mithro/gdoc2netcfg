@@ -1,6 +1,5 @@
 """Tests for the SSL certificate supplement."""
 
-import json
 from unittest.mock import MagicMock, patch
 
 from cryptography.hazmat.primitives import serialization
@@ -145,9 +144,8 @@ class TestScanSSLCerts:
         }
 
         host = _make_host()
-        cache_path = tmp_path / "ssl_certs.json"
         result = scan_ssl_certs(
-            [host], cache_path, force=True, reachability=reachability,
+            [host], {}, reachability=reachability,
         )
 
         assert "desktop" in result
@@ -160,9 +158,8 @@ class TestScanSSLCerts:
         }
 
         host = _make_host()
-        cache_path = tmp_path / "ssl_certs.json"
         result = scan_ssl_certs(
-            [host], cache_path, force=True, reachability=reachability,
+            [host], {}, reachability=reachability,
         )
 
         assert result == {}
@@ -177,36 +174,16 @@ class TestScanSSLCerts:
         }
 
         host = _make_host()
-        cache_path = tmp_path / "ssl_certs.json"
         result = scan_ssl_certs(
-            [host], cache_path, force=True, reachability=reachability,
+            [host], {}, reachability=reachability,
         )
 
         assert result == {}
 
-    @patch("gdoc2netcfg.supplements.ssl_certs._fetch_cert")
-    def test_scan_uses_cache_when_fresh(self, mock_fetch, tmp_path):
-        cache_path = tmp_path / "ssl_certs.json"
-        existing = {
-            "desktop": {
-                "issuer": "Cached",
-                "self_signed": False,
-                "valid": True,
-                "expiry": "",
-                "sans": [],
-            }
-        }
-        save_ssl_cert_cache(cache_path, existing)
-
-        host = _make_host()
-        result = scan_ssl_certs([host], cache_path, force=False, max_age=9999)
-
-        assert result == existing
-        mock_fetch.assert_not_called()
-
     @patch("gdoc2netcfg.supplements.ssl_certs.check_port_open")
     @patch("gdoc2netcfg.supplements.ssl_certs._fetch_cert")
-    def test_scan_saves_cache(self, mock_fetch, mock_port, tmp_path):
+    def test_scan_merges_baseline(self, mock_fetch, mock_port):
+        """Fresh results merge over the baseline; unscanned hosts persist."""
         mock_port.return_value = True
         mock_fetch.return_value = {
             "issuer": "LE",
@@ -222,14 +199,16 @@ class TestScanSSLCerts:
         }
 
         host = _make_host()
-        cache_path = tmp_path / "ssl_certs.json"
-        scan_ssl_certs(
-            [host], cache_path, force=True, reachability=reachability,
+        baseline = {"other": {"issuer": "Cached"}}
+
+        result = scan_ssl_certs(
+            [host], baseline, reachability=reachability,
         )
 
-        assert cache_path.exists()
-        loaded = json.loads(cache_path.read_text())
-        assert "desktop" in loaded
+        assert "desktop" in result
+        assert result["other"] == {"issuer": "Cached"}
+        # The input baseline is not mutated.
+        assert "desktop" not in baseline
 
 
 def _make_test_cert_der(
@@ -597,9 +576,8 @@ class TestScanSSLCertsMultiIP:
             ),
         }
         host = _make_host("server", "10.1.10.1")
-        cache_path = tmp_path / "ssl.json"
         scan_ssl_certs(
-            [host], cache_path, force=True, reachability=reachability,
+            [host], {}, reachability=reachability,
         )
 
         # check_port_open should be called for both IPs
@@ -630,9 +608,8 @@ class TestScanSSLCertsMultiIP:
             ),
         }
         host = _make_host("server", "10.1.10.1")
-        cache_path = tmp_path / "ssl.json"
         result = scan_ssl_certs(
-            [host], cache_path, force=True, reachability=reachability,
+            [host], {}, reachability=reachability,
         )
 
         assert "server" in result

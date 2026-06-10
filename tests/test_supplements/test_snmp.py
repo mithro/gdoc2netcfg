@@ -1,6 +1,5 @@
 """Tests for the SNMP supplement."""
 
-import json
 from unittest.mock import AsyncMock, patch
 
 from gdoc2netcfg.models.addressing import IPv4Address, MACAddress
@@ -167,9 +166,8 @@ class TestScanSNMP:
             ),
         }
         host = _make_host()
-        cache_path = tmp_path / "snmp.json"
         result = scan_snmp(
-            [host], cache_path, force=True, reachability=reachability,
+            [host], {}, reachability=reachability,
         )
 
         assert "switch" in result
@@ -182,8 +180,7 @@ class TestScanSNMP:
             "switch": HostReachability(hostname="switch", active_ips=()),
         }
         host = _make_host()
-        cache_path = tmp_path / "snmp.json"
-        result = scan_snmp([host], cache_path, force=True, reachability=reachability)
+        result = scan_snmp([host], {}, reachability=reachability)
 
         assert result == {}
         mock_try.assert_not_called()
@@ -203,35 +200,15 @@ class TestScanSNMP:
             ),
         }
         host = _make_host()
-        cache_path = tmp_path / "snmp.json"
-        scan_snmp([host], cache_path, force=True, reachability=reachability)
+        scan_snmp([host], {}, reachability=reachability)
 
         # Should have been called with the reachable IP
         call_args = mock_try.call_args
         assert call_args[0][0] == "10.1.10.1"
 
     @patch("gdoc2netcfg.supplements.snmp._try_snmp_credentials")
-    def test_scan_uses_cache_when_fresh(self, mock_try, tmp_path):
-        cache_path = tmp_path / "snmp.json"
-        existing = {
-            "switch": {
-                "snmp_version": "v2c",
-                "system_info": {"sysName": "cached"},
-                "interfaces": [],
-                "ip_addresses": [],
-                "raw": {},
-            }
-        }
-        save_snmp_cache(cache_path, existing)
-
-        host = _make_host()
-        result = scan_snmp([host], cache_path, force=False, max_age=9999)
-
-        assert result == existing
-        mock_try.assert_not_called()
-
-    @patch("gdoc2netcfg.supplements.snmp._try_snmp_credentials")
-    def test_scan_saves_cache(self, mock_try, tmp_path):
+    def test_scan_merges_baseline(self, mock_try):
+        """Fresh results merge over the baseline; unscanned hosts persist."""
         mock_try.return_value = {
             "snmp_version": "v2c",
             "system_info": {"sysName": "sw"},
@@ -245,14 +222,16 @@ class TestScanSNMP:
             ),
         }
         host = _make_host()
-        cache_path = tmp_path / "snmp.json"
-        scan_snmp(
-            [host], cache_path, force=True, reachability=reachability,
+        baseline = {"other-switch": {"snmp_version": "v2c"}}
+
+        result = scan_snmp(
+            [host], baseline, reachability=reachability,
         )
 
-        assert cache_path.exists()
-        loaded = json.loads(cache_path.read_text())
-        assert "switch" in loaded
+        assert "switch" in result
+        assert result["other-switch"] == {"snmp_version": "v2c"}
+        # The input baseline is not mutated.
+        assert "switch" not in baseline
 
     @patch("gdoc2netcfg.supplements.snmp._try_snmp_credentials")
     def test_scan_no_snmp_response(self, mock_try, tmp_path):
@@ -263,9 +242,8 @@ class TestScanSNMP:
             ),
         }
         host = _make_host()
-        cache_path = tmp_path / "snmp.json"
         result = scan_snmp(
-            [host], cache_path, force=True, reachability=reachability,
+            [host], {}, reachability=reachability,
         )
 
         assert "switch" not in result
@@ -274,8 +252,7 @@ class TestScanSNMP:
     def test_scan_skips_without_reachability(self, mock_try, tmp_path):
         """Without reachability data, hosts are skipped."""
         host = _make_host()
-        cache_path = tmp_path / "snmp.json"
-        result = scan_snmp([host], cache_path, force=True, reachability=None)
+        result = scan_snmp([host], {}, reachability=None)
 
         assert result == {}
         mock_try.assert_not_called()
@@ -353,9 +330,8 @@ class TestScanSNMPMultiIP:
             ),
         }
         host = _make_host("switch", "10.1.10.1")
-        cache_path = tmp_path / "snmp.json"
         result = scan_snmp(
-            [host], cache_path, force=True, reachability=reachability,
+            [host], {}, reachability=reachability,
         )
 
         assert "switch" in result
@@ -378,9 +354,8 @@ class TestScanSNMPMultiIP:
             ),
         }
         host = _make_host("switch", "10.1.10.1")
-        cache_path = tmp_path / "snmp.json"
         scan_snmp(
-            [host], cache_path, force=True, reachability=reachability,
+            [host], {}, reachability=reachability,
         )
 
         # Should only try first IP since it succeeded

@@ -1,6 +1,5 @@
 """Tests for the bridge SNMP supplement."""
 
-import json
 from unittest.mock import patch
 
 from gdoc2netcfg.models.addressing import IPv4Address, MACAddress
@@ -24,7 +23,6 @@ from gdoc2netcfg.supplements.bridge import (
     scan_bridge,
 )
 from gdoc2netcfg.supplements.reachability import HostReachability
-from gdoc2netcfg.supplements.snmp_common import save_json_cache
 
 
 def _make_switch(hostname="sw-test", ip="10.1.5.10"):
@@ -544,11 +542,10 @@ class TestScanBridge:
             "poe_status": [],
         }
         host = _make_switch()
-        cache_path = tmp_path / "bridge.json"
         reachability = {
             "sw-test": HostReachability(hostname="sw-test", active_ips=("10.1.5.10",)),
         }
-        result = scan_bridge([host], cache_path, force=True, reachability=reachability)
+        result = scan_bridge([host], {}, reachability=reachability)
         assert "sw-test" in result
         mock_collect.assert_called_once()
 
@@ -566,67 +563,52 @@ class TestScanBridge:
             ],
             hardware_type=None,
         )
-        cache_path = tmp_path / "bridge.json"
         reachability = {
             "desktop": HostReachability(hostname="desktop", active_ips=("10.1.10.5",)),
         }
-        result = scan_bridge([host], cache_path, force=True, reachability=reachability)
+        result = scan_bridge([host], {}, reachability=reachability)
         assert result == {}
         mock_collect.assert_not_called()
 
     @patch("gdoc2netcfg.supplements.bridge._collect_bridge_data")
     def test_scan_skips_unreachable(self, mock_collect, tmp_path):
         host = _make_switch()
-        cache_path = tmp_path / "bridge.json"
         reachability = {
             "sw-test": HostReachability(hostname="sw-test", active_ips=()),
         }
-        result = scan_bridge([host], cache_path, force=True, reachability=reachability)
+        result = scan_bridge([host], {}, reachability=reachability)
         assert result == {}
         mock_collect.assert_not_called()
 
     @patch("gdoc2netcfg.supplements.bridge._collect_bridge_data")
-    def test_scan_uses_cache_when_fresh(self, mock_collect, tmp_path):
-        cache_path = tmp_path / "bridge.json"
-        existing = {
-            "sw-test": {
-                "mac_table": [], "vlan_names": [], "port_pvids": [],
-                "port_names": [], "port_status": [], "lldp_neighbors": [],
-                "vlan_egress_ports": [], "vlan_untagged_ports": [], "poe_status": [],
-            }
-        }
-        save_json_cache(cache_path, existing)
-        host = _make_switch()
-        result = scan_bridge([host], cache_path, force=False, max_age=9999)
-        assert result == existing
-        mock_collect.assert_not_called()
-
-    @patch("gdoc2netcfg.supplements.bridge._collect_bridge_data")
-    def test_scan_saves_cache(self, mock_collect, tmp_path):
+    def test_scan_merges_baseline(self, mock_collect):
+        """Fresh results merge over the baseline; unscanned hosts persist."""
         mock_collect.return_value = {
             "mac_table": [], "vlan_names": [], "port_pvids": [],
             "port_names": [], "port_status": [], "lldp_neighbors": [],
             "vlan_egress_ports": [], "vlan_untagged_ports": [], "poe_status": [],
         }
         host = _make_switch()
-        cache_path = tmp_path / "bridge.json"
         reachability = {
             "sw-test": HostReachability(hostname="sw-test", active_ips=("10.1.5.10",)),
         }
-        scan_bridge([host], cache_path, force=True, reachability=reachability)
-        assert cache_path.exists()
-        loaded = json.loads(cache_path.read_text())
-        assert "sw-test" in loaded
+        baseline = {"sw-other": {"mac_table": []}}
+
+        result = scan_bridge([host], baseline, reachability=reachability)
+
+        assert "sw-test" in result
+        assert result["sw-other"] == {"mac_table": []}
+        # The input baseline is not mutated.
+        assert "sw-test" not in baseline
 
     @patch("gdoc2netcfg.supplements.bridge._collect_bridge_data")
     def test_scan_no_snmp_response(self, mock_collect, tmp_path):
         mock_collect.return_value = None
         host = _make_switch()
-        cache_path = tmp_path / "bridge.json"
         reachability = {
             "sw-test": HostReachability(hostname="sw-test", active_ips=("10.1.5.10",)),
         }
-        result = scan_bridge([host], cache_path, force=True, reachability=reachability)
+        result = scan_bridge([host], {}, reachability=reachability)
         assert "sw-test" not in result
 
     @patch("gdoc2netcfg.supplements.bridge._collect_bridge_data")
@@ -654,11 +636,10 @@ class TestScanBridge:
             "port_names": [], "port_status": [], "lldp_neighbors": [],
             "vlan_egress_ports": [], "vlan_untagged_ports": [], "poe_status": [],
         }
-        cache_path = tmp_path / "bridge.json"
         reachability = {
             "bmc-server": HostReachability(hostname="bmc-server", active_ips=("10.1.5.20",)),
         }
-        result = scan_bridge([host], cache_path, force=True, reachability=reachability)
+        result = scan_bridge([host], {}, reachability=reachability)
         assert "bmc-server" in result
         mock_collect.assert_called_once()
 
@@ -666,8 +647,7 @@ class TestScanBridge:
     def test_scan_skips_without_reachability(self, mock_collect, tmp_path):
         """Without reachability data, hosts are skipped."""
         host = _make_switch()
-        cache_path = tmp_path / "bridge.json"
-        result = scan_bridge([host], cache_path, force=True, reachability=None)
+        result = scan_bridge([host], {}, reachability=None)
         assert result == {}
         mock_collect.assert_not_called()
 
@@ -686,13 +666,12 @@ class TestScanBridge:
             ],
             hardware_type="netgear-switch-plus",
         )
-        cache_path = tmp_path / "bridge.json"
         reachability = {
             "gs110emx-rack1": HostReachability(
                 hostname="gs110emx-rack1", active_ips=("10.1.5.30",)
             ),
         }
-        result = scan_bridge([host], cache_path, force=True, reachability=reachability)
+        result = scan_bridge([host], {}, reachability=reachability)
         assert result == {}
         mock_collect.assert_not_called()
 
@@ -712,9 +691,8 @@ class TestScanBridgeMultiIP:
                 active_ips=("10.1.5.10", "2001:db8::10"),
             ),
         }
-        cache_path = tmp_path / "bridge.json"
         result = scan_bridge(
-            [host], cache_path, force=True, reachability=reachability,
+            [host], {}, reachability=reachability,
         )
 
         assert "sw-test" in result
@@ -732,9 +710,8 @@ class TestScanBridgeMultiIP:
                 active_ips=("10.1.5.10", "2001:db8::10"),
             ),
         }
-        cache_path = tmp_path / "bridge.json"
         scan_bridge(
-            [host], cache_path, force=True, reachability=reachability,
+            [host], {}, reachability=reachability,
         )
 
         # Should only try first IP since it succeeded

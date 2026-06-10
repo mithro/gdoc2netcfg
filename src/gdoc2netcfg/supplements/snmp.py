@@ -17,8 +17,6 @@ JSON cache I/O) live in snmp_common.py and are shared with bridge.py.
 from __future__ import annotations
 
 import asyncio
-import time
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from gdoc2netcfg.models.host import SNMPData
@@ -146,9 +144,8 @@ def _try_snmp_credentials(
 
 def scan_snmp(
     hosts: list[Host],
-    cache_path: Path,
-    force: bool = False,
-    max_age: float = 300,
+    baseline: dict[str, dict] | None,
+    *,
     verbose: bool = False,
     reachability: dict[str, HostReachability] | None = None,
 ) -> dict[str, dict]:
@@ -156,9 +153,8 @@ def scan_snmp(
 
     Args:
         hosts: Host objects with IPs to scan.
-        cache_path: Path to snmp.json cache file.
-        force: Force re-scan even if cache is fresh.
-        max_age: Maximum cache age in seconds (default 5 minutes).
+        baseline: Last-known SNMP data (from the DiscoveryDB).  Fresh
+            results are merged over it; the caller persists the result.
         verbose: Print progress to stderr.
         reachability: Pre-computed reachability data from the
             reachability pass. Only reachable hosts are scanned.
@@ -168,15 +164,7 @@ def scan_snmp(
     """
     import sys
 
-    snmp_data = load_snmp_cache(cache_path)
-
-    # Check if cache is fresh enough
-    if not force and cache_path.exists():
-        age = time.time() - cache_path.stat().st_mtime
-        if age < max_age:
-            if verbose:
-                print(f"snmp.json last updated {age:.0f}s ago, using cache.", file=sys.stderr)
-            return snmp_data
+    snmp_data = dict(baseline or {})
 
     sorted_hosts = sorted(hosts, key=lambda h: h.hostname.split(".")[::-1])
     name_width = max((len(h.hostname) for h in sorted_hosts), default=0)
@@ -207,7 +195,6 @@ def scan_snmp(
             if verbose:
                 print("no-snmp", file=sys.stderr)
 
-    save_snmp_cache(cache_path, snmp_data)
     return snmp_data
 
 

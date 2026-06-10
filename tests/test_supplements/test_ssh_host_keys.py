@@ -15,6 +15,7 @@ from gdoc2netcfg.supplements.sshfp import (
     derive_sshfp_from_host_keys,
     enrich_hosts_with_ssh_host_keys,
     load_ssh_host_keys_cache,
+    raise_for_ssh_errors,
     save_ssh_host_keys_cache,
     scan_ssh_host_keys,
 )
@@ -453,7 +454,7 @@ class TestScanSSHHostKeys:
         }
         host = _make_host("server", "10.1.10.1")
         cache_path = tmp_path / "ssh_host_keys.json"
-        result = scan_ssh_host_keys(
+        result, errors = scan_ssh_host_keys(
             [host], cache_path, force=True, reachability=reachability,
         )
 
@@ -468,7 +469,7 @@ class TestScanSSHHostKeys:
         }
         host = _make_host("server", "10.1.10.1")
         cache_path = tmp_path / "ssh_host_keys.json"
-        result = scan_ssh_host_keys(
+        result, errors = scan_ssh_host_keys(
             [host], cache_path, force=True, reachability=reachability,
         )
 
@@ -482,7 +483,7 @@ class TestScanSSHHostKeys:
         """Host not in reachability dict at all is skipped."""
         host = _make_host("server", "10.1.10.1")
         cache_path = tmp_path / "ssh_host_keys.json"
-        result = scan_ssh_host_keys(
+        result, errors = scan_ssh_host_keys(
             [host], cache_path, force=True, reachability={},
         )
 
@@ -500,7 +501,7 @@ class TestScanSSHHostKeys:
         }
         host = _make_host("server", "10.1.10.1")
         cache_path = tmp_path / "ssh_host_keys.json"
-        result = scan_ssh_host_keys(
+        result, errors = scan_ssh_host_keys(
             [host], cache_path, force=True, reachability=reachability,
         )
 
@@ -515,7 +516,7 @@ class TestScanSSHHostKeys:
 
         host = _make_host("server", "10.1.10.1")
         # reachability is required but won't be used — cache is fresh
-        result = scan_ssh_host_keys(
+        result, errors = scan_ssh_host_keys(
             [host], cache_path, force=False, max_age=9999,
             reachability={},
         )
@@ -568,11 +569,18 @@ class TestScanSSHHostKeys:
         host = _make_host("server", "10.1.10.1")
         cache_path = tmp_path / "ssh_host_keys.json"
 
+        result, errors = scan_ssh_host_keys(
+            [host], cache_path, force=True,
+            reachability=reachability,
+        )
+
+        # Recorded as an error, not silently skipped; nothing to store for
+        # the failed host (no prior cache), so it is absent from the result.
+        assert len(errors) == 1
+        assert "server" not in result
+        # Failing loud is the caller's job, via the helper.
         with pytest.raises(SSHKeyscanError, match="1 SSH host key scan"):
-            scan_ssh_host_keys(
-                [host], cache_path, force=True,
-                reachability=reachability,
-            )
+            raise_for_ssh_errors(errors)
 
     @patch("gdoc2netcfg.supplements.sshfp.check_port_open")
     @patch("gdoc2netcfg.supplements.sshfp._keyscan_pubkeys")
@@ -596,11 +604,15 @@ class TestScanSSHHostKeys:
         host = _make_host("server", "10.1.10.1")
         cache_path = tmp_path / "ssh_host_keys.json"
 
+        result, errors = scan_ssh_host_keys(
+            [host], cache_path, force=True,
+            reachability=reachability,
+        )
+
+        assert len(errors) == 1
+        assert "different SSH keys" in errors[0]
         with pytest.raises(SSHKeyscanError, match="different SSH keys"):
-            scan_ssh_host_keys(
-                [host], cache_path, force=True,
-                reachability=reachability,
-            )
+            raise_for_ssh_errors(errors)
 
     @patch("gdoc2netcfg.supplements.sshfp.check_port_open")
     @patch("gdoc2netcfg.supplements.sshfp._keyscan_pubkeys")
@@ -622,7 +634,7 @@ class TestScanSSHHostKeys:
         }
         host = _make_host("server", "10.1.10.1")
         cache_path = tmp_path / "ssh_host_keys.json"
-        result = scan_ssh_host_keys(
+        result, errors = scan_ssh_host_keys(
             [host], cache_path, force=True,
             reachability=reachability,
         )
@@ -653,11 +665,14 @@ class TestScanSSHHostKeys:
         ]
         cache_path = tmp_path / "ssh_host_keys.json"
 
+        result, errors = scan_ssh_host_keys(
+            hosts, cache_path, force=True,
+            reachability=reachability,
+        )
+
+        assert len(errors) == 2
         with pytest.raises(SSHKeyscanError, match="2 SSH host key scan"):
-            scan_ssh_host_keys(
-                hosts, cache_path, force=True,
-                reachability=reachability,
-            )
+            raise_for_ssh_errors(errors)
 
     @patch("gdoc2netcfg.supplements.sshfp.check_port_open")
     @patch("gdoc2netcfg.supplements.sshfp._keyscan_pubkeys")
@@ -679,13 +694,21 @@ class TestScanSSHHostKeys:
         host = _make_host("server", "10.1.10.1")
         cache_path = tmp_path / "ssh_host_keys.json"
 
-        with pytest.raises(SSHKeyscanError, match="1 SSH host key scan"):
-            scan_ssh_host_keys(
-                [host], cache_path, force=True,
-                reachability=reachability,
-            )
+        result, errors = scan_ssh_host_keys(
+            [host], cache_path, force=True,
+            reachability=reachability,
+        )
 
-        assert not cache_path.exists()  # No partial results written
+        # Partial (one-IP) results are not stored for that host...
+        assert len(errors) == 1
+        assert "server" not in result
+        # ...but the cache IS still written — good results are never
+        # discarded; the partially-scanned host is simply absent from it.
+        assert cache_path.exists()
+        import json
+        assert "server" not in json.loads(cache_path.read_text())
+        with pytest.raises(SSHKeyscanError, match="1 SSH host key scan"):
+            raise_for_ssh_errors(errors)
 
     @patch("gdoc2netcfg.supplements.sshfp.check_port_open")
     @patch("gdoc2netcfg.supplements.sshfp._keyscan_pubkeys")
@@ -710,18 +733,22 @@ class TestScanSSHHostKeys:
         host = _make_host("server", "10.1.10.1")
         cache_path = tmp_path / "ssh_host_keys.json"
 
+        result, errors = scan_ssh_host_keys(
+            [host], cache_path, force=True,
+            reachability=reachability,
+        )
+
+        assert len(errors) == 1
+        assert "different SSH keys" in errors[0]
         with pytest.raises(SSHKeyscanError, match="different SSH keys"):
-            scan_ssh_host_keys(
-                [host], cache_path, force=True,
-                reachability=reachability,
-            )
+            raise_for_ssh_errors(errors)
 
     @patch("gdoc2netcfg.supplements.sshfp.check_port_open")
     @patch("gdoc2netcfg.supplements.sshfp._keyscan_pubkeys")
-    def test_scan_does_not_save_cache_on_error(
+    def test_scan_saves_cache_retaining_prior_on_error(
         self, mock_keyscan, mock_port, tmp_path,
     ):
-        """Cache is not written when scan has errors."""
+        """On scan error the cache is still written, retaining prior data."""
         mock_port.return_value = True
         mock_keyscan.side_effect = SSHKeyscanError("failure")
         reachability = {
@@ -731,11 +758,85 @@ class TestScanSSHHostKeys:
         }
         host = _make_host("server", "10.1.10.1")
         cache_path = tmp_path / "ssh_host_keys.json"
+        # Prior good data for an unrelated host must survive a failed scan.
+        save_ssh_host_keys_cache(
+            cache_path, {"other": [f"other ssh-rsa {_RSA_B64}"]},
+        )
 
+        result, errors = scan_ssh_host_keys(
+            [host], cache_path, force=True,
+            reachability=reachability,
+        )
+
+        assert len(errors) == 1
+        # Prior data retained, not discarded by the failure.
+        assert result["other"] == [f"other ssh-rsa {_RSA_B64}"]
+        assert cache_path.exists()
+        import json
+        loaded = json.loads(cache_path.read_text())
+        assert loaded["other"] == [f"other ssh-rsa {_RSA_B64}"]
         with pytest.raises(SSHKeyscanError):
-            scan_ssh_host_keys(
-                [host], cache_path, force=True,
-                reachability=reachability,
-            )
+            raise_for_ssh_errors(errors)
 
-        assert not cache_path.exists()
+    @patch("gdoc2netcfg.supplements.sshfp.check_port_open")
+    @patch("gdoc2netcfg.supplements.sshfp._keyscan_pubkeys")
+    def test_scan_persists_good_and_retains_failed(
+        self, mock_keyscan, mock_port, tmp_path,
+    ):
+        """Partial failure must NOT discard the hosts that scanned fine.
+
+        Hosts that succeed are saved; a host that fails retains its prior
+        key (known_hosts continuity); the failures are returned as errors
+        for the caller to fail loud on — rather than dropping everything.
+        """
+        mock_port.return_value = True
+
+        def keyscan(ip, hostname):
+            if ip == "10.1.10.3":  # the one failing endpoint
+                raise SSHKeyscanError(
+                    f"ssh-keyscan {ip}: Connection closed by remote host",
+                )
+            return [f"{hostname} ssh-ed25519 {_ED25519_B64}"]
+
+        mock_keyscan.side_effect = keyscan
+
+        cache_path = tmp_path / "ssh_host_keys.json"
+        # Prior cache: the host that will fail had good keys last time.
+        save_ssh_host_keys_cache(
+            cache_path, {"bad": [f"bad ssh-rsa {_RSA_B64}"]},
+        )
+
+        reachability = {
+            "good-a": HostReachability(
+                hostname="good-a", active_ips=("10.1.10.1",),
+            ),
+            "good-b": HostReachability(
+                hostname="good-b", active_ips=("10.1.10.2",),
+            ),
+            "bad": HostReachability(
+                hostname="bad", active_ips=("10.1.10.3",),
+            ),
+        }
+        hosts = [
+            _make_host("good-a", "10.1.10.1"),
+            _make_host("good-b", "10.1.10.2"),
+            _make_host("bad", "10.1.10.3"),
+        ]
+
+        result, errors = scan_ssh_host_keys(
+            hosts, cache_path, force=True, reachability=reachability,
+        )
+
+        # Good hosts scanned successfully.
+        assert result["good-a"] == [f"good-a ssh-ed25519 {_ED25519_B64}"]
+        assert result["good-b"] == [f"good-b ssh-ed25519 {_ED25519_B64}"]
+        # Failed host RETAINS its prior key — not dropped.
+        assert result["bad"] == [f"bad ssh-rsa {_RSA_B64}"]
+        # The failure is reported (one error, naming the host/endpoint).
+        assert len(errors) == 1
+        assert "bad" in errors[0] and "10.1.10.3" in errors[0]
+        # Good data persisted to the flat cache, not discarded.
+        import json
+        loaded = json.loads(cache_path.read_text())
+        assert loaded["good-a"] == [f"good-a ssh-ed25519 {_ED25519_B64}"]
+        assert loaded["bad"] == [f"bad ssh-rsa {_RSA_B64}"]

@@ -798,6 +798,7 @@ def _scan_ssh_host_keys_pipeline(
     from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.sshfp import (
         enrich_hosts_with_ssh_host_keys,
+        raise_for_ssh_errors,
         scan_ssh_host_keys,
     )
 
@@ -817,7 +818,7 @@ def _scan_ssh_host_keys_pipeline(
     _print_reachability_summary(reachability, hosts)
 
     cache_path = Path(config.cache.directory) / "ssh_host_keys.json"
-    host_keys_data = scan_ssh_host_keys(
+    host_keys_data, ssh_errors = scan_ssh_host_keys(
         hosts,
         cache_path=cache_path,
         force=force,
@@ -827,10 +828,15 @@ def _scan_ssh_host_keys_pipeline(
 
     enrich_hosts_with_ssh_host_keys(hosts, host_keys_data)
 
+    # Persist the hosts that scanned (the flat cache is written inside the
+    # scan; mirror it to the DB) BEFORE failing loud, so a single
+    # unscannable host can't discard every good result.
     if host_keys_data:
         _save_to_discovery_db(
             config, "ssh_host_keys", "save_ssh_host_keys", host_keys_data,
         )
+
+    raise_for_ssh_errors(ssh_errors)
 
     return hosts, host_keys_data
 

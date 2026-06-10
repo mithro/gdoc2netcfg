@@ -211,7 +211,7 @@ def scan_ssh_host_keys(
     verbose: bool = False,
     *,
     reachability: dict[str, HostReachability],
-) -> dict[str, list[str]]:
+) -> tuple[dict[str, list[str]], list[str]]:
     """Scan reachable hosts for SSH public keys.
 
     For hosts with multiple IPs, scans each IP independently and verifies
@@ -228,12 +228,18 @@ def scan_ssh_host_keys(
             reachability pass. Only reachable hosts are scanned.
 
     Returns:
-        Mapping of hostname → list of SSH public key lines.
+        A ``(host_keys, errors)`` tuple. ``host_keys`` maps hostname →
+        list of SSH public key lines (existing cache merged with fresh
+        successes; a host that fails to scan retains its last-known keys).
+        ``errors`` is a list of per-host failure messages — empty on full
+        success.
 
-    Raises:
-        SSHKeyscanError: If any host with an open SSH port fails to
-            return keys, or if different IPs for the same host return
-            different keys.
+        Per-host failures are RETURNED, not raised, so the caller can
+        persist the hosts that DID scan (flat + DB) before failing loud via
+        ``raise_for_ssh_errors``. A host with an open SSH port that returns
+        no keys, or that returns different keys from different IPs, is
+        recorded as an error (its existing data left untouched), not
+        silently skipped.
     """
     import sys
 
@@ -249,7 +255,7 @@ def scan_ssh_host_keys(
                     f" using cache.",
                     file=sys.stderr,
                 )
-            return host_keys
+            return host_keys, []
 
     sorted_hosts = sorted(
         hosts, key=lambda h: h.hostname.split(".")[::-1],
@@ -332,14 +338,27 @@ def scan_ssh_host_keys(
             next(iter(per_ip_keys.values())),
         )
 
+    # Persist everything we DID learn — existing cache merged with fresh
+    # successes; hosts that failed retain their last-known keys — BEFORE
+    # surfacing errors, so one unreachable host can't discard every good
+    # result. The caller fails loud via raise_for_ssh_errors(errors).
+    save_ssh_host_keys_cache(cache_path, host_keys)
+    return host_keys, errors
+
+
+def raise_for_ssh_errors(errors: list[str]) -> None:
+    """Fail loud if an ssh host-key scan reported per-host errors.
+
+    scan_ssh_host_keys persists the hosts that succeeded and RETURNS the
+    per-host failures instead of raising, so the caller can save the good
+    results (flat + DB) first and then surface the failures here. This keeps
+    both "never silently discard data" and "fail loud" satisfied.
+    """
     if errors:
         raise SSHKeyscanError(
             f"{len(errors)} SSH host key scan error(s):\n"
             + "\n".join(f"  - {e}" for e in errors)
         )
-
-    save_ssh_host_keys_cache(cache_path, host_keys)
-    return host_keys
 
 
 def enrich_hosts_with_ssh_host_keys(

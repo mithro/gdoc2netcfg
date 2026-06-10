@@ -599,6 +599,29 @@ class TestStructuredSupplements:
         assert names == ["v1", "v2"]
 
 
+class TestBridgeShapes:
+    def test_document_without_port_statistics_roundtrips(self, db: DiscoveryDB):
+        """Older scanner generations didn't collect port_statistics —
+        the key must stay absent, not be fabricated as []."""
+        doc = _bridge_doc()
+        del doc["port_statistics"]
+        s = db.begin_scan("bridge")
+        changed = db.save_bridge(s, {"sw-old": doc})
+        db.finish_scan(s, host_count=1, changed_count=changed)
+
+        loaded = db.load_latest_bridge()
+        assert loaded == {"sw-old": doc}
+        assert "port_statistics" not in loaded["sw-old"]
+
+    def test_empty_port_statistics_stays_present(self, db: DiscoveryDB):
+        doc = _bridge_doc()
+        doc["port_statistics"] = []
+        s = db.begin_scan("bridge")
+        db.save_bridge(s, {"sw1": doc})
+        db.finish_scan(s, host_count=1, changed_count=1)
+        assert db.load_latest_bridge()["sw1"]["port_statistics"] == []
+
+
 class TestNSDPShapes:
     def _save(self, db: DiscoveryDB, data: dict) -> int:
         s = db.begin_scan("nsdp")
@@ -1109,7 +1132,10 @@ class TestV4BlobConversion:
 
         s = _finished_scan(conn, "bridge")
         _blob_row(conn, "bridge_data", s, "sw1", _bridge_doc())
-        expected["bridge"] = {"sw1": _bridge_doc()}
+        old_bridge = _bridge_doc()
+        del old_bridge["port_statistics"]  # pre-port_statistics generation
+        _blob_row(conn, "bridge_data", s, "sw-old", old_bridge)
+        expected["bridge"] = {"sw1": _bridge_doc(), "sw-old": old_bridge}
 
         s = _finished_scan(conn, "nsdp")
         _blob_row(conn, "nsdp_data", s, "sw-iot", _nsdp_doc_full())

@@ -268,7 +268,11 @@ def _structured_ddl_statements() -> list[str]:
     ))
 
     # Bridge: head row per switch + one table per BridgeData field.
-    stmts += _entity_table_ddl("bridge_switches", "hostname", ())
+    # port_statistics was added to the scanner later, so historical
+    # documents may lack it — the head row records its presence.
+    stmts += _entity_table_ddl("bridge_switches", "hostname", (
+        ("has_port_statistics", "INTEGER NOT NULL"),
+    ))
     for _key, table, cols, types in _BRIDGE_DOC_FIELDS:
         stmts += _entity_table_ddl(table, "hostname", tuple(
             (col, _sql_type(typ)) for col, typ in zip(cols, types)
@@ -450,10 +454,19 @@ def _insert_bridge_rows(
 ) -> None:
     _expect_keys(
         f"bridge[{hostname}]", doc,
-        frozenset(key for key, _t, _c, _ty in _BRIDGE_DOC_FIELDS),
+        frozenset(
+            key for key, _t, _c, _ty in _BRIDGE_DOC_FIELDS
+            if key != "port_statistics"
+        ),
+        optional=frozenset({"port_statistics"}),
     )
-    _insert_row(cur, "bridge_switches", "hostname", scan_id, hostname, (), ())
+    _insert_row(
+        cur, "bridge_switches", "hostname", scan_id, hostname,
+        ("has_port_statistics",), (int("port_statistics" in doc),),
+    )
     for key, table, cols, types in _BRIDGE_DOC_FIELDS:
+        if key not in doc:
+            continue
         _insert_list_rows(cur, table, scan_id, hostname, cols, types, doc[key])
 
 
@@ -1297,15 +1310,21 @@ class DiscoveryDB(BaseDatabase):
         return self._latest_bridge()
 
     def _latest_bridge(self) -> dict[str, dict]:
-        return {
-            hostname: {
+        result = {}
+        for hostname, scan_id in sorted(
+            self._latest_entity_scans("bridge_switches", "hostname").items()
+        ):
+            has_port_statistics = self._conn.execute(
+                "SELECT has_port_statistics FROM bridge_switches "
+                "WHERE scan_id = ? AND hostname = ?",
+                (scan_id, hostname),
+            ).fetchone()[0]
+            result[hostname] = {
                 key: self._load_list_rows(table, cols, scan_id, hostname)
                 for key, table, cols, _types in _BRIDGE_DOC_FIELDS
+                if key != "port_statistics" or has_port_statistics
             }
-            for hostname, scan_id in sorted(
-                self._latest_entity_scans("bridge_switches", "hostname").items()
-            )
-        }
+        return result
 
     # -- NSDP --
 

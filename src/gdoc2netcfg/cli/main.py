@@ -2003,7 +2003,7 @@ def cmd_tasmota_ha_sync(args: argparse.Namespace) -> int:
 
 
 def cmd_zigbee_scan(args: argparse.Namespace) -> int:
-    """Scan Zigbee2MQTT on all configured sites and cache results."""
+    """Scan Zigbee2MQTT on all configured sites and persist to the DB."""
     config = _load_config(args)
 
     if not config.zigbee.sites:
@@ -2014,19 +2014,37 @@ def cmd_zigbee_scan(args: argparse.Namespace) -> int:
         )
         return 1
 
-    from gdoc2netcfg.supplements.zigbee import scan_all_sites
+    from gdoc2netcfg.supplements.zigbee import (
+        is_bridge_key,
+        raise_for_zigbee_errors,
+        scan_zigbee,
+    )
 
-    force = getattr(args, "force", False)
-    cache_dir = Path(config.cache.directory)
+    age = None if args.force else _fresh_scan_age(config, "zigbee")
+    if age is not None:
+        print(f"Using cached zigbee scan ({age:.0f}s old).", file=sys.stderr)
+        zigbee_data = _load_latest_from_db(config, "load_latest_zigbee") or {}
+        errors: list[str] = []
+    else:
+        try:
+            zigbee_data, errors = scan_zigbee(
+                config.zigbee,
+                _load_latest_from_db(config, "load_latest_zigbee"),
+                verbose=True,
+            )
+        except RuntimeError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        # Persist the sites that scanned BEFORE failing loud, so one
+        # unreachable broker can't discard the other site's results.
+        if zigbee_data:
+            _save_to_discovery_db(config, "zigbee", "save_zigbee", zigbee_data)
 
-    try:
-        results = scan_all_sites(config.zigbee, cache_dir, force=force, verbose=True)
-    except RuntimeError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
+    device_count = sum(1 for key in zigbee_data if not is_bridge_key(key))
+    sites = {entry["site"] for entry in zigbee_data.values()}
+    print(f"\nFound {device_count} Zigbee device(s) across {len(sites)} site(s).")
 
-    total = sum(len(devices) for devices, _ in results.values())
-    print(f"\nFound {total} Zigbee device(s) across {len(results)} site(s).")
+    raise_for_zigbee_errors(errors)
     return 0
 
 
@@ -2034,29 +2052,43 @@ def cmd_zigbee_show(args: argparse.Namespace) -> int:
     """Show cached Zigbee device data."""
     config = _load_config(args)
 
-    from gdoc2netcfg.supplements.zigbee import ZigbeeBridgeInfo, ZigbeeDevice, load_zigbee_cache
+    from gdoc2netcfg.supplements.zigbee import (
+        ZigbeeBridgeInfo,
+        ZigbeeDevice,
+        is_bridge_key,
+    )
 
-    cache_dir = Path(config.cache.directory)
-    found_any = False
+    zigbee_data = _load_latest_from_db(config, "load_latest_zigbee")
+    if not zigbee_data:
+        print("No Zigbee data cached. Run 'gdoc2netcfg zigbee scan' first.")
+        return 1
 
-    for site_cfg in config.zigbee.sites:
-        cache_path = cache_dir / f"zigbee_{site_cfg.name}.json"
-        cached = load_zigbee_cache(cache_path)
-        if not cached or cached.get("devices") is None:
-            print(
-                f"No cache for site '{site_cfg.name}'. "
-                "Run 'gdoc2netcfg zigbee scan' first."
+    devices_by_site: dict[str, list[ZigbeeDevice]] = {}
+    bridges: dict[str, ZigbeeBridgeInfo] = {}
+    for key, entry in zigbee_data.items():
+        if is_bridge_key(key):
+            bridges[entry["site"]] = ZigbeeBridgeInfo(**entry)
+        else:
+            devices_by_site.setdefault(entry["site"], []).append(
+                ZigbeeDevice(**entry)
             )
-            continue
 
-        found_any = True
-        devices = [ZigbeeDevice(**d) for d in cached["devices"]]
-        bridge_raw = cached.get("bridge")
-        bridge = ZigbeeBridgeInfo(**bridge_raw) if bridge_raw else None
-        scanned_at = cached.get("scanned_at", "")
+    db = _open_databases(config)
+    scanned_at = ""
+    if db is not None:
+        try:
+            history = db.discovery.scan_history("zigbee", limit=1)
+        finally:
+            db.close()
+        if history:
+            scanned_at = history[0]["finished_at"]
+
+    for site_name in sorted(set(devices_by_site) | set(bridges)):
+        devices = devices_by_site.get(site_name, [])
+        bridge = bridges.get(site_name)
 
         print(f"\n{'='*60}")
-        print(f"Site: {site_cfg.name}  (scanned {scanned_at})")
+        print(f"Site: {site_name}  (scanned {scanned_at})")
         print("=" * 60)
         if bridge:
             print(f"  Z2M:         {bridge.z2m_version}")
@@ -2074,7 +2106,7 @@ def cmd_zigbee_show(args: argparse.Namespace) -> int:
                 f"{d.friendly_name:35s}  fw={fw}"
             )
 
-    return 0 if found_any else 1
+    return 0
 
 
 def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
@@ -2099,30 +2131,31 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
         )
         return 1
 
-    from gdoc2netcfg.supplements.zigbee import ZigbeeBridgeInfo, ZigbeeDevice, load_zigbee_cache
+    from gdoc2netcfg.supplements.zigbee import (
+        ZigbeeBridgeInfo,
+        ZigbeeDevice,
+        is_bridge_key,
+    )
     from gdoc2netcfg.supplements.zigbee_sheet import update_zigbee_sheet
 
-    cache_dir = Path(config.cache.directory)
+    zigbee_data = _load_latest_from_db(config, "load_latest_zigbee") or {}
+
     all_devices: list[ZigbeeDevice] = []
     bridge_infos: dict[str, ZigbeeBridgeInfo | None] = {}
+    for key, entry in sorted(zigbee_data.items()):
+        if is_bridge_key(key):
+            bridge_infos[entry["site"]] = ZigbeeBridgeInfo(**entry)
+        else:
+            all_devices.append(ZigbeeDevice(**entry))
 
     for site_cfg in config.zigbee.sites:
-        cache_path = cache_dir / f"zigbee_{site_cfg.name}.json"
-        cached = load_zigbee_cache(cache_path)
-        if not cached or cached.get("devices") is None:
+        if not any(d.site == site_cfg.name for d in all_devices):
             print(
-                f"Warning: no cache for site '{site_cfg.name}'. "
+                f"Warning: no data for site '{site_cfg.name}'. "
                 "Run 'gdoc2netcfg zigbee scan' first.",
                 file=sys.stderr,
             )
-            continue
-
-        devices = [ZigbeeDevice(**d) for d in cached["devices"]]
-        bridge_raw = cached.get("bridge")
-        bridge_infos[site_cfg.name] = (
-            ZigbeeBridgeInfo(**bridge_raw) if bridge_raw else None
-        )
-        all_devices.extend(devices)
+        bridge_infos.setdefault(site_cfg.name, None)
 
     if not all_devices:
         print("No Zigbee data to write. Run 'gdoc2netcfg zigbee scan' first.")

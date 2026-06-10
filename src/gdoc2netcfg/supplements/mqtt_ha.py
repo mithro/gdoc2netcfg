@@ -805,15 +805,14 @@ def run_daemon(
 
     Assumes the caller has already validated that mqtt_host is configured.
     """
-    from gdoc2netcfg.supplements.reachability import (
-        check_all_hosts_reachability,
-    )
-
     # Apply any pending schema upgrades up front — the per-cycle pipeline
     # rebuild opens the databases read-only, which fails loud on an older
     # schema and cannot upgrade it.  A read-write open upgrades in place
     # (and creates the databases on a fresh site).
     from gdoc2netcfg.storage import open_databases
+    from gdoc2netcfg.supplements.reachability import (
+        check_all_hosts_reachability,
+    )
 
     open_databases(config.cache.directory).close()
 

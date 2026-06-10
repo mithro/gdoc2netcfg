@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -465,6 +466,7 @@ def _tasmota_doc(name: str = "plug1", module: object = 43) -> dict:
         "wifi_signal": -55,
         "uptime": "1T00:00:00",
         "module": module,
+        "mqtt_count": 3,
     }
 
 
@@ -677,6 +679,95 @@ class TestTasmotaShapes:
         loaded = db.load_latest_tasmota()
         assert loaded["plug-int"]["module"] == 43
         assert loaded["plug-str"]["module"] == ""
+
+    def test_doc_without_mqtt_count_roundtrips(self, db: DiscoveryDB):
+        """mqtt_count was added after rows already existed: a baseline
+        document reconstructed from a pre-v5 row lacks it, and saving
+        such a document keeps it absent — never fabricated as 0."""
+        doc = _tasmota_doc("plug1")
+        del doc["mqtt_count"]
+        s = db.begin_scan("tasmota")
+        changed = db.save_tasmota(s, {"plug-old": doc})
+        db.finish_scan(s, host_count=1, changed_count=changed)
+
+        loaded = db.load_latest_tasmota()
+        assert loaded == {"plug-old": doc}
+        assert "mqtt_count" not in loaded["plug-old"]
+
+    def test_adding_mqtt_count_is_a_change(self, db: DiscoveryDB):
+        doc = _tasmota_doc("plug1")
+        without = dict(doc)
+        del without["mqtt_count"]
+        s1 = db.begin_scan("tasmota")
+        db.save_tasmota(s1, {"plug1": without})
+        db.finish_scan(s1, host_count=1, changed_count=1)
+
+        s2 = db.begin_scan("tasmota")
+        changed = db.save_tasmota(s2, {"plug1": doc})
+        db.finish_scan(s2, host_count=1, changed_count=changed)
+        assert changed == 1
+        assert db.load_latest_tasmota()["plug1"]["mqtt_count"] == 3
+
+
+class TestSchemaUpgradeV5:
+    def _make_v4_db(self, path: Path) -> None:
+        """Create a current DB, then strip it back to schema v4."""
+        d = DiscoveryDB(path)
+        d.connection.execute(
+            "ALTER TABLE tasmota_devices DROP COLUMN mqtt_count"
+        )
+        d.connection.execute(
+            "UPDATE _meta SET value = '4' WHERE key = 'schema_version'"
+        )
+        d.connection.commit()
+        d.close()
+
+    def test_rw_open_upgrades_v4(self, tmp_path: Path):
+        path = tmp_path / "v4.db"
+        self._make_v4_db(path)
+
+        d = DiscoveryDB(path)  # read-write open applies the upgrade
+        cols = [r[1] for r in d.connection.execute(
+            "PRAGMA table_info(tasmota_devices)"
+        )]
+        assert "mqtt_count" in cols
+        version = d.connection.execute(
+            "SELECT value FROM _meta WHERE key = 'schema_version'"
+        ).fetchone()[0]
+        assert int(version) == DiscoveryDB.SCHEMA_VERSION
+        d.close()
+
+    def test_pre_v5_rows_load_without_mqtt_count(self, tmp_path: Path):
+        """Rows written before the upgrade have NULL mqtt_count — the
+        reconstructed document omits the key."""
+        path = tmp_path / "v4.db"
+        self._make_v4_db(path)
+
+        # Write a row while the DB is at v4 (no mqtt_count column).
+        conn = sqlite3.connect(str(path))
+        cur = conn.execute(
+            "INSERT INTO scans (scan_type, started_at, finished_at, "
+            "host_count, changed_count) VALUES ('tasmota', "
+            "'2026-06-01T00:00:00+00:00', '2026-06-01T00:01:00+00:00', 1, 1)"
+        )
+        scan_id = cur.lastrowid
+        doc = _tasmota_doc("plug-old")
+        del doc["mqtt_count"]
+        cols = ", ".join(doc)
+        placeholders = ", ".join("?" * (len(doc) + 2))
+        conn.execute(
+            f"INSERT INTO tasmota_devices (scan_id, device_key, {cols}) "  # noqa: S608
+            f"VALUES ({placeholders})",
+            (scan_id, "plug-old", *doc.values()),
+        )
+        conn.commit()
+        conn.close()
+
+        d = DiscoveryDB(path)  # applies the v5 upgrade
+        loaded = d.load_latest_tasmota()
+        assert loaded == {"plug-old": doc}
+        assert "mqtt_count" not in loaded["plug-old"]
+        d.close()
 
 
 # -- Reachability tombstones -------------------------------------------------

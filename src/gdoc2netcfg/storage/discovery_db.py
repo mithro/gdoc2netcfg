@@ -165,7 +165,13 @@ _TASMOTA_FIELDS = (
     ("wifi_signal", int),
     ("uptime", str),
     ("module", (int, str)),
+    ("mqtt_count", int),
 )
+
+# Fields added to the scanner after rows already existed: optional in
+# documents (absent stays absent — baseline documents reconstructed
+# from pre-v5 rows lack them), stored as NULL when absent.
+_TASMOTA_OPTIONAL_FIELDS = frozenset({"mqtt_count"})
 
 # Zigbee device fields (doc key == column except "site", which equals
 # the owning site and is not stored).  None-able fields get NULL columns.
@@ -287,7 +293,10 @@ def _structured_ddl_statements() -> list[str]:
     # a spreadsheet hostname or an "_unknown/<ip>" marker — distinct
     # from the device's self-reported "hostname" field.
     stmts += _entity_table_ddl("tasmota_devices", "device_key", tuple(
-        (key, _sql_type(typ)) for key, typ in _TASMOTA_FIELDS
+        (key,
+         _sql_type(typ).replace(" NOT NULL", "")
+         if key in _TASMOTA_OPTIONAL_FIELDS else _sql_type(typ))
+        for key, typ in _TASMOTA_FIELDS
     ))
 
     # Zigbee: per-site bridge-info rows and per-device rows, each
@@ -518,13 +527,20 @@ def _insert_tasmota_rows(
     cur: sqlite3.Cursor, scan_id: int, device_key: str, doc: dict,
 ) -> None:
     what = f"tasmota[{device_key}]"
-    _expect_keys(what, doc, frozenset(key for key, _t in _TASMOTA_FIELDS))
+    _expect_keys(
+        what, doc,
+        frozenset(key for key, _t in _TASMOTA_FIELDS)
+        - _TASMOTA_OPTIONAL_FIELDS,
+        optional=_TASMOTA_OPTIONAL_FIELDS,
+    )
     for key, typ in _TASMOTA_FIELDS:
+        if key in _TASMOTA_OPTIONAL_FIELDS and key not in doc:
+            continue
         _typecheck(f"{what}.{key}", doc[key], typ)
     _insert_row(
         cur, "tasmota_devices", "device_key", scan_id, device_key,
         tuple(key for key, _t in _TASMOTA_FIELDS),
-        tuple(doc[key] for key, _t in _TASMOTA_FIELDS),
+        tuple(doc.get(key) for key, _t in _TASMOTA_FIELDS),
     )
 
 
@@ -605,9 +621,13 @@ class DiscoveryDB(BaseDatabase):
     # Version lineage: v2 added reachability.is_tombstone, v3 a zigbee
     # JSON-blob table, v4 replaced ALL JSON-blob tables with the
     # structured tables above (converting blob history in place).  The
-    # upgrade steps were removed once every production database reached
-    # v4 — an older database now fails loud and has no upgrade path.
-    SCHEMA_VERSION = 4
+    # v1->v4 upgrade steps were removed once every production database
+    # reached v4 — older databases fail loud with no upgrade path.
+    # v5: tasmota_devices.mqtt_count (MQTT connection diagnostics).
+    SCHEMA_VERSION = 5
+    SCHEMA_UPGRADES = {
+        5: ["ALTER TABLE tasmota_devices ADD COLUMN mqtt_count INTEGER"],
+    }
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:
         for stmt in (
@@ -1285,6 +1305,7 @@ class DiscoveryDB(BaseDatabase):
             result[device_key] = {
                 key: value
                 for (key, _t), value in zip(_TASMOTA_FIELDS, row)
+                if not (key in _TASMOTA_OPTIONAL_FIELDS and value is None)
             }
         return result
 

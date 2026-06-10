@@ -21,7 +21,6 @@ def _make_host(hostname, mac, ip="10.1.90.51", extra=None):
         hostname=hostname,
         sheet_type="IoT",
         interfaces=[iface],
-        default_ipv4=ipv4,
         extra=extra or {},
     )
 

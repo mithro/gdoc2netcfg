@@ -34,8 +34,6 @@ def _make_host(hostname, mac, ip, ipv6_capable=True, sheet_type="IoT"):
         hostname=hostname,
         sheet_type=sheet_type,
         interfaces=[iface],
-        default_ipv4=ipv4,
-        subdomain="iot",
         ipv6_capable=ipv6_capable,
     )
     derive_all_dns_names(host, SITE)
@@ -46,7 +44,7 @@ def _make_inventory(*hosts):
     return NetworkInventory(
         site=SITE,
         hosts=list(hosts),
-        ip_to_hostname={str(h.default_ipv4): h.hostname for h in hosts},
+        ip_to_hostname={str(h.first_ipv4): h.hostname for h in hosts},
         ip_to_macs={},
     )
 

@@ -42,20 +42,18 @@ def generate_tayga(
         - "{tun_device}.netdev": systemd-networkd TUN device
         - "{tun_device}.network": systemd-networkd network config
     """
-    # Collect NAT64 mappings for incapable hosts
+    # Collect NAT64 mappings for incapable hosts — one map entry per
+    # IP endpoint (virtual interface) that has a derived IPv6 address.
     mappings: list[tuple[str, str, str]] = []  # (hostname, ipv4, ipv6)
     for host in inventory.hosts_sorted():
         if host.ipv6_capable:
             continue
-        if host.default_ipv4 is None:
-            continue
-        # Find the IPv6 address on the interface matching the default IPv4
-        for iface in host.interfaces:
-            if iface.ipv4 == host.default_ipv4 and iface.ipv6_addresses:
-                ipv4_str = str(iface.ipv4)
-                ipv6_str = str(iface.ipv6_addresses[0])
-                mappings.append((host.hostname, ipv4_str, ipv6_str))
-                break
+        for vi in host.virtual_interfaces:
+            if not vi.ipv6_addresses:
+                continue
+            mappings.append(
+                (host.hostname, str(vi.ipv4), str(vi.ipv6_addresses[0]))
+            )
 
     # Sort by IPv4 address
     mappings.sort(key=lambda m: ip_sort_key(m[1]))

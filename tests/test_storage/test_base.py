@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 
 from gdoc2netcfg.storage.base import (
-    SCHEMA_VERSION,
     BaseDatabase,
     SchemaVersionError,
     _utcnow_iso,
@@ -109,7 +108,7 @@ class TestSchemaVersion:
         cur = db.connection.execute(
             "SELECT value FROM _meta WHERE key = 'schema_version'"
         )
-        assert int(cur.fetchone()[0]) == SCHEMA_VERSION
+        assert int(cur.fetchone()[0]) == ConcreteDB.SCHEMA_VERSION
 
     def test_wrong_version_raises(self, tmp_path: Path):
         db_path = tmp_path / "wrong_version.db"

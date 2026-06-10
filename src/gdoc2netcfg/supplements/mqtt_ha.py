@@ -863,23 +863,11 @@ def run_daemon(
                 hosts, verbose=verbose,
             )
 
-            # Save to DiscoveryDB (delta-based historical storage)
-            from gdoc2netcfg.storage.discovery_db import DiscoveryDB
+            # Save to DiscoveryDB (delta-based historical storage),
+            # tombstoning hosts that vanished from the inventory.
+            from gdoc2netcfg.cli.main import _save_reachability_to_db
 
-            with DiscoveryDB(config.cache.discovery_db_path) as db:
-                scan_id = db.begin_scan("reachability")
-                try:
-                    changed = db.save_reachability(scan_id, reachability)
-                    db.finish_scan(
-                        scan_id,
-                        host_count=len(reachability),
-                        changed_count=changed,
-                    )
-                except Exception:
-                    db.connection.execute(
-                        "DELETE FROM scans WHERE id = ?", (scan_id,),
-                    )
-                    raise
+            _save_reachability_to_db(config, reachability)
 
             # Publish discovery + state using shared helper
             published, disc, state = _publish_hosts_to_client(

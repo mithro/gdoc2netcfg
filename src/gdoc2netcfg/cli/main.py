@@ -191,6 +191,35 @@ def _save_to_discovery_db(
             raise
 
 
+def _save_reachability_to_db(config: PipelineConfig, reachability: dict) -> None:
+    """Save a reachability scan and tombstone vanished hosts.
+
+    Same lifecycle as _save_to_discovery_db, plus the tombstone pass — a
+    reachability scan covers every inventory host (up or down), so hosts
+    present in the DB's latest state but absent from this scan have been
+    removed from the inventory and are tombstoned under the same scan row.
+    """
+    from gdoc2netcfg.storage.discovery_db import DiscoveryDB
+
+    with DiscoveryDB(config.cache.discovery_db_path) as db:
+        scan_id = db.begin_scan("reachability")
+        try:
+            changed = db.save_reachability(scan_id, reachability)
+            changed += db.tombstone_missing_reachability(
+                scan_id, set(reachability),
+            )
+            db.finish_scan(
+                scan_id,
+                host_count=len(reachability),
+                changed_count=changed,
+            )
+        except Exception:
+            db.connection.execute(
+                "DELETE FROM scans WHERE id = ?", (scan_id,),
+            )
+            raise
+
+
 def _load_latest_from_db(config, loader: str):
     """Load the latest supplement data from the DiscoveryDB — the sole source.
 
@@ -656,9 +685,7 @@ def _load_or_run_reachability(
     print("Checking host reachability...", file=sys.stderr)
     reachability = check_all_hosts_reachability(hosts, verbose=True)
 
-    _save_to_discovery_db(
-        config, "reachability", "save_reachability", reachability,
-    )
+    _save_reachability_to_db(config, reachability)
 
     return reachability
 

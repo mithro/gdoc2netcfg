@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS reachability (
     is_reachable  INTEGER NOT NULL,
     transmitted   INTEGER NOT NULL,
     received      INTEGER NOT NULL,
-    rtt_avg_ms    REAL
+    rtt_avg_ms    REAL,
+    is_tombstone  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_reach_scan ON reachability(scan_id);
 CREATE INDEX IF NOT EXISTS idx_reach_host ON reachability(hostname);
@@ -126,6 +127,16 @@ CREATE INDEX IF NOT EXISTS idx_tasmota_host ON tasmota_data(hostname);
 class DiscoveryDB(BaseDatabase):
     """SQLite storage for supplement scan results."""
 
+    # v2: reachability.is_tombstone — records "host removed from the
+    # inventory" as an INSERT-only delta (see tombstone_missing_reachability).
+    SCHEMA_VERSION = 2
+    SCHEMA_UPGRADES = {
+        2: [
+            "ALTER TABLE reachability "
+            "ADD COLUMN is_tombstone INTEGER NOT NULL DEFAULT 0",
+        ],
+    }
+
     def _create_tables(self, conn: sqlite3.Connection) -> None:
         for stmt in (
             _REACHABILITY_SQL
@@ -196,18 +207,41 @@ class DiscoveryDB(BaseDatabase):
         Returns a dict matching the v2 JSON cache format:
         ``{hostname: {"interfaces": [[{ip, transmitted, received, rtt_avg_ms}]]}}``.
 
-        Returns None if no completed reachability scan exists.
+        Hosts whose latest record is a tombstone (removed from the
+        inventory) are omitted.  Returns None if no completed
+        reachability scan exists.
         """
         latest_id = self.latest_scan_id("reachability")
         if latest_id is None:
             return None
 
-        # Get the latest scan_id per hostname (may span multiple scans
-        # due to delta storage — each host's latest data is from the
-        # most recent scan that changed it).
+        result: dict[str, dict] = {}
+        for hostname, rows in self._latest_reachability_rows().items():
+            ifaces: list[list[dict]] = []
+            for iface_idx, ip, _up, tx, rx, rtt in rows:
+                while len(ifaces) <= iface_idx:
+                    ifaces.append([])
+                ifaces[iface_idx].append({
+                    "ip": ip,
+                    "transmitted": tx,
+                    "received": rx,
+                    "rtt_avg_ms": rtt,
+                })
+            result[hostname] = {"interfaces": ifaces}
+        return result
+
+    def _latest_reachability_rows(self) -> dict[str, list[tuple]]:
+        """Rows from each host's most recent finished scan, tombstones excluded.
+
+        Each host's latest data may come from a different scan (delta
+        storage — a host only gets rows in the scans that changed it).
+        Returns hostname -> [(interface_idx, ip, is_reachable, transmitted,
+        received, rtt_avg_ms), ...] sorted by interface and IP.  A host
+        whose latest record is a tombstone is omitted entirely.
+        """
         cur = self._conn.execute(
-            "SELECT r.hostname, r.interface_idx, r.ip, "
-            "r.transmitted, r.received, r.rtt_avg_ms "
+            "SELECT r.hostname, r.interface_idx, r.ip, r.is_reachable, "
+            "r.transmitted, r.received, r.rtt_avg_ms, r.is_tombstone "
             "FROM reachability r "
             "WHERE r.scan_id = ("
             "  SELECT r2.scan_id FROM reachability r2 "
@@ -218,42 +252,77 @@ class DiscoveryDB(BaseDatabase):
             ") "
             "ORDER BY r.hostname, r.interface_idx, r.ip"
         )
-        result: dict[str, dict] = {}
-        for hostname, iface_idx, ip, tx, rx, rtt in cur.fetchall():
-            if hostname not in result:
-                result[hostname] = {"interfaces": []}
-            ifaces = result[hostname]["interfaces"]
-            while len(ifaces) <= iface_idx:
-                ifaces.append([])
-            ifaces[iface_idx].append({
-                "ip": ip,
-                "transmitted": tx,
-                "received": rx,
-                "rtt_avg_ms": rtt,
-            })
-        return result
+        hosts: dict[str, list[tuple]] = {}
+        tombstoned: set[str] = set()
+        for hostname, iface_idx, ip, up, tx, rx, rtt, tomb in cur.fetchall():
+            if tomb:
+                tombstoned.add(hostname)
+                continue
+            hosts.setdefault(hostname, []).append(
+                (iface_idx, ip, bool(up), tx, rx, rtt)
+            )
+        for hostname in tombstoned:
+            hosts.pop(hostname, None)
+        return hosts
 
     def _latest_reachability_status(self) -> dict[str, frozenset]:
-        """Build hostname -> frozenset((ip, is_reachable)) for comparison."""
-        cur = self._conn.execute(
-            "SELECT r.hostname, r.interface_idx, r.ip, r.is_reachable "
-            "FROM reachability r "
-            "WHERE r.scan_id = ("
-            "  SELECT r2.scan_id FROM reachability r2 "
-            "  JOIN scans s ON r2.scan_id = s.id "
-            "  WHERE s.finished_at IS NOT NULL "
-            "  AND r2.hostname = r.hostname "
-            "  ORDER BY s.id DESC LIMIT 1"
-            ")"
-        )
-        raw: dict[str, list[tuple]] = {}
-        for hostname, iface_idx, ip, is_reachable in cur.fetchall():
-            raw.setdefault(hostname, []).append(
-                (iface_idx, ip, bool(is_reachable))
-            )
+        """Build hostname -> frozenset((iface, ip, is_reachable)) for comparison.
+
+        Tombstoned hosts are excluded — so a re-added host compares
+        against nothing and its fresh rows are stored (resurrection),
+        and tombstone_missing_reachability never re-tombstones.
+        """
         return {
-            h: frozenset(entries) for h, entries in raw.items()
+            hostname: frozenset(
+                (iface_idx, ip, up)
+                for iface_idx, ip, up, _tx, _rx, _rtt in rows
+            )
+            for hostname, rows in self._latest_reachability_rows().items()
         }
+
+    def tombstone_missing_reachability(
+        self, scan_id: int, present: set[str],
+    ) -> int:
+        """Tombstone hosts that vanished from the scanned host set.
+
+        *present* must be the FULL set of hostnames covered by this scan —
+        a reachability scan records every inventory host, up or down, so a
+        host absent from it has been removed from the inventory.  Each
+        missing host gets a single tombstone row under *scan_id*: an
+        INSERT-only delta (history is never deleted) that drops the host
+        from ``load_latest_reachability()``.  If the host is later
+        re-added, fresh rows under a newer scan supersede the tombstone
+        automatically.
+
+        Raises ValueError on an empty *present* set — that means the scan
+        itself failed, not that every host was removed.
+
+        Returns the number of hosts tombstoned.
+        """
+        if not present:
+            raise ValueError(
+                "tombstone_missing_reachability called with an empty "
+                "present set — refusing to tombstone every host."
+            )
+        missing = sorted(set(self._latest_reachability_status()) - set(present))
+        if not missing:
+            return 0
+        cur = self._conn.cursor()
+        try:
+            cur.execute("BEGIN")
+            for hostname in missing:
+                cur.execute(
+                    "INSERT INTO reachability "
+                    "(scan_id, hostname, interface_idx, ip, is_reachable, "
+                    "transmitted, received, rtt_avg_ms, is_tombstone) "
+                    "VALUES (?, ?, 0, '', 0, 0, 0, NULL, 1)",
+                    (scan_id, hostname),
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return len(missing)
 
     # ==================================================================
     # SSH host keys

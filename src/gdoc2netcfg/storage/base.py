@@ -17,9 +17,6 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-# Current schema version — bump when tables change.
-SCHEMA_VERSION = 1
-
 # SQL for tables shared by both databases.
 _SCANS_SQL = """\
 CREATE TABLE IF NOT EXISTS scans (
@@ -54,11 +51,21 @@ class BaseDatabase:
     """Manages a single SQLite database with DELETE-journal mode and scan tracking.
 
     Subclasses must override ``_create_tables()`` to define their
-    data-specific tables (called once when the database is first created).
+    data-specific tables (called once when the database is first created),
+    and bump ``SCHEMA_VERSION`` + add a ``SCHEMA_UPGRADES`` entry whenever
+    their tables change.
 
     Pass ``read_only=True`` to open an existing database without any write
     access (used by read-only commands against a root-owned DB).
     """
+
+    # Per-database schema version — subclasses bump this when their
+    # tables change.
+    SCHEMA_VERSION = 1
+
+    # target_version -> DDL statements upgrading from target_version - 1.
+    # Applied in order by a read-write open of an older database.
+    SCHEMA_UPGRADES: dict[int, list[str]] = {}
 
     def __init__(self, db_path: Path, *, read_only: bool = False) -> None:
         self._db_path = db_path
@@ -131,7 +138,7 @@ class BaseDatabase:
                     self._conn.execute(stmt)
             self._conn.execute(
                 "INSERT INTO _meta (key, value) VALUES ('schema_version', ?)",
-                (str(SCHEMA_VERSION),),
+                (str(self.SCHEMA_VERSION),),
             )
             self._create_tables(self._conn)
             self._conn.execute("COMMIT")
@@ -147,7 +154,12 @@ class BaseDatabase:
         """
 
     def _check_schema_version(self) -> None:
-        """Verify the on-disk schema version matches the code."""
+        """Verify the on-disk schema version, upgrading older databases.
+
+        A read-write open of an older database applies the registered
+        ``SCHEMA_UPGRADES`` steps.  A read-only open cannot upgrade and
+        fails loud; a database NEWER than the code always fails loud.
+        """
         cur = self._conn.execute(
             "SELECT value FROM _meta WHERE key = 'schema_version'"
         )
@@ -159,13 +171,45 @@ class BaseDatabase:
                 "before deleting it."
             )
         on_disk = int(row[0])
-        if on_disk != SCHEMA_VERSION:
+        if on_disk == self.SCHEMA_VERSION:
+            return
+        if on_disk > self.SCHEMA_VERSION:
             raise SchemaVersionError(
                 f"Database {self._db_path} has schema version {on_disk}, "
-                f"but the code expects version {SCHEMA_VERSION}. "
-                "No automatic upgrade is implemented — investigate before "
-                "deleting the file (its scan history would be lost)."
+                f"newer than the code's version {self.SCHEMA_VERSION} — "
+                "the code is out of date for this database."
             )
+        if self._read_only:
+            raise SchemaVersionError(
+                f"Database {self._db_path} has schema version {on_disk}, "
+                f"but the code expects version {self.SCHEMA_VERSION}. "
+                "A read-only open cannot upgrade it — any write command "
+                "(the daemon, a scan, fetch) will upgrade it in place."
+            )
+        self._upgrade_schema(on_disk)
+
+    def _upgrade_schema(self, on_disk: int) -> None:
+        """Apply SCHEMA_UPGRADES steps from *on_disk* up to SCHEMA_VERSION."""
+        self._conn.execute("BEGIN")
+        try:
+            for version in range(on_disk + 1, self.SCHEMA_VERSION + 1):
+                steps = self.SCHEMA_UPGRADES.get(version)
+                if steps is None:
+                    raise SchemaVersionError(
+                        f"Database {self._db_path} is at schema version "
+                        f"{on_disk} but no upgrade step to version "
+                        f"{version} is registered."
+                    )
+                for stmt in steps:
+                    self._conn.execute(stmt)
+            self._conn.execute(
+                "UPDATE _meta SET value = ? WHERE key = 'schema_version'",
+                (str(self.SCHEMA_VERSION),),
+            )
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
 
     # ------------------------------------------------------------------
     # Connection lifecycle

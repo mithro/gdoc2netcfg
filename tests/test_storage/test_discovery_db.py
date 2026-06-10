@@ -545,3 +545,143 @@ class TestHistory:
             since="2099-01-01T00:00:00",
         )
         assert changes == []
+
+
+# -- Reachability tombstones -------------------------------------------------
+
+class TestReachabilityTombstones:
+    def _scan(self, db: DiscoveryDB, data: dict) -> int:
+        """Run one full scan cycle: save + tombstone + finish."""
+        s = db.begin_scan("reachability")
+        changed = db.save_reachability(s, data)
+        changed += db.tombstone_missing_reachability(s, set(data))
+        db.finish_scan(s, host_count=len(data), changed_count=changed)
+        return s
+
+    def _host(self, hostname: str, ip: str) -> dict:
+        return {
+            hostname: {
+                "interfaces": [[{
+                    "ip": ip, "transmitted": 10, "received": 10,
+                    "rtt_avg_ms": 1.0,
+                }]],
+            },
+        }
+
+    def test_removed_host_is_tombstoned(self, db: DiscoveryDB):
+        data = self._host("host-a", "10.1.10.1") | self._host("host-b", "10.1.10.2")
+        self._scan(db, data)
+
+        # host-b vanishes from the inventory.
+        self._scan(db, self._host("host-a", "10.1.10.1"))
+
+        latest = db.load_latest_reachability()
+        assert "host-a" in latest
+        assert "host-b" not in latest
+        assert "host-b" not in db._latest_reachability_status()
+
+    def test_history_is_retained(self, db: DiscoveryDB):
+        """The tombstone is an INSERT-only delta — no rows are deleted."""
+        data = self._host("host-b", "10.1.10.2")
+        self._scan(db, data)
+        self._scan(db, self._host("host-a", "10.1.10.1"))
+
+        rows = db.connection.execute(
+            "SELECT is_tombstone FROM reachability WHERE hostname = 'host-b' "
+            "ORDER BY id"
+        ).fetchall()
+        # Original live row plus the tombstone row.
+        assert [r[0] for r in rows] == [0, 1]
+
+    def test_resurrection(self, db: DiscoveryDB):
+        """A re-added host supersedes its tombstone automatically."""
+        self._scan(db, self._host("host-a", "10.1.10.1")
+                   | self._host("host-b", "10.1.10.2"))
+        self._scan(db, self._host("host-a", "10.1.10.1"))
+        assert "host-b" not in db.load_latest_reachability()
+
+        self._scan(db, self._host("host-a", "10.1.10.1")
+                   | self._host("host-b", "10.1.10.2"))
+        latest = db.load_latest_reachability()
+        assert latest["host-b"]["interfaces"][0][0]["ip"] == "10.1.10.2"
+
+    def test_tombstone_is_idempotent(self, db: DiscoveryDB):
+        """A second scan without the host tombstones nothing new."""
+        self._scan(db, self._host("host-a", "10.1.10.1")
+                   | self._host("host-b", "10.1.10.2"))
+        self._scan(db, self._host("host-a", "10.1.10.1"))
+
+        s = db.begin_scan("reachability")
+        db.save_reachability(s, self._host("host-a", "10.1.10.1"))
+        tombstoned = db.tombstone_missing_reachability(s, {"host-a"})
+        db.finish_scan(s, host_count=1, changed_count=1)
+        assert tombstoned == 0
+
+    def test_empty_present_set_fails_loud(self, db: DiscoveryDB):
+        self._scan(db, self._host("host-a", "10.1.10.1"))
+        s = db.begin_scan("reachability")
+        with pytest.raises(ValueError, match="refusing to tombstone"):
+            db.tombstone_missing_reachability(s, set())
+
+    def test_tombstone_counts_as_changed(self, db: DiscoveryDB):
+        """The scan that tombstones reports it in changed_count."""
+        self._scan(db, self._host("host-a", "10.1.10.1")
+                   | self._host("host-b", "10.1.10.2"))
+
+        s = db.begin_scan("reachability")
+        changed = db.save_reachability(s, self._host("host-a", "10.1.10.1"))
+        changed += db.tombstone_missing_reachability(s, {"host-a"})
+        db.finish_scan(s, host_count=1, changed_count=changed)
+        assert changed == 1  # host-a unchanged; host-b tombstoned
+
+
+# -- Schema upgrade (v1 -> v2) ----------------------------------------------
+
+class TestSchemaUpgrade:
+    def _make_v1_db(self, path) -> None:
+        """Create a current DB, then strip it back to schema v1."""
+        d = DiscoveryDB(path)
+        d.connection.execute("ALTER TABLE reachability DROP COLUMN is_tombstone")
+        d.connection.execute(
+            "UPDATE _meta SET value = '1' WHERE key = 'schema_version'"
+        )
+        d.connection.commit()
+        d.close()
+
+    def test_rw_open_upgrades_v1(self, tmp_path: Path):
+        path = tmp_path / "v1.db"
+        self._make_v1_db(path)
+
+        d = DiscoveryDB(path)  # read-write open applies the upgrade
+        cols = [r[1] for r in d.connection.execute(
+            "PRAGMA table_info(reachability)"
+        )]
+        assert "is_tombstone" in cols
+        version = d.connection.execute(
+            "SELECT value FROM _meta WHERE key = 'schema_version'"
+        ).fetchone()[0]
+        assert int(version) == DiscoveryDB.SCHEMA_VERSION
+        d.close()
+
+    def test_read_only_open_of_v1_fails_loud(self, tmp_path: Path):
+        from gdoc2netcfg.storage.base import SchemaVersionError
+
+        path = tmp_path / "v1.db"
+        self._make_v1_db(path)
+
+        with pytest.raises(SchemaVersionError, match="read-only open cannot"):
+            DiscoveryDB(path, read_only=True)
+
+    def test_newer_db_than_code_fails_loud(self, tmp_path: Path):
+        from gdoc2netcfg.storage.base import SchemaVersionError
+
+        path = tmp_path / "future.db"
+        d = DiscoveryDB(path)
+        d.connection.execute(
+            "UPDATE _meta SET value = '99' WHERE key = 'schema_version'"
+        )
+        d.connection.commit()
+        d.close()
+
+        with pytest.raises(SchemaVersionError, match="newer than the code"):
+            DiscoveryDB(path)

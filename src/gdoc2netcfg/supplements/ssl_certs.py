@@ -9,10 +9,8 @@ with additional data from external systems (TLS endpoints).
 
 from __future__ import annotations
 
-import json
 import socket
 import ssl
-from pathlib import Path
 
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
@@ -124,21 +122,6 @@ def _get_name_attribute(name: x509.Name, oid: x509.ObjectIdentifier) -> str | No
     except Exception:
         pass
     return None
-
-
-def load_ssl_cert_cache(cache_path: Path) -> dict[str, dict]:
-    """Load cached SSL certificate data from disk."""
-    if not cache_path.exists():
-        return {}
-    with open(cache_path) as f:
-        return json.load(f)
-
-
-def save_ssl_cert_cache(cache_path: Path, data: dict[str, dict]) -> None:
-    """Save SSL certificate data to disk cache."""
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(cache_path, "w") as f:
-        json.dump(data, f, indent="  ", sort_keys=True)
 
 
 def scan_ssl_certs(

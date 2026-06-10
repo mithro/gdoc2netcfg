@@ -1,9 +1,6 @@
 """Tests for the shared reachability module."""
 
-import json
-import os
 import socket
-import time
 from unittest.mock import patch
 
 from gdoc2netcfg.models.addressing import IPv4Address, IPv6Address, MACAddress
@@ -16,8 +13,6 @@ from gdoc2netcfg.supplements.reachability import (
     check_all_hosts_reachability,
     check_port_open,
     check_reachable,
-    load_reachability_cache,
-    save_reachability_cache,
 )
 
 
@@ -282,168 +277,6 @@ def _make_hr(hostname, pings_per_iface):
     )
 
 
-class TestReachabilityCache:
-    def test_save_and_load_roundtrip(self, tmp_path):
-        cache_path = tmp_path / "reachability.json"
-        data = {
-            "server": _make_hr("server", [
-                [("10.1.10.1", PingResult(10, 10, 0.3))],
-            ]),
-            "desktop": _make_hr("desktop", [
-                [("10.1.10.2", PingResult(10, 0))],
-            ]),
-        }
-
-        save_reachability_cache(cache_path, data)
-        result = load_reachability_cache(cache_path)
-
-        assert result is not None
-        loaded, age = result
-        assert len(loaded) == 2
-        assert loaded["server"].hostname == "server"
-        assert loaded["server"].active_ips == ("10.1.10.1",)
-        assert loaded["server"].is_up is True
-        assert loaded["desktop"].active_ips == ()
-        assert loaded["desktop"].is_up is False
-        assert age < 2  # just written
-
-    def test_load_missing_file_returns_none(self, tmp_path):
-        cache_path = tmp_path / "nonexistent.json"
-        assert load_reachability_cache(cache_path) is None
-
-    def test_load_stale_file_returns_none(self, tmp_path):
-        cache_path = tmp_path / "reachability.json"
-        data = {
-            "server": _make_hr("server", [
-                [("10.1.10.1", PingResult(10, 10, 0.3))],
-            ]),
-        }
-        save_reachability_cache(cache_path, data)
-
-        # Backdate the file modification time by 600 seconds
-        old_time = time.time() - 600
-        os.utime(cache_path, (old_time, old_time))
-
-        assert load_reachability_cache(cache_path, max_age=300) is None
-
-    def test_fresh_file_within_max_age(self, tmp_path):
-        cache_path = tmp_path / "reachability.json"
-        data = {
-            "server": _make_hr("server", [
-                [("10.1.10.1", PingResult(10, 10, 0.3))],
-            ]),
-        }
-        save_reachability_cache(cache_path, data)
-
-        result = load_reachability_cache(cache_path, max_age=300)
-        assert result is not None
-
-    def test_corrupted_json_returns_none(self, tmp_path):
-        cache_path = tmp_path / "reachability.json"
-        cache_path.write_text("not valid json{{{")
-
-        assert load_reachability_cache(cache_path) is None
-
-    def test_empty_reachability_roundtrip(self, tmp_path):
-        cache_path = tmp_path / "reachability.json"
-        save_reachability_cache(cache_path, {})
-
-        result = load_reachability_cache(cache_path)
-        assert result is not None
-        loaded, _ = result
-        assert loaded == {}
-
-    def test_creates_parent_directories(self, tmp_path):
-        cache_path = tmp_path / "deep" / "nested" / "reachability.json"
-        data = {"server": _make_hr("server", [
-            [("10.1.10.1", PingResult(10, 0))],
-        ])}
-
-        save_reachability_cache(cache_path, data)
-
-        assert cache_path.exists()
-
-    def test_json_format_is_sorted(self, tmp_path):
-        cache_path = tmp_path / "reachability.json"
-        data = {
-            "zebra": _make_hr("zebra", [
-                [("10.1.10.3", PingResult(10, 10, 0.5))],
-            ]),
-            "alpha": _make_hr("alpha", [
-                [("10.1.10.1", PingResult(10, 10, 0.3))],
-            ]),
-        }
-        save_reachability_cache(cache_path, data)
-
-        raw = json.loads(cache_path.read_text())
-        assert list(raw["hosts"].keys()) == ["alpha", "zebra"]
-
-    def test_roundtrip_preserves_ping_stats(self, tmp_path):
-        """transmitted, received, and rtt_avg_ms survive save→load."""
-        cache_path = tmp_path / "reachability.json"
-        data = {
-            "server": _make_hr("server", [
-                [
-                    ("10.1.10.1", PingResult(10, 8, 1.234)),
-                    ("10.1.20.1", PingResult(10, 0)),
-                ],
-            ]),
-        }
-
-        save_reachability_cache(cache_path, data)
-        loaded, _ = load_reachability_cache(cache_path)
-
-        pings = loaded["server"].interfaces[0].pings
-        assert pings[0] == ("10.1.10.1", PingResult(10, 8, 1.234))
-        assert pings[1] == ("10.1.20.1", PingResult(10, 0, None))
-
-    def test_old_v1_format_returns_none(self, tmp_path):
-        """v1 cache format (flat {hostname: [ips]}) is rejected."""
-        cache_path = tmp_path / "reachability.json"
-        cache_path.write_text(json.dumps({
-            "server": ["10.1.10.1"],
-            "desktop": [],
-        }))
-
-        assert load_reachability_cache(cache_path) is None
-
-    def test_corrupt_v2_structure_returns_none(self, tmp_path):
-        """Malformed v2 JSON is rejected gracefully."""
-        cache_path = tmp_path / "reachability.json"
-
-        # version=2 but hosts has wrong structure
-        cache_path.write_text(json.dumps({
-            "version": 2,
-            "hosts": {"server": "not-a-dict"},
-        }))
-        assert load_reachability_cache(cache_path) is None
-
-        # version=2, missing "interfaces" key
-        cache_path.write_text(json.dumps({
-            "version": 2,
-            "hosts": {"server": {}},
-        }))
-        assert load_reachability_cache(cache_path) is None
-
-        # version=2, interfaces entry missing "ip"
-        cache_path.write_text(json.dumps({
-            "version": 2,
-            "hosts": {"server": {"interfaces": [[{"transmitted": 10}]]}},
-        }))
-        assert load_reachability_cache(cache_path) is None
-
-        # version=2, missing "hosts" key entirely
-        cache_path.write_text(json.dumps({"version": 2}))
-        assert load_reachability_cache(cache_path) is None
-
-        # version=2, interfaces is not a list
-        cache_path.write_text(json.dumps({
-            "version": 2,
-            "hosts": {"server": {"interfaces": "not-a-list"}},
-        }))
-        assert load_reachability_cache(cache_path) is None
-
-
 class TestSharedIPReachability:
     @patch("gdoc2netcfg.supplements.reachability.check_reachable")
     def test_shared_ip_pinged_once(self, mock_reachable):
@@ -698,45 +531,3 @@ class TestCheckAllHostsDualStack:
         hr = result["server"]
         assert len(hr.interfaces) == 1
         assert len(hr.interfaces[0].pings) == 2
-
-
-class TestReachabilityCacheDualStack:
-    def test_roundtrip_with_mixed_ips(self, tmp_path):
-        """Cache roundtrip with both IPv4 and IPv6 addresses."""
-        cache_path = tmp_path / "reachability.json"
-        data = {
-            "server": _make_hr("server", [
-                [
-                    ("10.1.10.1", PingResult(10, 10, 0.3)),
-                    ("2001:db8::1", PingResult(10, 10, 0.4)),
-                ],
-            ]),
-        }
-
-        save_reachability_cache(cache_path, data)
-        result = load_reachability_cache(cache_path)
-
-        assert result is not None
-        loaded, _ = result
-        assert loaded["server"].active_ips == ("10.1.10.1", "2001:db8::1")
-        assert loaded["server"].reachability_mode == "dual-stack"
-
-    def test_roundtrip_ipv6_only(self, tmp_path):
-        """Cache roundtrip with IPv6-only host."""
-        cache_path = tmp_path / "reachability.json"
-        data = {
-            "server": _make_hr("server", [
-                [
-                    ("10.1.10.1", PingResult(10, 0)),
-                    ("2001:db8::1", PingResult(10, 10, 0.5)),
-                ],
-            ]),
-        }
-
-        save_reachability_cache(cache_path, data)
-        result = load_reachability_cache(cache_path)
-
-        assert result is not None
-        loaded, _ = result
-        assert loaded["server"].active_ips == ("2001:db8::1",)
-        assert loaded["server"].reachability_mode == "ipv6-only"

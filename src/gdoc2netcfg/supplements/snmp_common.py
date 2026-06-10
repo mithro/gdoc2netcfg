@@ -11,8 +11,6 @@ wrapped in asyncio.run() from synchronous callers.
 from __future__ import annotations
 
 import asyncio
-import json
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -196,18 +194,3 @@ def try_snmp_credentials(
             return result
 
     return None
-
-
-def load_json_cache(cache_path: Path) -> dict[str, dict]:
-    """Load cached JSON data from disk."""
-    if not cache_path.exists():
-        return {}
-    with open(cache_path) as f:
-        return json.load(f)
-
-
-def save_json_cache(cache_path: Path, data: dict[str, dict]) -> None:
-    """Save JSON data to disk cache."""
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(cache_path, "w") as f:
-        json.dump(data, f, indent="  ", sort_keys=True)

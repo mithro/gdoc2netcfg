@@ -10,8 +10,6 @@ from gdoc2netcfg.supplements.snmp import (
     _row_list_to_tuples,
     _rows_from_walk,
     enrich_hosts_with_snmp,
-    load_snmp_cache,
-    save_snmp_cache,
     scan_snmp,
 )
 
@@ -30,32 +28,6 @@ def _make_host(hostname="switch", ip="10.1.10.1", extra=None):
         ],
         extra=extra or {},
     )
-
-
-class TestSNMPCache:
-    def test_load_missing_returns_empty(self, tmp_path):
-        result = load_snmp_cache(tmp_path / "nonexistent.json")
-        assert result == {}
-
-    def test_save_and_load_roundtrip(self, tmp_path):
-        cache_path = tmp_path / "snmp.json"
-        data = {
-            "switch": {
-                "snmp_version": "v2c",
-                "system_info": {"sysName": "switch-1"},
-                "interfaces": [],
-                "ip_addresses": [],
-                "raw": {},
-            }
-        }
-        save_snmp_cache(cache_path, data)
-        loaded = load_snmp_cache(cache_path)
-        assert loaded == data
-
-    def test_save_creates_parent_directory(self, tmp_path):
-        cache_path = tmp_path / "subdir" / "snmp.json"
-        save_snmp_cache(cache_path, {"host": {"snmp_version": "v2c"}})
-        assert cache_path.exists()
 
 
 class TestRowsFromWalk:

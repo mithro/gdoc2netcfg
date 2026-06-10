@@ -21,8 +21,6 @@ from typing import TYPE_CHECKING
 
 from gdoc2netcfg.models.host import SNMPData
 from gdoc2netcfg.supplements.snmp_common import (
-    load_json_cache,
-    save_json_cache,
     snmp_bulk_walk,
     snmp_get_system,
 )
@@ -32,9 +30,6 @@ if TYPE_CHECKING:
     from gdoc2netcfg.supplements.reachability import HostReachability
 
 # Re-export cache functions for backward compatibility.
-# Existing code imports load_snmp_cache / save_snmp_cache from this module.
-load_snmp_cache = load_json_cache
-save_snmp_cache = save_json_cache
 
 # Host-level table OIDs for bulk walk
 _IF_TABLE_OID = "1.3.6.1.2.1.2.2"       # ifTable

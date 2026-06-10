@@ -7,13 +7,10 @@ Provides ping and port-check utilities used by multiple supplements
 from __future__ import annotations
 
 import ipaddress
-import json
 import re
 import socket
 import subprocess
-import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -345,35 +342,6 @@ def print_reachability_status(
     print(file=sys.stderr)
 
 
-def save_reachability_cache(
-    cache_path: Path,
-    reachability: dict[str, HostReachability],
-) -> None:
-    """Save reachability data to disk cache (v2 format).
-
-    The v2 format stores full ping data per interface so that cached
-    output is identical to live output.
-    """
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    hosts: dict[str, dict] = {}
-    for hostname, hr in reachability.items():
-        ifaces: list[list[dict]] = []
-        for ir in hr.interfaces:
-            pings: list[dict] = []
-            for ip_str, pr in ir.pings:
-                pings.append({
-                    "ip": ip_str,
-                    "transmitted": pr.transmitted,
-                    "received": pr.received,
-                    "rtt_avg_ms": pr.rtt_avg_ms,
-                })
-            ifaces.append(pings)
-        hosts[hostname] = {"interfaces": ifaces}
-    data = {"version": 2, "hosts": hosts}
-    with open(cache_path, "w") as f:
-        json.dump(data, f, indent="  ", sort_keys=True)
-
-
 def parse_reachability_dict(
     hosts_data: dict[str, dict],
 ) -> dict[str, HostReachability]:
@@ -407,38 +375,6 @@ def parse_reachability_dict(
             interfaces=tuple(ifaces),
         )
     return reachability
-
-
-def load_reachability_cache(
-    cache_path: Path,
-    max_age: float = 300,
-) -> tuple[dict[str, HostReachability], float] | None:
-    """Load cached reachability data from disk (v2 format).
-
-    Returns (data, age_seconds) tuple if cache is fresh, or None if the
-    cache file is missing, older than max_age seconds, corrupted, or
-    uses the old v1 format.
-    """
-    if not cache_path.exists():
-        return None
-    age = time.time() - cache_path.stat().st_mtime
-    if age >= max_age:
-        return None
-    try:
-        with open(cache_path) as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return None
-
-    # Reject old v1 format (flat {hostname: [ips]}) — triggers fresh scan.
-    if not isinstance(data, dict) or data.get("version") != 2:
-        return None
-
-    try:
-        reachability = parse_reachability_dict(data["hosts"])
-        return (reachability, age)
-    except (KeyError, TypeError, AttributeError, ValueError):
-        return None
 
 
 def check_all_hosts_reachability(

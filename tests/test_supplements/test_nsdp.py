@@ -6,9 +6,7 @@ from gdoc2netcfg.models.host import Host, NetworkInterface, NSDPData
 from gdoc2netcfg.models.switch_data import SwitchDataSource
 from gdoc2netcfg.supplements.nsdp import (
     enrich_hosts_with_nsdp,
-    load_nsdp_cache,
     nsdp_to_switch_data,
-    save_nsdp_cache,
 )
 
 
@@ -41,30 +39,6 @@ def _make_host(hostname="gs110emx", ip="10.1.20.1", hardware_type="netgear-switc
         ],
         hardware_type=hardware_type,
     )
-
-
-class TestNSDPCache:
-    def test_load_missing_returns_empty(self, tmp_path):
-        result = load_nsdp_cache(tmp_path / "nonexistent.json")
-        assert result == {}
-
-    def test_save_and_load_roundtrip(self, tmp_path):
-        cache_path = tmp_path / "nsdp.json"
-        data = {
-            "gs110emx": {
-                "model": "GS110EMX",
-                "mac": "00:09:5b:aa:bb:cc",
-                "firmware_version": "V2.06.24GR",
-            }
-        }
-        save_nsdp_cache(cache_path, data)
-        loaded = load_nsdp_cache(cache_path)
-        assert loaded == data
-
-    def test_save_creates_parent_directory(self, tmp_path):
-        cache_path = tmp_path / "subdir" / "nsdp.json"
-        save_nsdp_cache(cache_path, {"host": {"model": "GS110EMX", "mac": "aa:bb:cc:dd:ee:ff"}})
-        assert cache_path.exists()
 
 
 class TestEnrichHostsWithNSDP:

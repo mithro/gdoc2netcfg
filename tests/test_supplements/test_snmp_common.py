@@ -5,8 +5,6 @@ from unittest.mock import AsyncMock, patch
 from gdoc2netcfg.models.addressing import IPv4Address, MACAddress
 from gdoc2netcfg.models.host import Host, NetworkInterface
 from gdoc2netcfg.supplements.snmp_common import (
-    load_json_cache,
-    save_json_cache,
     try_snmp_credentials,
 )
 
@@ -25,24 +23,6 @@ def _make_host(hostname="switch", ip="10.1.10.1", extra=None):
         ],
         extra=extra or {},
     )
-
-
-class TestJSONCache:
-    def test_load_missing_returns_empty(self, tmp_path):
-        result = load_json_cache(tmp_path / "nonexistent.json")
-        assert result == {}
-
-    def test_save_and_load_roundtrip(self, tmp_path):
-        cache_path = tmp_path / "cache.json"
-        data = {"host1": {"key": "value"}}
-        save_json_cache(cache_path, data)
-        loaded = load_json_cache(cache_path)
-        assert loaded == data
-
-    def test_save_creates_parent_directory(self, tmp_path):
-        cache_path = tmp_path / "subdir" / "cache.json"
-        save_json_cache(cache_path, {"host": {"k": "v"}})
-        assert cache_path.exists()
 
 
 class TestTrySNMPCredentials:

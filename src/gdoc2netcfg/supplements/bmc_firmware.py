@@ -10,10 +10,8 @@ with additional data from external systems (IPMI controllers).
 
 from __future__ import annotations
 
-import json
 import re
 import subprocess
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from gdoc2netcfg.derivations.hardware import (
@@ -131,21 +129,6 @@ def _is_snmp_capable(series: int | None) -> bool:
     if series is None:
         return True
     return series >= 10
-
-
-def load_bmc_firmware_cache(cache_path: Path) -> dict[str, dict]:
-    """Load cached BMC firmware data from disk."""
-    if not cache_path.exists():
-        return {}
-    with open(cache_path) as f:
-        return json.load(f)
-
-
-def save_bmc_firmware_cache(cache_path: Path, data: dict[str, dict]) -> None:
-    """Save BMC firmware data to disk cache."""
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(cache_path, "w") as f:
-        json.dump(data, f, indent="  ", sort_keys=True)
 
 
 def scan_bmc_firmware(

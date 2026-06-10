@@ -62,10 +62,9 @@ def test_flat_supplement_cache_is_not_read(tmp_path):
     # Discover the derived hostname, then plant a flat cache for it.
     _, hosts, _, _ = _build_pipeline(config)
     (host,) = hosts
-    from gdoc2netcfg.supplements.sshfp import save_ssh_host_keys_cache
-    save_ssh_host_keys_cache(
-        cache_dir / "ssh_host_keys.json",
-        {host.hostname: _ssh_keys_for(host.hostname)},
+    import json
+    (cache_dir / "ssh_host_keys.json").write_text(
+        json.dumps({host.hostname: _ssh_keys_for(host.hostname)}),
     )
 
     config = load_config(config_path)

@@ -15,9 +15,7 @@ supplement pipeline.
 
 from __future__ import annotations
 
-import json
 import sys
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from gdoc2netcfg.derivations.hardware import HARDWARE_NETGEAR_SWITCH_PLUS
@@ -95,21 +93,6 @@ def nsdp_to_switch_data(nsdp: NSDPData) -> SwitchData:
         broadcast_filtering=nsdp.broadcast_filtering,
         loop_detection=nsdp.loop_detection,
     )
-
-
-def load_nsdp_cache(cache_path: Path) -> dict[str, dict]:
-    """Load cached NSDP data from disk."""
-    if not cache_path.exists():
-        return {}
-    with open(cache_path) as f:
-        return json.load(f)
-
-
-def save_nsdp_cache(cache_path: Path, data: dict[str, dict]) -> None:
-    """Save NSDP data to disk cache."""
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(cache_path, "w") as f:
-        json.dump(data, f, indent="  ", sort_keys=True)
 
 
 def scan_nsdp(

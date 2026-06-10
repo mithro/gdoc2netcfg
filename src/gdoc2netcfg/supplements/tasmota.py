@@ -17,7 +17,6 @@ import sys
 import urllib.error
 import urllib.request
 from concurrent.futures import Future, ThreadPoolExecutor
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from gdoc2netcfg.models.host import TasmotaData
@@ -253,21 +252,6 @@ def scan_tasmota(
         )
 
     return tasmota_data
-
-
-def load_tasmota_cache(cache_path: Path) -> dict[str, dict]:
-    """Load cached Tasmota data from disk."""
-    if not cache_path.exists():
-        return {}
-    with open(cache_path) as f:
-        return json.load(f)
-
-
-def save_tasmota_cache(cache_path: Path, data: dict[str, dict]) -> None:
-    """Save Tasmota data to disk cache."""
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(cache_path, "w") as f:
-        json.dump(data, f, indent="  ", sort_keys=True)
 
 
 def enrich_hosts_with_tasmota(

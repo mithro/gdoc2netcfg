@@ -9,8 +9,6 @@ from gdoc2netcfg.models.host import Host, NetworkInterface, SSLCertInfo
 from gdoc2netcfg.supplements.reachability import HostReachability
 from gdoc2netcfg.supplements.ssl_certs import (
     enrich_hosts_with_ssl_certs,
-    load_ssl_cert_cache,
-    save_ssl_cert_cache,
     scan_ssl_certs,
 )
 
@@ -58,32 +56,6 @@ class TestSSLCertInfoModel:
     def test_host_ssl_cert_info_default_none(self):
         host = _make_host()
         assert host.ssl_cert_info is None
-
-
-class TestCacheIO:
-    def test_load_missing_cache(self, tmp_path):
-        data = load_ssl_cert_cache(tmp_path / "nonexistent.json")
-        assert data == {}
-
-    def test_save_and_load_roundtrip(self, tmp_path):
-        cache_path = tmp_path / "ssl_certs.json"
-        cert_data = {
-            "desktop": {
-                "issuer": "Let's Encrypt",
-                "self_signed": False,
-                "valid": True,
-                "expiry": "2026-04-15",
-                "sans": ["desktop.example.com"],
-            }
-        }
-        save_ssl_cert_cache(cache_path, cert_data)
-        loaded = load_ssl_cert_cache(cache_path)
-        assert loaded == cert_data
-
-    def test_save_creates_parent_dirs(self, tmp_path):
-        cache_path = tmp_path / "sub" / "dir" / "ssl_certs.json"
-        save_ssl_cert_cache(cache_path, {})
-        assert cache_path.exists()
 
 
 class TestEnrichHosts:

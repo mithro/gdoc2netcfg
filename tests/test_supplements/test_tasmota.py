@@ -13,9 +13,7 @@ from gdoc2netcfg.supplements.tasmota import (
     _parse_tasmota_status,
     _unknown_key,
     enrich_hosts_with_tasmota,
-    load_tasmota_cache,
     match_unknown_devices,
-    save_tasmota_cache,
 )
 from gdoc2netcfg.supplements.tasmota_configure import (
     ConfigDrift,
@@ -369,42 +367,6 @@ class TestFetchTasmotaStatus:
 # ---------------------------------------------------------------------------
 # Cache I/O
 # ---------------------------------------------------------------------------
-
-class TestTasmotaCache:
-    def test_load_missing_returns_empty(self, tmp_path):
-        result = load_tasmota_cache(tmp_path / "nonexistent.json")
-        assert result == {}
-
-    def test_save_and_load_roundtrip(self, tmp_path):
-        cache_path = tmp_path / "tasmota.json"
-        data = {
-            "au-plug-10": {
-                "device_name": "au-plug-10",
-                "mac": "AA:BB:CC:DD:EE:10",
-                "ip": "10.1.90.10",
-                "firmware_version": "14.4.1",
-            },
-            "_unknown/10.1.90.50": {
-                "device_name": "rogue",
-                "mac": "FF:FF:FF:00:00:01",
-                "ip": "10.1.90.50",
-            },
-        }
-        save_tasmota_cache(cache_path, data)
-        loaded = load_tasmota_cache(cache_path)
-        assert loaded == data
-
-    def test_save_creates_parent_directory(self, tmp_path):
-        cache_path = tmp_path / "subdir" / "deep" / "tasmota.json"
-        save_tasmota_cache(cache_path, {"host": {"ip": "1.2.3.4"}})
-        assert cache_path.exists()
-
-    def test_save_sorted_keys(self, tmp_path):
-        cache_path = tmp_path / "tasmota.json"
-        data = {"zebra": {"ip": "1"}, "alpha": {"ip": "2"}}
-        save_tasmota_cache(cache_path, data)
-        content = cache_path.read_text()
-        assert content.index("alpha") < content.index("zebra")
 
 
 # ---------------------------------------------------------------------------

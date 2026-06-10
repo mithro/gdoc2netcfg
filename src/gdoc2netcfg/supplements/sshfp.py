@@ -13,9 +13,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
 import subprocess
-from pathlib import Path
 
 from gdoc2netcfg.models.host import Host
 from gdoc2netcfg.supplements.reachability import (
@@ -183,23 +181,6 @@ def derive_sshfp_from_host_keys(keys: list[str]) -> list[str]:
 
     records.sort()
     return records
-
-
-def load_ssh_host_keys_cache(cache_path: Path) -> dict[str, list[str]]:
-    """Load cached SSH host key data from disk."""
-    if not cache_path.exists():
-        return {}
-    with open(cache_path) as f:
-        return json.load(f)
-
-
-def save_ssh_host_keys_cache(
-    cache_path: Path, data: dict[str, list[str]],
-) -> None:
-    """Save SSH host key data to disk cache."""
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(cache_path, "w") as f:
-        json.dump(data, f, indent="  ", sort_keys=True)
 
 
 def scan_ssh_host_keys(

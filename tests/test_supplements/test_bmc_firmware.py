@@ -14,9 +14,7 @@ from gdoc2netcfg.supplements.bmc_firmware import (
     _parse_mc_info,
     _try_ipmi_credentials,
     enrich_hosts_with_bmc_firmware,
-    load_bmc_firmware_cache,
     refine_bmc_hardware_type,
-    save_bmc_firmware_cache,
     scan_bmc_firmware,
 )
 from gdoc2netcfg.supplements.reachability import HostReachability
@@ -162,32 +160,6 @@ class TestIsSnmpCapable:
 
     def test_none_conservatively_capable(self):
         assert _is_snmp_capable(None) is True
-
-
-class TestBMCFirmwareCache:
-    def test_load_missing_returns_empty(self, tmp_path):
-        result = load_bmc_firmware_cache(tmp_path / "nonexistent.json")
-        assert result == {}
-
-    def test_save_and_load_roundtrip(self, tmp_path):
-        cache_path = tmp_path / "bmc_firmware.json"
-        data = {
-            "bmc.server": {
-                "product_name": "X11SPM-T(P)F",
-                "firmware_revision": "1.74",
-                "ipmi_version": "2.0",
-                "series": 11,
-                "snmp_capable": True,
-            }
-        }
-        save_bmc_firmware_cache(cache_path, data)
-        loaded = load_bmc_firmware_cache(cache_path)
-        assert loaded == data
-
-    def test_save_creates_parent_directory(self, tmp_path):
-        cache_path = tmp_path / "subdir" / "bmc_firmware.json"
-        save_bmc_firmware_cache(cache_path, {"host": {}})
-        assert cache_path.exists()
 
 
 class TestEnrichHostsWithBMCFirmware:

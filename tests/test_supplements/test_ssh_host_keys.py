@@ -14,9 +14,7 @@ from gdoc2netcfg.supplements.sshfp import (
     _keyscan_pubkeys,
     derive_sshfp_from_host_keys,
     enrich_hosts_with_ssh_host_keys,
-    load_ssh_host_keys_cache,
     raise_for_ssh_errors,
-    save_ssh_host_keys_cache,
     scan_ssh_host_keys,
 )
 
@@ -39,27 +37,6 @@ def _make_host(hostname, ip):
             )
         ],
     )
-
-
-class TestSSHHostKeysCache:
-    def test_load_missing_returns_empty(self, tmp_path):
-        result = load_ssh_host_keys_cache(tmp_path / "nonexistent.json")
-        assert result == {}
-
-    def test_save_and_load_roundtrip(self, tmp_path):
-        cache_path = tmp_path / "ssh_host_keys.json"
-        data = {
-            "server": [f"server ssh-rsa {_RSA_B64}"],
-            "desktop": [f"desktop ssh-ed25519 {_ED25519_B64}"],
-        }
-        save_ssh_host_keys_cache(cache_path, data)
-        loaded = load_ssh_host_keys_cache(cache_path)
-        assert loaded == data
-
-    def test_save_creates_parent_directory(self, tmp_path):
-        cache_path = tmp_path / "subdir" / "ssh_host_keys.json"
-        save_ssh_host_keys_cache(cache_path, {"host": ["record"]})
-        assert cache_path.exists()
 
 
 class TestKeyscanPubkeys:

@@ -33,10 +33,10 @@ _SCAN_RESULT = {
 def test_fresh_flat_cache_is_ignored(mock_scan, tmp_path):
     """A fresh reachability.json must NOT satisfy the cache check."""
     config = _config(tmp_path)
-    from gdoc2netcfg.supplements.reachability import save_reachability_cache
+    import json
 
-    save_reachability_cache(
-        Path(config.cache.directory) / "reachability.json", {},
+    (Path(config.cache.directory) / "reachability.json").write_text(
+        json.dumps({"version": 2, "hosts": {}}),
     )
     mock_scan.return_value = _SCAN_RESULT
 

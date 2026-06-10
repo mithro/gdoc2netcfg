@@ -1,21 +1,16 @@
 """Discovery database for supplement scan results with historical retention.
 
 Stores results from network scanning supplements (reachability, SSH keys,
-SSL certs, SNMP, bridge, NSDP, BMC firmware, tasmota, zigbee).  All data
-is delta-based: a new row is inserted only when the data for a given host
-differs from the latest stored row.
-
-Structured tables are used for data types with simple schemas where
-per-column queries are valuable (reachability, SSH keys, SSL certs,
-BMC firmware).  JSON-blob tables are used for deeply nested data
-(SNMP, bridge, NSDP, tasmota, zigbee).
+SSL certs, SNMP, bridge, NSDP, BMC firmware, tasmota, zigbee).  Every
+supplement is stored in typed, structured tables.  All data is
+delta-based: rows are inserted only for an entity (host, switch, device,
+site) whose values actually changed since its latest stored state.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Callable
 
 from gdoc2netcfg.storage.base import BaseDatabase
 
@@ -80,54 +75,8 @@ CREATE INDEX IF NOT EXISTS idx_bmc_scan ON bmc_firmware(scan_id);
 CREATE INDEX IF NOT EXISTS idx_bmc_host ON bmc_firmware(hostname);
 """
 
-_SNMP_DATA_SQL = """\
-CREATE TABLE IF NOT EXISTS snmp_data (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    scan_id   INTEGER NOT NULL REFERENCES scans(id),
-    hostname  TEXT NOT NULL,
-    data_json TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_snmp_scan ON snmp_data(scan_id);
-CREATE INDEX IF NOT EXISTS idx_snmp_host ON snmp_data(hostname);
-"""
-
-_BRIDGE_DATA_SQL = """\
-CREATE TABLE IF NOT EXISTS bridge_data (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    scan_id   INTEGER NOT NULL REFERENCES scans(id),
-    hostname  TEXT NOT NULL,
-    data_json TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_bridge_scan ON bridge_data(scan_id);
-CREATE INDEX IF NOT EXISTS idx_bridge_host ON bridge_data(hostname);
-"""
-
-_NSDP_DATA_SQL = """\
-CREATE TABLE IF NOT EXISTS nsdp_data (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    scan_id   INTEGER NOT NULL REFERENCES scans(id),
-    hostname  TEXT NOT NULL,
-    data_json TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_nsdp_scan ON nsdp_data(scan_id);
-CREATE INDEX IF NOT EXISTS idx_nsdp_host ON nsdp_data(hostname);
-"""
-
-_TASMOTA_DATA_SQL = """\
-CREATE TABLE IF NOT EXISTS tasmota_data (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    scan_id   INTEGER NOT NULL REFERENCES scans(id),
-    hostname  TEXT NOT NULL,
-    data_json TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_tasmota_scan ON tasmota_data(scan_id);
-CREATE INDEX IF NOT EXISTS idx_tasmota_host ON tasmota_data(hostname);
-"""
-
-# Keyed by site name — one JSON document per site ({"bridge": ...,
-# "devices": {ieee: device}}), mirroring the per-site cache files this
-# replaced.  Sites are independent: a scan replaces only its own site's
-# document.
+# Legacy JSON-blob zigbee table — only used by the v2 -> v3 upgrade
+# step; v4 converts it into the structured tables below and drops it.
 _ZIGBEE_DATA_SQL = """\
 CREATE TABLE IF NOT EXISTS zigbee_data (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -139,10 +88,598 @@ CREATE INDEX IF NOT EXISTS idx_zigbee_scan ON zigbee_data(scan_id);
 CREATE INDEX IF NOT EXISTS idx_zigbee_host ON zigbee_data(hostname);
 """
 
-# A JSON-blob row whose data_json is JSON null records "this key vanished
-# from an authoritative scan" — an INSERT-only tombstone (history is never
-# deleted).  Loads skip these keys; a later real row resurrects the key.
-_TOMBSTONE_JSON = "null"
+
+# ==========================================================================
+# Structured supplement tables (v4)
+# ==========================================================================
+#
+# Each supplement's per-entity document is exploded into typed tables.
+# Delta storage is per ENTITY — the finest unit with a stable key: SNMP
+# host, bridge/NSDP switch, tasmota device, zigbee device and per-site
+# bridge info.  Only an entity whose values changed gets rows under the
+# new scan_id; reads reconstruct each entity from its latest completed
+# scan.  The save/load dict shapes are unchanged from the JSON-blob era,
+# so scanners and consumers are unaffected.
+#
+# List-valued fields are described by specs: (doc key, table, columns,
+# column types).  The DDL, insertion, validation, and reconstruction are
+# all driven from the same spec, so they cannot drift apart.
+
+_BRIDGE_DOC_FIELDS = (
+    ("mac_table", "bridge_mac_table",
+     ("mac", "vlan_id", "bridge_port", "port_name"), (str, int, int, str)),
+    ("vlan_names", "bridge_vlan_names",
+     ("vlan_id", "name"), (int, str)),
+    ("port_pvids", "bridge_port_pvids",
+     ("port", "pvid"), (int, int)),
+    ("port_names", "bridge_port_names",
+     ("port", "name"), (int, str)),
+    ("port_status", "bridge_port_status",
+     ("port", "oper_status", "speed_mbps"), (int, int, int)),
+    ("lldp_neighbors", "bridge_lldp_neighbors",
+     ("local_port", "remote_sysname", "remote_port_id", "remote_chassis"),
+     (int, str, str, str)),
+    ("vlan_egress_ports", "bridge_vlan_egress_ports",
+     ("vlan_id", "port_bitmap_hex"), (int, str)),
+    ("vlan_untagged_ports", "bridge_vlan_untagged_ports",
+     ("vlan_id", "port_bitmap_hex"), (int, str)),
+    ("poe_status", "bridge_poe_status",
+     ("port", "admin_status", "detection_status"), (int, int, int)),
+    ("port_statistics", "bridge_port_statistics",
+     ("port", "bytes_rx", "bytes_tx", "errors"), (int, int, int, int)),
+)
+
+# NSDP scalar fields: (doc key, column, type).  Every one is optional in
+# the document — absent is stored as NULL and omitted on reconstruction.
+# The document's "hostname" key is the switch's self-reported name; the
+# table's hostname column is the spreadsheet hostname keying the entry.
+_NSDP_SCALAR_FIELDS = (
+    ("hostname", "device_hostname", str),
+    ("ip", "ip", str),
+    ("netmask", "netmask", str),
+    ("gateway", "gateway", str),
+    ("firmware_version", "firmware_version", str),
+    ("dhcp_enabled", "dhcp_enabled", bool),
+    ("port_count", "port_count", int),
+    ("serial_number", "serial_number", str),
+    ("vlan_engine", "vlan_engine", int),
+    ("qos_engine", "qos_engine", int),
+    ("port_mirroring_dest", "port_mirroring_dest", int),
+    ("igmp_snooping_enabled", "igmp_snooping_enabled", bool),
+    ("broadcast_filtering", "broadcast_filtering", bool),
+    ("loop_detection", "loop_detection", bool),
+)
+
+_NSDP_LIST_FIELDS = (
+    ("port_status", "nsdp_port_status",
+     ("port", "speed"), (int, int)),
+    ("port_pvids", "nsdp_port_pvids",
+     ("port", "vlan_id"), (int, int)),
+    ("port_statistics", "nsdp_port_statistics",
+     ("port", "bytes_rx", "bytes_tx", "crc_errors"), (int, int, int, int)),
+)
+
+# Tasmota device fields: (doc key == column, allowed types).  "module"
+# is int from live devices but "" in the builder's default — its column
+# is declared without a type (NONE affinity) so both round-trip.
+_TASMOTA_FIELDS = (
+    ("device_name", str),
+    ("friendly_name", str),
+    ("hostname", str),
+    ("firmware_version", str),
+    ("mqtt_host", str),
+    ("mqtt_port", int),
+    ("mqtt_topic", str),
+    ("mqtt_client", str),
+    ("mqtt_user", str),
+    ("mac", str),
+    ("ip", str),
+    ("wifi_ssid", str),
+    ("wifi_rssi", int),
+    ("wifi_signal", int),
+    ("uptime", str),
+    ("module", (int, str)),
+)
+
+# Zigbee device fields (doc key == column except "site", which equals
+# the owning site and is not stored).  None-able fields get NULL columns.
+_ZIGBEE_DEVICE_FIELDS = (
+    ("ieee_address", str),
+    ("friendly_name", str),
+    ("object_id", str),
+    ("device_type", str),
+    ("model_id", str),
+    ("manufacturer", str),
+    ("model", str),
+    ("power_source", str),
+    ("software_build_id", str),
+    ("date_code", str),
+    ("last_seen", (int, type(None))),
+    ("link_quality", (int, type(None))),
+    ("availability", str),
+    ("network_address", (int, type(None))),
+)
+
+_ZIGBEE_BRIDGE_FIELDS = (
+    ("z2m_version", str),
+    ("coordinator_ieee", str),
+    ("coordinator_type", str),
+    ("channel", int),
+    ("pan_id", str),
+)
+
+
+def _sql_type(expected: object) -> str:
+    """SQL column definition fragment for a spec type."""
+    if expected is str:
+        return "TEXT NOT NULL"
+    if expected in (int, bool):
+        return "INTEGER NOT NULL"
+    if isinstance(expected, tuple):
+        if type(None) in expected:
+            inner = [t for t in expected if t is not type(None)]
+            if inner == [int]:
+                return "INTEGER"
+            if inner == [str]:
+                return "TEXT"
+        # Mixed concrete types (e.g. int | str): no affinity, so the
+        # stored type is preserved exactly.
+        return "NOT NULL"
+    raise ValueError(f"Unmapped spec type {expected!r}")
+
+
+def _entity_table_ddl(
+    table: str,
+    entity_col: str,
+    columns: tuple[tuple[str, str], ...],
+) -> list[str]:
+    """CREATE TABLE + index DDL for a per-entity supplement table."""
+    col_defs = "".join(f",\n    {name} {sql}" for name, sql in columns)
+    return [
+        f"CREATE TABLE IF NOT EXISTS {table} (\n"
+        f"    id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+        f"    scan_id INTEGER NOT NULL REFERENCES scans(id),\n"
+        f"    {entity_col} TEXT NOT NULL"
+        f"{col_defs}\n)",
+        f"CREATE INDEX IF NOT EXISTS idx_{table} "
+        f"ON {table}({entity_col}, scan_id)",
+    ]
+
+
+def _structured_ddl_statements() -> list[str]:
+    """All v4 structured-table DDL (also used by the v3 -> v4 upgrade)."""
+    stmts: list[str] = []
+
+    # SNMP: head row per host + one row per (source, row, OID) value.
+    stmts += _entity_table_ddl("snmp_hosts", "hostname", (
+        ("snmp_version", "TEXT NOT NULL"),
+        ("sys_contact", "TEXT NOT NULL"),
+        ("sys_descr", "TEXT NOT NULL"),
+        ("sys_location", "TEXT NOT NULL"),
+        ("sys_name", "TEXT NOT NULL"),
+        ("sys_object_id", "TEXT NOT NULL"),
+        ("sys_uptime", "TEXT NOT NULL"),
+    ))
+    stmts += _entity_table_ddl("snmp_oid_values", "hostname", (
+        ("source", "TEXT NOT NULL"),    # 'raw' | 'interface' | 'ip_address'
+        ("row_idx", "INTEGER NOT NULL"),
+        ("oid", "TEXT NOT NULL"),
+        ("value", "TEXT NOT NULL"),
+    ))
+
+    # Bridge: head row per switch + one table per BridgeData field.
+    stmts += _entity_table_ddl("bridge_switches", "hostname", ())
+    for _key, table, cols, types in _BRIDGE_DOC_FIELDS:
+        stmts += _entity_table_ddl(table, "hostname", tuple(
+            (col, _sql_type(typ)) for col, typ in zip(cols, types)
+        ))
+
+    # NSDP: head row per switch + list tables + VLAN membership.
+    stmts += _entity_table_ddl("nsdp_switches", "hostname", (
+        ("model", "TEXT NOT NULL"),
+        ("mac", "TEXT NOT NULL"),
+        *((col, _sql_type(typ).replace(" NOT NULL", ""))
+          for _key, col, typ in _NSDP_SCALAR_FIELDS),
+    ))
+    for _key, table, cols, types in _NSDP_LIST_FIELDS:
+        stmts += _entity_table_ddl(table, "hostname", tuple(
+            (col, _sql_type(typ)) for col, typ in zip(cols, types)
+        ))
+    # One row per (vlan, member port); tagged marks tagged membership.
+    # A VLAN with no members keeps a single NULL-port presence row.
+    stmts += _entity_table_ddl("nsdp_vlan_members", "hostname", (
+        ("vlan_id", "INTEGER NOT NULL"),
+        ("port", "INTEGER"),
+        ("tagged", "INTEGER"),
+    ))
+
+    # Tasmota: one row per device.  The entity column is device_key —
+    # a spreadsheet hostname or an "_unknown/<ip>" marker — distinct
+    # from the device's self-reported "hostname" field.
+    stmts += _entity_table_ddl("tasmota_devices", "device_key", tuple(
+        (key, _sql_type(typ)) for key, typ in _TASMOTA_FIELDS
+    ))
+
+    # Zigbee: per-site bridge-info rows and per-device rows, each
+    # delta'd independently — a device row is written only when THAT
+    # device's stable fields change, a site row only when the bridge
+    # info changes (or the site appears / is tombstoned).
+    stmts += _entity_table_ddl("zigbee_sites", "site", (
+        ("is_tombstone", "INTEGER NOT NULL DEFAULT 0"),
+        ("has_bridge", "INTEGER NOT NULL DEFAULT 0"),
+        *((key, _sql_type(typ).replace(" NOT NULL", ""))
+          for key, typ in _ZIGBEE_BRIDGE_FIELDS),
+    ))
+    stmts += _entity_table_ddl("zigbee_devices", "site", (
+        *((key, _sql_type(typ)) for key, typ in _ZIGBEE_DEVICE_FIELDS),
+        ("is_tombstone", "INTEGER NOT NULL DEFAULT 0"),
+    ))
+
+    return stmts
+
+
+# -- Document validation ----------------------------------------------------
+#
+# Every save (and the v4 migration) validates documents strictly — an
+# unexpected key, arity, or value type means the producer changed shape
+# and the schema needs a deliberate update, so fail loud.
+
+def _typecheck(what: str, value: object, expected: object) -> None:
+    if expected is int:
+        ok = isinstance(value, int) and not isinstance(value, bool)
+    elif isinstance(expected, tuple):
+        ok = any(
+            (isinstance(value, int) and not isinstance(value, bool))
+            if t is int else isinstance(value, t)
+            for t in expected
+        )
+    else:
+        ok = isinstance(value, expected)  # type: ignore[arg-type]
+    if not ok:
+        raise ValueError(f"{what}: expected {expected}, got {value!r}")
+
+
+def _expect_keys(
+    what: str,
+    doc: dict,
+    required: frozenset[str],
+    optional: frozenset[str] = frozenset(),
+) -> None:
+    if not isinstance(doc, dict):
+        raise ValueError(f"{what}: expected a dict, got {doc!r}")
+    missing = required - set(doc)
+    extra = set(doc) - required - optional
+    if missing or extra:
+        raise ValueError(
+            f"{what}: missing keys {sorted(missing)}, "
+            f"unexpected keys {sorted(extra)}"
+        )
+
+
+# -- Row insertion (shared by save_* and the v4 migration) -------------------
+
+def _insert_row(
+    cur: sqlite3.Cursor,
+    table: str,
+    entity_col: str,
+    scan_id: int,
+    entity: str,
+    columns: tuple[str, ...],
+    values: tuple,
+) -> None:
+    col_sql = ", ".join(("scan_id", entity_col, *columns))
+    placeholders = ", ".join("?" * (len(columns) + 2))
+    cur.execute(
+        f"INSERT INTO {table} ({col_sql}) VALUES ({placeholders})",  # noqa: S608
+        (scan_id, entity, *values),
+    )
+
+
+def _insert_list_rows(
+    cur: sqlite3.Cursor,
+    table: str,
+    scan_id: int,
+    entity: str,
+    columns: tuple[str, ...],
+    types: tuple,
+    entries: list,
+) -> None:
+    """Insert one row per fixed-arity list entry, validating each."""
+    for entry in entries:
+        entry = list(entry)
+        if len(entry) != len(columns):
+            raise ValueError(
+                f"{table}[{entity}]: expected {len(columns)} elements, "
+                f"got {entry!r}"
+            )
+        for col, typ, value in zip(columns, types, entry):
+            _typecheck(f"{table}[{entity}].{col}", value, typ)
+        _insert_row(cur, table, "hostname", scan_id, entity, columns, tuple(entry))
+
+
+_SNMP_DOC_KEYS = frozenset(
+    {"snmp_version", "system_info", "interfaces", "ip_addresses", "raw"}
+)
+_SNMP_SYSTEM_KEYS = (
+    "sysContact", "sysDescr", "sysLocation",
+    "sysName", "sysObjectID", "sysUpTime",
+)
+
+
+def _insert_snmp_rows(
+    cur: sqlite3.Cursor, scan_id: int, hostname: str, doc: dict,
+) -> None:
+    what = f"snmp[{hostname}]"
+    _expect_keys(what, doc, _SNMP_DOC_KEYS)
+    _typecheck(f"{what}.snmp_version", doc["snmp_version"], str)
+    sysinfo = doc["system_info"]
+    _expect_keys(f"{what}.system_info", sysinfo, frozenset(_SNMP_SYSTEM_KEYS))
+    for key in _SNMP_SYSTEM_KEYS:
+        _typecheck(f"{what}.system_info.{key}", sysinfo[key], str)
+    _insert_row(
+        cur, "snmp_hosts", "hostname", scan_id, hostname,
+        ("snmp_version", "sys_contact", "sys_descr", "sys_location",
+         "sys_name", "sys_object_id", "sys_uptime"),
+        (doc["snmp_version"], *(sysinfo[k] for k in _SNMP_SYSTEM_KEYS)),
+    )
+
+    def put(source: str, row_idx: int, mapping: dict) -> None:
+        if not isinstance(mapping, dict) or not mapping:
+            raise ValueError(
+                f"{what}.{source}[{row_idx}]: expected a non-empty dict, "
+                f"got {mapping!r}"
+            )
+        for oid, value in mapping.items():
+            _typecheck(f"{what}.{source}.{oid}", value, str)
+            _insert_row(
+                cur, "snmp_oid_values", "hostname", scan_id, hostname,
+                ("source", "row_idx", "oid", "value"),
+                (source, row_idx, oid, value),
+            )
+
+    if doc["raw"]:
+        put("raw", 0, doc["raw"])
+    for i, row in enumerate(doc["interfaces"]):
+        put("interface", i, row)
+    for i, row in enumerate(doc["ip_addresses"]):
+        put("ip_address", i, row)
+
+
+def _insert_bridge_rows(
+    cur: sqlite3.Cursor, scan_id: int, hostname: str, doc: dict,
+) -> None:
+    _expect_keys(
+        f"bridge[{hostname}]", doc,
+        frozenset(key for key, _t, _c, _ty in _BRIDGE_DOC_FIELDS),
+    )
+    _insert_row(cur, "bridge_switches", "hostname", scan_id, hostname, (), ())
+    for key, table, cols, types in _BRIDGE_DOC_FIELDS:
+        _insert_list_rows(cur, table, scan_id, hostname, cols, types, doc[key])
+
+
+def _insert_nsdp_rows(
+    cur: sqlite3.Cursor, scan_id: int, hostname: str, doc: dict,
+) -> None:
+    what = f"nsdp[{hostname}]"
+    optional = (
+        {key for key, _c, _t in _NSDP_SCALAR_FIELDS}
+        | {key for key, _t, _c, _ty in _NSDP_LIST_FIELDS}
+        | {"vlan_members"}
+    )
+    _expect_keys(what, doc, frozenset({"model", "mac"}), frozenset(optional))
+    _typecheck(f"{what}.model", doc["model"], str)
+    _typecheck(f"{what}.mac", doc["mac"], str)
+
+    scalar_cols, scalar_vals = [], []
+    for key, col, typ in _NSDP_SCALAR_FIELDS:
+        if key in doc:
+            _typecheck(f"{what}.{key}", doc[key], typ)
+            scalar_cols.append(col)
+            scalar_vals.append(int(doc[key]) if typ is bool else doc[key])
+    _insert_row(
+        cur, "nsdp_switches", "hostname", scan_id, hostname,
+        ("model", "mac", *scalar_cols),
+        (doc["model"], doc["mac"], *scalar_vals),
+    )
+
+    for key, table, cols, types in _NSDP_LIST_FIELDS:
+        if key in doc:
+            _insert_list_rows(
+                cur, table, scan_id, hostname, cols, types, doc[key],
+            )
+
+    for entry in doc.get("vlan_members", []):
+        entry = list(entry)
+        if len(entry) != 3:
+            raise ValueError(f"{what}.vlan_members: bad entry {entry!r}")
+        vlan_id, members, tagged = entry[0], list(entry[1]), list(entry[2])
+        _typecheck(f"{what}.vlan_members.vlan_id", vlan_id, int)
+        for port in (*members, *tagged):
+            _typecheck(f"{what}.vlan_members.port", port, int)
+        if not set(tagged) <= set(members):
+            raise ValueError(
+                f"{what}.vlan_members vlan {vlan_id}: tagged ports "
+                f"{tagged!r} not a subset of members {members!r}"
+            )
+        if not members:
+            # Presence row so a memberless VLAN survives the round trip.
+            _insert_row(
+                cur, "nsdp_vlan_members", "hostname", scan_id, hostname,
+                ("vlan_id", "port", "tagged"), (vlan_id, None, None),
+            )
+        for port in members:
+            _insert_row(
+                cur, "nsdp_vlan_members", "hostname", scan_id, hostname,
+                ("vlan_id", "port", "tagged"),
+                (vlan_id, port, int(port in set(tagged))),
+            )
+
+
+def _insert_tasmota_rows(
+    cur: sqlite3.Cursor, scan_id: int, device_key: str, doc: dict,
+) -> None:
+    what = f"tasmota[{device_key}]"
+    _expect_keys(what, doc, frozenset(key for key, _t in _TASMOTA_FIELDS))
+    for key, typ in _TASMOTA_FIELDS:
+        _typecheck(f"{what}.{key}", doc[key], typ)
+    _insert_row(
+        cur, "tasmota_devices", "device_key", scan_id, device_key,
+        tuple(key for key, _t in _TASMOTA_FIELDS),
+        tuple(doc[key] for key, _t in _TASMOTA_FIELDS),
+    )
+
+
+def _insert_zigbee_site_row(
+    cur: sqlite3.Cursor, scan_id: int, site: str, bridge: dict | None,
+) -> None:
+    what = f"zigbee[{site}].bridge"
+    bridge_vals: tuple = (None,) * len(_ZIGBEE_BRIDGE_FIELDS)
+    if bridge is not None:
+        _expect_keys(
+            what, bridge,
+            frozenset({"site", *(k for k, _t in _ZIGBEE_BRIDGE_FIELDS)}),
+        )
+        if bridge["site"] != site:
+            raise ValueError(f"{what}: site {bridge['site']!r} != {site!r}")
+        for key, typ in _ZIGBEE_BRIDGE_FIELDS:
+            _typecheck(f"{what}.{key}", bridge[key], typ)
+        bridge_vals = tuple(bridge[k] for k, _t in _ZIGBEE_BRIDGE_FIELDS)
+    _insert_row(
+        cur, "zigbee_sites", "site", scan_id, site,
+        ("is_tombstone", "has_bridge",
+         *(k for k, _t in _ZIGBEE_BRIDGE_FIELDS)),
+        (0, int(bridge is not None), *bridge_vals),
+    )
+
+
+def _insert_zigbee_device_row(
+    cur: sqlite3.Cursor, scan_id: int, site: str, ieee: str, device: dict,
+) -> None:
+    what = f"zigbee[{site}].devices[{ieee}]"
+    _expect_keys(
+        what, device,
+        frozenset({"site", *(k for k, _t in _ZIGBEE_DEVICE_FIELDS)}),
+    )
+    if device["site"] != site or device["ieee_address"] != ieee:
+        raise ValueError(
+            f"{what}: key mismatch (site={device['site']!r}, "
+            f"ieee={device['ieee_address']!r})"
+        )
+    for key, typ in _ZIGBEE_DEVICE_FIELDS:
+        _typecheck(f"{what}.{key}", device[key], typ)
+    _insert_row(
+        cur, "zigbee_devices", "site", scan_id, site,
+        tuple(k for k, _t in _ZIGBEE_DEVICE_FIELDS),
+        tuple(device[k] for k, _t in _ZIGBEE_DEVICE_FIELDS),
+    )
+
+
+def _insert_zigbee_device_tombstone(
+    cur: sqlite3.Cursor, scan_id: int, site: str, ieee: str,
+) -> None:
+    """A device removed from its site's registry: INSERT-only tombstone
+    (history is never deleted) that drops it from reads; a later real
+    row resurrects it."""
+    placeholders = tuple(
+        "" if typ is str else None for _key, typ in _ZIGBEE_DEVICE_FIELDS
+    )
+    values = tuple(
+        ieee if key == "ieee_address" else placeholder
+        for (key, _t), placeholder in zip(_ZIGBEE_DEVICE_FIELDS, placeholders)
+    )
+    _insert_row(
+        cur, "zigbee_devices", "site", scan_id, site,
+        (*(k for k, _t in _ZIGBEE_DEVICE_FIELDS), "is_tombstone"),
+        (*values, 1),
+    )
+
+
+def _validate_zigbee_doc(site: str, doc: dict) -> None:
+    _expect_keys(f"zigbee[{site}]", doc, frozenset({"bridge", "devices"}))
+    if not isinstance(doc["devices"], dict):
+        raise ValueError(f"zigbee[{site}].devices: expected a dict")
+
+
+def _insert_zigbee_doc(
+    cur: sqlite3.Cursor, scan_id: int, site: str, doc: dict,
+) -> None:
+    """Insert a full site document (first appearance / migration)."""
+    _validate_zigbee_doc(site, doc)
+    _insert_zigbee_site_row(cur, scan_id, site, doc["bridge"])
+    for ieee, device in doc["devices"].items():
+        _insert_zigbee_device_row(cur, scan_id, site, ieee, device)
+
+
+# -- v3 -> v4 data migration --------------------------------------------------
+
+def _upgrade_v4_convert_blobs(conn: sqlite3.Connection) -> None:
+    """Convert every JSON-blob row into the structured tables.
+
+    Runs inside the upgrade transaction; scan_ids are preserved, so the
+    full delta history carries over.  Strict converters raise (rolling
+    the whole upgrade back) on any shape the schema does not cover.
+    """
+    cur = conn.cursor()
+
+    for table, insert in (
+        ("snmp_data", _insert_snmp_rows),
+        ("bridge_data", _insert_bridge_rows),
+        ("nsdp_data", _insert_nsdp_rows),
+        ("tasmota_data", _insert_tasmota_rows),
+    ):
+        rows = conn.execute(
+            f"SELECT scan_id, hostname, data_json FROM {table} "  # noqa: S608
+            f"ORDER BY id"
+        ).fetchall()
+        for scan_id, hostname, data_json in rows:
+            data = json.loads(data_json)
+            if data is None:
+                raise ValueError(
+                    f"{table}: unexpected null row for {hostname!r}"
+                )
+            insert(cur, scan_id, hostname, data)
+
+    _convert_zigbee_blobs(conn, cur)
+
+
+def _convert_zigbee_blobs(
+    conn: sqlite3.Connection, cur: sqlite3.Cursor,
+) -> None:
+    """Convert zigbee_data rows, which exist in three historical formats.
+
+    1. Site documents ({"bridge": ..., "devices": {...}}) keyed by site
+       — exploded into a site row plus per-device rows under their scan.
+    2. Legacy flat keys: device dicts keyed by IEEE address and bridge
+       dicts keyed by "_bridge/<site>" — these were per-device deltas
+       natively and convert row-for-row.
+    3. JSON-null tombstones: for legacy flat keys these only retired the
+       old keyspace and are dropped; for a site key they become a site
+       tombstone row.
+    """
+    for scan_id, key, data_json in conn.execute(
+        "SELECT scan_id, hostname, data_json FROM zigbee_data ORDER BY id"
+    ).fetchall():
+        data = json.loads(data_json)
+        if data is None:
+            if key.startswith(("0x", "_bridge/")):
+                continue  # retired a legacy flat key; carries no data
+            _insert_row(
+                cur, "zigbee_sites", "site", scan_id, key,
+                ("is_tombstone",), (1,),
+            )
+        elif isinstance(data, dict) and set(data) == {"bridge", "devices"}:
+            _insert_zigbee_doc(cur, scan_id, key, data)
+        elif key.startswith("_bridge/"):
+            site = key[len("_bridge/"):]
+            if data.get("site") != site:
+                raise ValueError(f"zigbee_data: bad bridge row {key!r}")
+            _insert_zigbee_site_row(cur, scan_id, site, data)
+        elif isinstance(data, dict) and "ieee_address" in data:
+            _insert_zigbee_device_row(
+                cur, scan_id, data["site"], key, data,
+            )
+        else:
+            raise ValueError(f"zigbee_data: unrecognised row {key!r}")
 
 
 class DiscoveryDB(BaseDatabase):
@@ -150,8 +687,11 @@ class DiscoveryDB(BaseDatabase):
 
     # v2: reachability.is_tombstone — records "host removed from the
     # inventory" as an INSERT-only delta (see tombstone_missing_reachability).
-    # v3: zigbee_data table (Zigbee2MQTT devices + bridge info).
-    SCHEMA_VERSION = 3
+    # v3: zigbee_data JSON-blob table (superseded by v4).
+    # v4: structured tables replace ALL JSON-blob tables; existing blob
+    #     rows are converted in place (scan_ids preserved) and the blob
+    #     tables dropped.
+    SCHEMA_VERSION = 4
     SCHEMA_UPGRADES = {
         2: [
             "ALTER TABLE reachability "
@@ -162,6 +702,15 @@ class DiscoveryDB(BaseDatabase):
             for stmt in _ZIGBEE_DATA_SQL.split(";")
             if stmt.strip()
         ],
+        4: [
+            *_structured_ddl_statements(),
+            _upgrade_v4_convert_blobs,
+            "DROP TABLE snmp_data",
+            "DROP TABLE bridge_data",
+            "DROP TABLE nsdp_data",
+            "DROP TABLE tasmota_data",
+            "DROP TABLE zigbee_data",
+        ],
     }
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:
@@ -170,15 +719,12 @@ class DiscoveryDB(BaseDatabase):
             + _SSH_HOST_KEYS_SQL
             + _SSL_CERTS_SQL
             + _BMC_FIRMWARE_SQL
-            + _SNMP_DATA_SQL
-            + _BRIDGE_DATA_SQL
-            + _NSDP_DATA_SQL
-            + _TASMOTA_DATA_SQL
-            + _ZIGBEE_DATA_SQL
         ).split(";"):
             stmt = stmt.strip()
             if stmt:
                 conn.execute(stmt)
+        for stmt in _structured_ddl_statements():
+            conn.execute(stmt)
 
     # ==================================================================
     # Reachability
@@ -620,250 +1166,344 @@ class DiscoveryDB(BaseDatabase):
         }
 
     # ==================================================================
-    # JSON-blob supplements (SNMP, bridge, NSDP, tasmota)
+    # Structured supplements (SNMP, bridge, NSDP, tasmota, zigbee)
     # ==================================================================
 
-    def _save_json_blob(
+    def _latest_entity_scans(
+        self, table: str, entity_col: str,
+    ) -> dict[str, int]:
+        """entity -> the latest completed scan_id holding its rows.
+
+        Each entity's latest data may come from a different scan (delta
+        storage — an entity only gets rows in the scans that changed it).
+        """
+        cur = self._conn.execute(
+            f"SELECT DISTINCT t.{entity_col}, t.scan_id "  # noqa: S608
+            f"FROM {table} t "
+            f"WHERE t.scan_id = ("
+            f"  SELECT t2.scan_id FROM {table} t2 "
+            f"  JOIN scans s ON t2.scan_id = s.id "
+            f"  WHERE s.finished_at IS NOT NULL "
+            f"  AND t2.{entity_col} = t.{entity_col} "
+            f"  ORDER BY s.id DESC LIMIT 1"
+            f")",
+        )
+        return dict(cur.fetchall())
+
+    def _save_entities(
         self,
-        table: str,
         scan_id: int,
         data: dict[str, dict],
-        comparison_key: Callable[[object], str] = None,  # type: ignore[assignment]
+        latest: dict[str, dict],
+        insert_rows,
     ) -> int:
-        """Generic delta-based save for JSON-blob supplement tables.
+        """Generic per-entity delta save.
 
-        Compares canonical JSON (``json.dumps(sort_keys=True)``) per
-        host.  *comparison_key* overrides what is compared (the full
-        value is always stored) — for data whose fields change on
-        nearly every scan, so noise alone never triggers a new row
-        (mirroring reachability's status-not-RTT comparison).
+        Compares each document against *latest* (canonical JSON); a
+        changed or new entity gets its full row-set inserted via
+        *insert_rows*.  Returns changed_count.
         """
-        if comparison_key is None:
-            comparison_key = _canonical_json
-        latest = self._latest_json_blobs(table)
         changed = 0
         cur = self._conn.cursor()
         try:
             cur.execute("BEGIN")
-            for hostname, host_data in data.items():
-                if hostname in latest and comparison_key(
-                    json.loads(latest[hostname])
-                ) == comparison_key(host_data):
+            for entity, doc in data.items():
+                if entity in latest and (
+                    _canonical_json(latest[entity]) == _canonical_json(doc)
+                ):
                     continue
                 changed += 1
-                cur.execute(
-                    f"INSERT INTO {table} "  # noqa: S608
-                    "(scan_id, hostname, data_json) VALUES (?, ?, ?)",
-                    (scan_id, hostname, json.dumps(host_data, sort_keys=True)),
-                )
+                insert_rows(cur, scan_id, entity, doc)
             self._conn.commit()
         except Exception:
             self._conn.rollback()
             raise
         return changed
 
-    def _tombstone_missing_json_blob(
+    def _load_list_rows(
         self,
         table: str,
+        columns: tuple[str, ...],
         scan_id: int,
-        present: set[str],
-    ) -> int:
-        """Tombstone keys that vanished from an authoritative scan.
-
-        *present* must be the FULL key set covered by this scan — a key
-        in the latest stored state but absent from it has been removed
-        at the source.  Each missing key gets a row with JSON null data
-        under *scan_id*: an INSERT-only delta (history is never deleted)
-        that drops the key from ``_load_latest_json_blob()``.  A later
-        real row supersedes the tombstone automatically (resurrection).
-
-        Raises ValueError on an empty *present* set — that means the
-        scan itself failed, not that every key was removed.
-
-        Returns the number of keys tombstoned.
-        """
-        if not present:
-            raise ValueError(
-                f"_tombstone_missing_json_blob({table!r}) called with an "
-                "empty present set — refusing to tombstone every key."
-            )
-        latest = self._latest_json_blobs(table)
-        missing = sorted(
-            key for key, blob in latest.items()
-            if blob != _TOMBSTONE_JSON and key not in present
-        )
-        if not missing:
-            return 0
-        cur = self._conn.cursor()
-        try:
-            cur.execute("BEGIN")
-            for key in missing:
-                cur.execute(
-                    f"INSERT INTO {table} "  # noqa: S608
-                    "(scan_id, hostname, data_json) VALUES (?, ?, ?)",
-                    (scan_id, key, _TOMBSTONE_JSON),
-                )
-            self._conn.commit()
-        except Exception:
-            self._conn.rollback()
-            raise
-        return len(missing)
-
-    def _load_latest_json_blob(
-        self,
-        table: str,
-        scan_type: str,
-    ) -> dict[str, dict] | None:
-        """Generic load for JSON-blob supplement tables.
-
-        Keys whose latest row is a tombstone (removed at the source)
-        are omitted.
-        """
-        if self.latest_scan_id(scan_type) is None:
-            return None
+        entity: str,
+    ) -> list[list]:
         cur = self._conn.execute(
-            f"SELECT d.hostname, d.data_json "  # noqa: S608
-            f"FROM {table} d "
-            f"WHERE d.scan_id = ("
-            f"  SELECT d2.scan_id FROM {table} d2 "
-            f"  JOIN scans s ON d2.scan_id = s.id "
-            f"  WHERE s.finished_at IS NOT NULL "
-            f"  AND d2.hostname = d.hostname "
-            f"  ORDER BY s.id DESC LIMIT 1"
-            f") ORDER BY d.hostname",
+            f"SELECT {', '.join(columns)} FROM {table} "  # noqa: S608
+            f"WHERE scan_id = ? AND hostname = ? ORDER BY id",
+            (scan_id, entity),
         )
-        return {
-            hostname: json.loads(data_json)
-            for hostname, data_json in cur.fetchall()
-            if data_json != _TOMBSTONE_JSON
-        }
-
-    def _latest_json_blobs(
-        self,
-        table: str,
-    ) -> dict[str, str]:
-        """Build hostname -> canonical JSON string for comparison."""
-        cur = self._conn.execute(
-            f"SELECT d.hostname, d.data_json "  # noqa: S608
-            f"FROM {table} d "
-            f"WHERE d.scan_id = ("
-            f"  SELECT d2.scan_id FROM {table} d2 "
-            f"  JOIN scans s ON d2.scan_id = s.id "
-            f"  WHERE s.finished_at IS NOT NULL "
-            f"  AND d2.hostname = d.hostname "
-            f"  ORDER BY s.id DESC LIMIT 1"
-            f")",
-        )
-        return {hostname: data_json for hostname, data_json in cur.fetchall()}
+        return [list(row) for row in cur.fetchall()]
 
     # -- SNMP --
 
     def save_snmp(self, scan_id: int, data: dict[str, dict]) -> int:
-        return self._save_json_blob("snmp_data", scan_id, data)
+        return self._save_entities(
+            scan_id, data, self._latest_snmp(), _insert_snmp_rows,
+        )
 
     def load_latest_snmp(self) -> dict[str, dict] | None:
-        return self._load_latest_json_blob("snmp_data", "snmp")
+        if self.latest_scan_id("snmp") is None:
+            return None
+        return self._latest_snmp()
+
+    def _latest_snmp(self) -> dict[str, dict]:
+        result = {}
+        for hostname, scan_id in sorted(
+            self._latest_entity_scans("snmp_hosts", "hostname").items()
+        ):
+            head = self._conn.execute(
+                "SELECT snmp_version, sys_contact, sys_descr, sys_location, "
+                "sys_name, sys_object_id, sys_uptime FROM snmp_hosts "
+                "WHERE scan_id = ? AND hostname = ?",
+                (scan_id, hostname),
+            ).fetchone()
+            raw: dict[str, str] = {}
+            interfaces: dict[int, dict[str, str]] = {}
+            ip_addresses: dict[int, dict[str, str]] = {}
+            for source, row_idx, oid, value in self._conn.execute(
+                "SELECT source, row_idx, oid, value FROM snmp_oid_values "
+                "WHERE scan_id = ? AND hostname = ? ORDER BY id",
+                (scan_id, hostname),
+            ):
+                if source == "raw":
+                    raw[oid] = value
+                elif source == "interface":
+                    interfaces.setdefault(row_idx, {})[oid] = value
+                elif source == "ip_address":
+                    ip_addresses.setdefault(row_idx, {})[oid] = value
+                else:
+                    raise ValueError(
+                        f"snmp_oid_values: unknown source {source!r}"
+                    )
+            result[hostname] = {
+                "snmp_version": head[0],
+                "system_info": dict(zip(_SNMP_SYSTEM_KEYS, head[1:])),
+                "interfaces": [interfaces[i] for i in sorted(interfaces)],
+                "ip_addresses": [ip_addresses[i] for i in sorted(ip_addresses)],
+                "raw": raw,
+            }
+        return result
 
     # -- Bridge --
 
     def save_bridge(self, scan_id: int, data: dict[str, dict]) -> int:
-        return self._save_json_blob("bridge_data", scan_id, data)
+        return self._save_entities(
+            scan_id, data, self._latest_bridge(), _insert_bridge_rows,
+        )
 
     def load_latest_bridge(self) -> dict[str, dict] | None:
-        return self._load_latest_json_blob("bridge_data", "bridge")
+        if self.latest_scan_id("bridge") is None:
+            return None
+        return self._latest_bridge()
+
+    def _latest_bridge(self) -> dict[str, dict]:
+        return {
+            hostname: {
+                key: self._load_list_rows(table, cols, scan_id, hostname)
+                for key, table, cols, _types in _BRIDGE_DOC_FIELDS
+            }
+            for hostname, scan_id in sorted(
+                self._latest_entity_scans("bridge_switches", "hostname").items()
+            )
+        }
 
     # -- NSDP --
 
     def save_nsdp(self, scan_id: int, data: dict[str, dict]) -> int:
-        return self._save_json_blob("nsdp_data", scan_id, data)
+        return self._save_entities(
+            scan_id, data, self._latest_nsdp(), _insert_nsdp_rows,
+        )
 
     def load_latest_nsdp(self) -> dict[str, dict] | None:
-        return self._load_latest_json_blob("nsdp_data", "nsdp")
+        if self.latest_scan_id("nsdp") is None:
+            return None
+        return self._latest_nsdp()
+
+    def _latest_nsdp(self) -> dict[str, dict]:
+        result = {}
+        scalar_cols = ", ".join(col for _k, col, _t in _NSDP_SCALAR_FIELDS)
+        for hostname, scan_id in sorted(
+            self._latest_entity_scans("nsdp_switches", "hostname").items()
+        ):
+            head = self._conn.execute(
+                f"SELECT model, mac, {scalar_cols} FROM nsdp_switches "  # noqa: S608
+                "WHERE scan_id = ? AND hostname = ?",
+                (scan_id, hostname),
+            ).fetchone()
+            doc: dict = {"model": head[0], "mac": head[1]}
+            for (key, _col, typ), value in zip(_NSDP_SCALAR_FIELDS, head[2:]):
+                if value is not None:
+                    doc[key] = bool(value) if typ is bool else value
+            for key, table, cols, _types in _NSDP_LIST_FIELDS:
+                rows = self._load_list_rows(table, cols, scan_id, hostname)
+                if rows:
+                    doc[key] = rows
+            vlans: dict[int, tuple[list[int], list[int]]] = {}
+            for vlan_id, port, tagged in self._conn.execute(
+                "SELECT vlan_id, port, tagged FROM nsdp_vlan_members "
+                "WHERE scan_id = ? AND hostname = ? ORDER BY id",
+                (scan_id, hostname),
+            ):
+                members, tagged_ports = vlans.setdefault(vlan_id, ([], []))
+                if port is not None:
+                    members.append(port)
+                    if tagged:
+                        tagged_ports.append(port)
+            if vlans:
+                doc["vlan_members"] = [
+                    [vlan_id, members, tagged_ports]
+                    for vlan_id, (members, tagged_ports) in vlans.items()
+                ]
+            result[hostname] = doc
+        return result
 
     # -- Tasmota --
 
     def save_tasmota(self, scan_id: int, data: dict[str, dict]) -> int:
-        return self._save_json_blob("tasmota_data", scan_id, data)
+        return self._save_entities(
+            scan_id, data, self._latest_tasmota(), _insert_tasmota_rows,
+        )
 
     def load_latest_tasmota(self) -> dict[str, dict] | None:
-        return self._load_latest_json_blob("tasmota_data", "tasmota")
+        if self.latest_scan_id("tasmota") is None:
+            return None
+        return self._latest_tasmota()
+
+    def _latest_tasmota(self) -> dict[str, dict]:
+        field_cols = ", ".join(key for key, _t in _TASMOTA_FIELDS)
+        result = {}
+        for device_key, scan_id in sorted(
+            self._latest_entity_scans("tasmota_devices", "device_key").items()
+        ):
+            row = self._conn.execute(
+                f"SELECT {field_cols} FROM tasmota_devices "  # noqa: S608
+                "WHERE scan_id = ? AND device_key = ?",
+                (scan_id, device_key),
+            ).fetchone()
+            result[device_key] = {
+                key: value
+                for (key, _t), value in zip(_TASMOTA_FIELDS, row)
+            }
+        return result
 
     # -- Zigbee --
 
     def save_zigbee(self, scan_id: int, data: dict[str, dict]) -> int:
-        """Store zigbee data, delta-based per SITE, tombstoning removed sites.
+        """Store zigbee data with per-DEVICE deltas; sites independent.
 
         *data* maps site name -> ``{"bridge": bridge-info | None,
         "devices": {ieee: device}}`` — one document per site, mirroring
-        the per-site cache files this replaced.  Each scanned site's
-        document replaces its predecessor wholesale (so a device
-        removed from that Z2M instance drops out); scan_zigbee carries
-        failed sites' baseline documents forward, so a site absent
-        here has been removed from the config and is tombstoned.
+        the per-site cache files this replaced.  Only updated values
+        get new rows: a device row is written when THAT device's stable
+        fields change (last_seen/link_quality churn is ignored, like
+        reachability's RTT; stored values are as-of the last meaningful
+        change), a site row when the bridge info changes.
 
-        Delta comparison ignores each device's last_seen/link_quality
-        (they churn every scan); stored values are as-of the last
-        meaningful change, like reachability's RTT.
+        Each scanned site's device set is authoritative — a device of
+        that site absent from its document has been removed from that
+        Z2M instance and is tombstoned.  scan_zigbee carries failed
+        sites' baseline documents forward, so a site absent from *data*
+        entirely has been removed from the config: it is tombstoned
+        along with all its devices.
+
+        Raises ValueError on empty *data* — that means the scan itself
+        failed, not that every site was removed.
         """
-        changed = self._save_json_blob(
-            "zigbee_data", scan_id, data,
-            comparison_key=_zigbee_comparison_key,
-        )
-        changed += self._tombstone_missing_json_blob(
-            "zigbee_data", scan_id, set(data),
-        )
+        if not data:
+            raise ValueError(
+                "save_zigbee called with an empty present set — "
+                "refusing to tombstone every site."
+            )
+        latest = self._latest_zigbee()
+        changed = 0
+        cur = self._conn.cursor()
+        try:
+            cur.execute("BEGIN")
+            for site, doc in data.items():
+                _validate_zigbee_doc(site, doc)
+                old = latest.get(site)
+                if old is None or old["bridge"] != doc["bridge"]:
+                    changed += 1
+                    _insert_zigbee_site_row(cur, scan_id, site, doc["bridge"])
+                old_devices = old["devices"] if old else {}
+                for ieee, device in doc["devices"].items():
+                    if ieee in old_devices and (
+                        _zigbee_device_comparison_key(old_devices[ieee])
+                        == _zigbee_device_comparison_key(device)
+                    ):
+                        continue
+                    changed += 1
+                    _insert_zigbee_device_row(cur, scan_id, site, ieee, device)
+                for ieee in sorted(set(old_devices) - set(doc["devices"])):
+                    changed += 1
+                    _insert_zigbee_device_tombstone(cur, scan_id, site, ieee)
+            for site in sorted(set(latest) - set(data)):
+                changed += 1
+                _insert_row(
+                    cur, "zigbee_sites", "site", scan_id, site,
+                    ("is_tombstone",), (1,),
+                )
+                for ieee in sorted(latest[site]["devices"]):
+                    changed += 1
+                    _insert_zigbee_device_tombstone(cur, scan_id, site, ieee)
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
         return changed
 
     def load_latest_zigbee(self) -> dict[str, dict] | None:
-        return self._load_latest_json_blob("zigbee_data", "zigbee")
+        if self.latest_scan_id("zigbee") is None:
+            return None
+        return self._latest_zigbee()
 
-    # ==================================================================
-    # History / time-travel queries
-    # ==================================================================
+    def _latest_zigbee(self) -> dict[str, dict]:
+        """Latest site documents, assembled from per-device latest rows.
 
-    # Valid table names for host_changes() — prevents SQL injection.
-    _HISTORY_TABLES = frozenset({
-        "snmp_data", "bridge_data", "nsdp_data", "tasmota_data",
-        "zigbee_data",
-    })
-
-    def host_changes(
-        self,
-        table: str,
-        hostname: str,
-        *,
-        scan_type: str,
-        since: str | None = None,
-    ) -> list[tuple[str, dict]]:
-        """Return (timestamp, data_dict) for every change to a host.
-
-        Works for JSON-blob tables.  Every row IS a change, newest first.
+        A site whose latest site row is a tombstone is omitted entirely;
+        a device whose latest row is a tombstone is omitted from its
+        site's document.
         """
-        if table not in self._HISTORY_TABLES:
-            raise ValueError(
-                f"Invalid table {table!r}; must be one of {sorted(self._HISTORY_TABLES)}"
-            )
-        clauses = [
-            "d.hostname = ?",
-            "s.finished_at IS NOT NULL",
-            "s.scan_type = ?",
-        ]
-        params: list[str] = [hostname, scan_type]
-        if since is not None:
-            clauses.append("s.started_at >= ?")
-            params.append(since)
-        where = " AND ".join(clauses)
+        bridge_cols = ", ".join(key for key, _t in _ZIGBEE_BRIDGE_FIELDS)
+        device_cols = ", ".join(key for key, _t in _ZIGBEE_DEVICE_FIELDS)
+        result: dict[str, dict] = {}
+        for site, scan_id in sorted(
+            self._latest_entity_scans("zigbee_sites", "site").items()
+        ):
+            head = self._conn.execute(
+                f"SELECT is_tombstone, has_bridge, {bridge_cols} "  # noqa: S608
+                "FROM zigbee_sites WHERE scan_id = ? AND site = ?",
+                (scan_id, site),
+            ).fetchone()
+            if head[0]:
+                continue  # tombstoned: site removed from the config
+            bridge = None
+            if head[1]:
+                bridge = {"site": site}
+                bridge.update(
+                    zip((k for k, _t in _ZIGBEE_BRIDGE_FIELDS), head[2:])
+                )
+            result[site] = {"bridge": bridge, "devices": {}}
+
+        # Each device's latest row independently (per-device deltas).
         cur = self._conn.execute(
-            f"SELECT s.started_at, d.data_json "  # noqa: S608
-            f"FROM {table} d "
-            f"JOIN scans s ON d.scan_id = s.id "
-            f"WHERE {where} ORDER BY s.id DESC",
-            params,
+            f"SELECT d.site, d.is_tombstone, {device_cols} "  # noqa: S608
+            "FROM zigbee_devices d "
+            "WHERE d.scan_id = ("
+            "  SELECT d2.scan_id FROM zigbee_devices d2 "
+            "  JOIN scans s ON d2.scan_id = s.id "
+            "  WHERE s.finished_at IS NOT NULL "
+            "  AND d2.site = d.site AND d2.ieee_address = d.ieee_address "
+            "  ORDER BY s.id DESC LIMIT 1"
+            ") ORDER BY d.site, d.ieee_address",
         )
-        return [
-            (ts, json.loads(data_json))
-            for ts, data_json in cur.fetchall()
-        ]
+        for site, tomb, *values in cur.fetchall():
+            if tomb or site not in result:
+                continue
+            device = {"site": site}
+            device.update(zip((k for k, _t in _ZIGBEE_DEVICE_FIELDS), values))
+            result[site]["devices"][device["ieee_address"]] = device
+        return result
 
 
 # -- Helpers ---------------------------------------------------------------
@@ -880,23 +1520,15 @@ def _canonical_json(data: object) -> str:
 
 # Device fields that change on nearly every scan (activity timestamp
 # and radio noise) — excluded from zigbee change detection so hourly
-# scans don't re-insert every site document.
+# scans don't re-insert unchanged devices.
 _ZIGBEE_VOLATILE_FIELDS = frozenset({"last_seen", "link_quality"})
 
 
-def _zigbee_comparison_key(doc: object) -> str:
-    """Canonical JSON of a zigbee site document, per-device volatile
-    fields removed."""
-    if isinstance(doc, dict) and isinstance(doc.get("devices"), dict):
-        doc = dict(doc)
-        doc["devices"] = {
-            ieee: {
-                k: v for k, v in device.items()
-                if k not in _ZIGBEE_VOLATILE_FIELDS
-            }
-            for ieee, device in doc["devices"].items()
-        }
-    return _canonical_json(doc)
+def _zigbee_device_comparison_key(device: dict) -> str:
+    """Canonical JSON of a zigbee device, volatile fields removed."""
+    return _canonical_json({
+        k: v for k, v in device.items() if k not in _ZIGBEE_VOLATILE_FIELDS
+    })
 
 
 def _extract_interfaces(hr: object) -> list[list[tuple]]:

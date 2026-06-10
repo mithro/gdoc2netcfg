@@ -301,6 +301,12 @@ def scan_zigbee(
     error string instead.  The caller persists *data* first, then fails
     loud via raise_for_zigbee_errors — so one unreachable broker can't
     discard the other site's results.
+
+    A device reported by MORE THAN ONE site (a stale registry entry
+    left behind when a device moved between sites) is resolved
+    deterministically — online beats offline, then newest last_seen —
+    with a warning naming the duplicate so the stale Z2M entry gets
+    cleaned up.
     """
     if not zigbee_config.sites:
         raise RuntimeError("No zigbee sites configured in gdoc2netcfg.toml")
@@ -327,11 +333,43 @@ def scan_zigbee(
             if entry["site"] != site_cfg.name
         }
         for device in devices:
-            data[device.ieee_address] = asdict(device)
+            new = asdict(device)
+            existing = data.get(device.ieee_address)
+            if existing is not None and existing["site"] != new["site"]:
+                data[device.ieee_address] = _resolve_cross_site_duplicate(
+                    existing, new,
+                )
+            else:
+                data[device.ieee_address] = new
         if bridge is not None:
             data[bridge_key(site_cfg.name)] = asdict(bridge)
 
     return data, errors
+
+
+def _resolve_cross_site_duplicate(existing: dict, new: dict) -> dict:
+    """Pick one view of a device reported by two sites, loudly.
+
+    Both Z2M registries listing the same IEEE address means a device
+    was moved between sites and the old registry entry was never
+    removed.  Prefer the view that is online, then the most recently
+    seen one (the freshly scanned view wins a full tie).  Warn either
+    way — the losing entry is stale and should be removed from its
+    site's Zigbee2MQTT instance.
+    """
+    def preference(entry: dict) -> tuple:
+        return (entry["availability"] == "online", entry["last_seen"] or 0)
+
+    keep = max(new, existing, key=preference)
+    drop = existing if keep is new else new
+    print(
+        f"Warning: {keep['ieee_address']} ({keep['friendly_name']}) is in "
+        f"both {existing['site']} and {new['site']} Z2M registries — "
+        f"keeping {keep['site']} ({keep['availability']}); remove the "
+        f"stale {drop['site']} entry.",
+        file=sys.stderr,
+    )
+    return keep
 
 
 def raise_for_zigbee_errors(errors: list[str]) -> None:

@@ -149,6 +149,67 @@ class TestScanZigbee:
         assert len(errors) == 1
 
 
+class TestCrossSiteDuplicates:
+    """A device in two Z2M registries (moved without cleanup) resolves
+    deterministically: online wins, then newest last_seen — loudly."""
+
+    def test_online_view_wins(self, monkeypatch, capsys):
+        def fake_scan(name, cfg, verbose=False):
+            if name == "welland":
+                return [_device("welland", "0x01", availability="offline")], None
+            return [_device("monarto", "0x01", availability="online")], None
+
+        monkeypatch.setattr(zigbee, "scan_zigbee_site", fake_scan)
+        data, errors = scan_zigbee(_config("welland", "monarto"), None)
+        assert errors == []
+        assert data["0x01"]["site"] == "monarto"
+        err = capsys.readouterr().err
+        assert "both welland and monarto" in err
+        assert "remove the stale welland entry" in err
+
+    def test_online_wins_regardless_of_site_order(self, monkeypatch):
+        def fake_scan(name, cfg, verbose=False):
+            if name == "welland":
+                return [_device("welland", "0x01", availability="online")], None
+            return [_device("monarto", "0x01", availability="offline")], None
+
+        monkeypatch.setattr(zigbee, "scan_zigbee_site", fake_scan)
+        data, _ = scan_zigbee(_config("welland", "monarto"), None)
+        assert data["0x01"]["site"] == "welland"
+
+    def test_newest_last_seen_wins_when_both_offline(self, monkeypatch):
+        def fake_scan(name, cfg, verbose=False):
+            if name == "welland":
+                return [_device("welland", "0x01", availability="offline",
+                                last_seen=5000)], None
+            return [_device("monarto", "0x01", availability="offline",
+                            last_seen=2000)], None
+
+        monkeypatch.setattr(zigbee, "scan_zigbee_site", fake_scan)
+        data, _ = scan_zigbee(_config("welland", "monarto"), None)
+        assert data["0x01"]["site"] == "welland"
+
+    def test_baseline_entry_defended_when_its_site_fails(self, monkeypatch):
+        """A stale ghost must not clobber the failed site's good baseline."""
+        from dataclasses import asdict
+
+        baseline = {
+            "0x01": asdict(_device("monarto", "0x01", availability="online",
+                                   last_seen=9000)),
+        }
+
+        def fake_scan(name, cfg, verbose=False):
+            if name == "monarto":
+                raise RuntimeError("Timeout")
+            return [_device("welland", "0x01", availability="offline",
+                            last_seen=100)], None
+
+        monkeypatch.setattr(zigbee, "scan_zigbee_site", fake_scan)
+        data, errors = scan_zigbee(_config("welland", "monarto"), baseline)
+        assert len(errors) == 1
+        assert data["0x01"]["site"] == "monarto"  # baseline view kept
+
+
 class TestRaiseForZigbeeErrors:
     def test_no_errors_is_noop(self):
         raise_for_zigbee_errors([])

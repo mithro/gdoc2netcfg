@@ -191,6 +191,21 @@ def _save_to_discovery_db(
             raise
 
 
+def _load_latest_from_db(config, loader: str):
+    """Load the latest supplement data from the DiscoveryDB — the sole source.
+
+    *loader* names a DiscoveryDB ``load_latest_*`` method.  Returns None
+    when the databases don't exist or the supplement has no completed scan.
+    """
+    db = _open_databases(config)
+    if db is None:
+        return None
+    try:
+        return getattr(db.discovery, loader)()
+    finally:
+        db.close()
+
+
 def _open_databases(config):
     """Open both SQLite databases read-only if both exist, returning a pair or None.
 
@@ -722,14 +737,11 @@ def cmd_reachability_publish(args: argparse.Namespace) -> int:
     from gdoc2netcfg.supplements.mqtt_ha import publish_all_hosts
 
     # Enrich hosts with tasmota data for power-plug availability linkage
-    from gdoc2netcfg.supplements.tasmota import (
-        enrich_hosts_with_tasmota,
-        load_tasmota_cache,
-    )
+    from gdoc2netcfg.supplements.tasmota import enrich_hosts_with_tasmota
 
-    tasmota_cache_path = Path(config.cache.directory) / "tasmota.json"
-    tasmota_cache = load_tasmota_cache(tasmota_cache_path)
-    enrich_hosts_with_tasmota(hosts, tasmota_cache)
+    enrich_hosts_with_tasmota(
+        hosts, _load_latest_from_db(config, "load_latest_tasmota"),
+    )
 
     publish_all_hosts(
         hosts, reachability, config.tasmota, verbose=True,
@@ -1233,8 +1245,7 @@ def cmd_bridge_show(args: argparse.Namespace) -> int:
     from gdoc2netcfg.derivations.host_builder import build_hosts
     from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.bridge import enrich_hosts_with_bridge_data
-    from gdoc2netcfg.supplements.nsdp import enrich_hosts_with_nsdp, load_nsdp_cache
-    from gdoc2netcfg.supplements.snmp_common import load_json_cache
+    from gdoc2netcfg.supplements.nsdp import enrich_hosts_with_nsdp
 
     # Build hosts from cached CSVs
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
@@ -1248,15 +1259,13 @@ def cmd_bridge_show(args: argparse.Namespace) -> int:
 
     hosts = build_hosts(all_records, config.site)
 
-    # Load SNMP bridge cache
-    bridge_cache_path = Path(config.cache.directory) / "bridge.json"
-    bridge_cache = load_json_cache(bridge_cache_path)
-    enrich_hosts_with_bridge_data(hosts, bridge_cache)
-
-    # Load NSDP cache
-    nsdp_cache_path = Path(config.cache.directory) / "nsdp.json"
-    nsdp_cache = load_nsdp_cache(nsdp_cache_path)
-    enrich_hosts_with_nsdp(hosts, nsdp_cache)
+    # Load cached switch data (SNMP bridge + NSDP) from the DB
+    enrich_hosts_with_bridge_data(
+        hosts, _load_latest_from_db(config, "load_latest_bridge"),
+    )
+    enrich_hosts_with_nsdp(
+        hosts, _load_latest_from_db(config, "load_latest_nsdp"),
+    )
 
     # Collect switches that have unified switch_data
     switches = [h for h in hosts if h.switch_data is not None]
@@ -1574,10 +1583,7 @@ def cmd_nsdp_show(args: argparse.Namespace) -> int:
     """Show cached NSDP data for Netgear switches."""
     config = _load_config(args)
 
-    from gdoc2netcfg.supplements.nsdp import load_nsdp_cache
-
-    cache_path = Path(config.cache.directory) / "nsdp.json"
-    nsdp_data = load_nsdp_cache(cache_path)
+    nsdp_data = _load_latest_from_db(config, "load_latest_nsdp")
 
     if not nsdp_data:
         print("No NSDP data cached. Run 'gdoc2netcfg nsdp scan' first.")
@@ -1711,10 +1717,7 @@ def cmd_tasmota_show(args: argparse.Namespace) -> int:
     """Show cached Tasmota device data."""
     config = _load_config(args)
 
-    from gdoc2netcfg.supplements.tasmota import load_tasmota_cache
-
-    cache_path = Path(config.cache.directory) / "tasmota.json"
-    tasmota_data = load_tasmota_cache(cache_path)
+    tasmota_data = _load_latest_from_db(config, "load_latest_tasmota")
 
     if not tasmota_data:
         print("No Tasmota data cached. Run 'gdoc2netcfg tasmota scan' first.")
@@ -1786,10 +1789,7 @@ def cmd_tasmota_configure(args: argparse.Namespace) -> int:
 
     from gdoc2netcfg.derivations.host_builder import build_hosts
     from gdoc2netcfg.sources.parser import parse_csv
-    from gdoc2netcfg.supplements.tasmota import (
-        enrich_hosts_with_tasmota,
-        load_tasmota_cache,
-    )
+    from gdoc2netcfg.supplements.tasmota import enrich_hosts_with_tasmota
     from gdoc2netcfg.supplements.tasmota_configure import (
         configure_all_tasmota_devices,
         configure_tasmota_device,
@@ -1807,9 +1807,9 @@ def cmd_tasmota_configure(args: argparse.Namespace) -> int:
 
     hosts = build_hosts(all_records, config.site)
 
-    cache_path = Path(config.cache.directory) / "tasmota.json"
-    tasmota_cache = load_tasmota_cache(cache_path)
-    enrich_hosts_with_tasmota(hosts, tasmota_cache)
+    enrich_hosts_with_tasmota(
+        hosts, _load_latest_from_db(config, "load_latest_tasmota"),
+    )
 
     dry_run = args.dry_run
     force = args.force

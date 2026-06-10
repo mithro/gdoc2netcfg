@@ -117,17 +117,21 @@ def _ipv6_suffix(vi, prefix: str) -> str:
 
 def _load_pipeline(config):
     """Load hosts from pipeline with VLAN and Tasmota enrichment."""
-    from gdoc2netcfg.cli.main import _enrich_site_from_vlan_sheet, _fetch_or_load_csvs
+    from gdoc2netcfg.cli.main import (
+        _enrich_site_from_sheets,
+        _fetch_or_load_csvs,
+        _load_latest_from_db,
+    )
     from gdoc2netcfg.derivations.host_builder import build_hosts
     from gdoc2netcfg.sources.parser import parse_csv
-    from gdoc2netcfg.supplements.tasmota import enrich_hosts_with_tasmota, load_tasmota_cache
+    from gdoc2netcfg.supplements.tasmota import enrich_hosts_with_tasmota
 
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
-    _enrich_site_from_vlan_sheet(config, csv_data)
+    _enrich_site_from_sheets(config, csv_data)
 
     all_records = []
     for name, csv_text in csv_data:
-        if name == "vlan_allocations":
+        if name in ("vlan_allocations", "sites"):
             continue
         all_records.extend(parse_csv(csv_text, name))
 
@@ -136,9 +140,9 @@ def _load_pipeline(config):
 
     hosts = build_hosts(all_records, config.site)
 
-    tasmota_cache_path = Path(config.cache.directory) / "tasmota.json"
-    tasmota_cache = load_tasmota_cache(tasmota_cache_path)
-    enrich_hosts_with_tasmota(hosts, tasmota_cache)
+    enrich_hosts_with_tasmota(
+        hosts, _load_latest_from_db(config, "load_latest_tasmota"),
+    )
 
     return hosts
 

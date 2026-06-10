@@ -1,14 +1,14 @@
 """Discovery database for supplement scan results with historical retention.
 
 Stores results from network scanning supplements (reachability, SSH keys,
-SSL certs, SNMP, bridge, NSDP, BMC firmware, tasmota).  All data is
-delta-based: a new row is inserted only when the data for a given host
+SSL certs, SNMP, bridge, NSDP, BMC firmware, tasmota, zigbee).  All data
+is delta-based: a new row is inserted only when the data for a given host
 differs from the latest stored row.
 
 Structured tables are used for data types with simple schemas where
 per-column queries are valuable (reachability, SSH keys, SSL certs,
 BMC firmware).  JSON-blob tables are used for deeply nested data
-(SNMP, bridge, NSDP, tasmota).
+(SNMP, bridge, NSDP, tasmota, zigbee).
 """
 
 from __future__ import annotations
@@ -123,17 +123,40 @@ CREATE INDEX IF NOT EXISTS idx_tasmota_scan ON tasmota_data(scan_id);
 CREATE INDEX IF NOT EXISTS idx_tasmota_host ON tasmota_data(hostname);
 """
 
+# Keyed by IEEE address for devices, "_bridge/<site>" for bridge info.
+_ZIGBEE_DATA_SQL = """\
+CREATE TABLE IF NOT EXISTS zigbee_data (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id   INTEGER NOT NULL REFERENCES scans(id),
+    hostname  TEXT NOT NULL,
+    data_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_zigbee_scan ON zigbee_data(scan_id);
+CREATE INDEX IF NOT EXISTS idx_zigbee_host ON zigbee_data(hostname);
+"""
+
+# A JSON-blob row whose data_json is JSON null records "this key vanished
+# from an authoritative scan" — an INSERT-only tombstone (history is never
+# deleted).  Loads skip these keys; a later real row resurrects the key.
+_TOMBSTONE_JSON = "null"
+
 
 class DiscoveryDB(BaseDatabase):
     """SQLite storage for supplement scan results."""
 
     # v2: reachability.is_tombstone — records "host removed from the
     # inventory" as an INSERT-only delta (see tombstone_missing_reachability).
-    SCHEMA_VERSION = 2
+    # v3: zigbee_data table (Zigbee2MQTT devices + bridge info).
+    SCHEMA_VERSION = 3
     SCHEMA_UPGRADES = {
         2: [
             "ALTER TABLE reachability "
             "ADD COLUMN is_tombstone INTEGER NOT NULL DEFAULT 0",
+        ],
+        3: [
+            stmt.strip()
+            for stmt in _ZIGBEE_DATA_SQL.split(";")
+            if stmt.strip()
         ],
     }
 
@@ -147,6 +170,7 @@ class DiscoveryDB(BaseDatabase):
             + _BRIDGE_DATA_SQL
             + _NSDP_DATA_SQL
             + _TASMOTA_DATA_SQL
+            + _ZIGBEE_DATA_SQL
         ).split(";"):
             stmt = stmt.strip()
             if stmt:
@@ -600,10 +624,15 @@ class DiscoveryDB(BaseDatabase):
         table: str,
         scan_id: int,
         data: dict[str, dict],
+        ignore_fields: frozenset[str] = frozenset(),
     ) -> int:
         """Generic delta-based save for JSON-blob supplement tables.
 
         Compares canonical JSON (``json.dumps(sort_keys=True)``) per host.
+        Top-level *ignore_fields* are excluded from the comparison (but
+        still stored) — for fields that change on nearly every scan, so
+        noise alone never triggers a new row (mirroring reachability's
+        status-not-RTT comparison).
         """
         latest = self._latest_json_blobs(table)
         changed = 0
@@ -611,14 +640,15 @@ class DiscoveryDB(BaseDatabase):
         try:
             cur.execute("BEGIN")
             for hostname, host_data in data.items():
-                canonical = json.dumps(host_data, sort_keys=True)
-                if hostname in latest and latest[hostname] == canonical:
+                if hostname in latest and _blob_comparison_key(
+                    json.loads(latest[hostname]), ignore_fields
+                ) == _blob_comparison_key(host_data, ignore_fields):
                     continue
                 changed += 1
                 cur.execute(
                     f"INSERT INTO {table} "  # noqa: S608
                     "(scan_id, hostname, data_json) VALUES (?, ?, ?)",
-                    (scan_id, hostname, canonical),
+                    (scan_id, hostname, json.dumps(host_data, sort_keys=True)),
                 )
             self._conn.commit()
         except Exception:
@@ -626,12 +656,63 @@ class DiscoveryDB(BaseDatabase):
             raise
         return changed
 
+    def _tombstone_missing_json_blob(
+        self,
+        table: str,
+        scan_id: int,
+        present: set[str],
+    ) -> int:
+        """Tombstone keys that vanished from an authoritative scan.
+
+        *present* must be the FULL key set covered by this scan — a key
+        in the latest stored state but absent from it has been removed
+        at the source.  Each missing key gets a row with JSON null data
+        under *scan_id*: an INSERT-only delta (history is never deleted)
+        that drops the key from ``_load_latest_json_blob()``.  A later
+        real row supersedes the tombstone automatically (resurrection).
+
+        Raises ValueError on an empty *present* set — that means the
+        scan itself failed, not that every key was removed.
+
+        Returns the number of keys tombstoned.
+        """
+        if not present:
+            raise ValueError(
+                f"_tombstone_missing_json_blob({table!r}) called with an "
+                "empty present set — refusing to tombstone every key."
+            )
+        latest = self._latest_json_blobs(table)
+        missing = sorted(
+            key for key, blob in latest.items()
+            if blob != _TOMBSTONE_JSON and key not in present
+        )
+        if not missing:
+            return 0
+        cur = self._conn.cursor()
+        try:
+            cur.execute("BEGIN")
+            for key in missing:
+                cur.execute(
+                    f"INSERT INTO {table} "  # noqa: S608
+                    "(scan_id, hostname, data_json) VALUES (?, ?, ?)",
+                    (scan_id, key, _TOMBSTONE_JSON),
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return len(missing)
+
     def _load_latest_json_blob(
         self,
         table: str,
         scan_type: str,
     ) -> dict[str, dict] | None:
-        """Generic load for JSON-blob supplement tables."""
+        """Generic load for JSON-blob supplement tables.
+
+        Keys whose latest row is a tombstone (removed at the source)
+        are omitted.
+        """
         if self.latest_scan_id(scan_type) is None:
             return None
         cur = self._conn.execute(
@@ -648,6 +729,7 @@ class DiscoveryDB(BaseDatabase):
         return {
             hostname: json.loads(data_json)
             for hostname, data_json in cur.fetchall()
+            if data_json != _TOMBSTONE_JSON
         }
 
     def _latest_json_blobs(
@@ -700,6 +782,35 @@ class DiscoveryDB(BaseDatabase):
     def load_latest_tasmota(self) -> dict[str, dict] | None:
         return self._load_latest_json_blob("tasmota_data", "tasmota")
 
+    # -- Zigbee --
+
+    # Fields that change on nearly every scan (activity timestamp and
+    # radio noise) — excluded from change detection so daily scans don't
+    # re-insert every device.  The stored values are as-of the last
+    # meaningful change, like reachability's RTT.
+    _ZIGBEE_VOLATILE_FIELDS = frozenset({"last_seen", "link_quality"})
+
+    def save_zigbee(self, scan_id: int, data: dict[str, dict]) -> int:
+        """Store zigbee data, delta-based, tombstoning removed entries.
+
+        *data* maps IEEE address -> device dict plus ``_bridge/<site>``
+        -> bridge-info dict, and must be the authoritative full state —
+        scan_zigbee carries baseline entries for failed sites forward,
+        so a key absent here has been removed from its Zigbee2MQTT
+        instance and is tombstoned.
+        """
+        changed = self._save_json_blob(
+            "zigbee_data", scan_id, data,
+            ignore_fields=self._ZIGBEE_VOLATILE_FIELDS,
+        )
+        changed += self._tombstone_missing_json_blob(
+            "zigbee_data", scan_id, set(data),
+        )
+        return changed
+
+    def load_latest_zigbee(self) -> dict[str, dict] | None:
+        return self._load_latest_json_blob("zigbee_data", "zigbee")
+
     # ==================================================================
     # History / time-travel queries
     # ==================================================================
@@ -707,6 +818,7 @@ class DiscoveryDB(BaseDatabase):
     # Valid table names for host_changes() — prevents SQL injection.
     _HISTORY_TABLES = frozenset({
         "snmp_data", "bridge_data", "nsdp_data", "tasmota_data",
+        "zigbee_data",
     })
 
     def host_changes(
@@ -749,6 +861,18 @@ class DiscoveryDB(BaseDatabase):
 
 
 # -- Helpers ---------------------------------------------------------------
+
+def _blob_comparison_key(data: object, ignore_fields: frozenset[str]) -> str:
+    """Canonical JSON for change detection, volatile fields removed.
+
+    Non-dict payloads (e.g. a null tombstone) compare as-is — so a
+    tombstoned key never compares equal to real data and resurrection
+    inserts a fresh row.
+    """
+    if ignore_fields and isinstance(data, dict):
+        data = {k: v for k, v in data.items() if k not in ignore_fields}
+    return json.dumps(data, sort_keys=True)
+
 
 def _extract_interfaces(hr: object) -> list[list[tuple]]:
     """Extract interface ping data from a HostReachability or dict.

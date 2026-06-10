@@ -635,6 +635,132 @@ class TestReachabilityTombstones:
         assert changed == 1  # host-a unchanged; host-b tombstoned
 
 
+# -- Zigbee ------------------------------------------------------------------
+
+class TestZigbee:
+    """Zigbee-specific JSON-blob behaviour: volatile-field-insensitive
+    deltas and tombstoning of removed devices."""
+
+    def _device(self, site: str, ieee: str, **overrides) -> dict:
+        d = {
+            "site": site,
+            "ieee_address": ieee,
+            "friendly_name": "kitchen_temp",
+            "object_id": "kitchen_temp",
+            "device_type": "EndDevice",
+            "model_id": "WSDCGQ12LM",
+            "manufacturer": "Xiaomi",
+            "model": "Aqara temperature sensor",
+            "power_source": "Battery",
+            "software_build_id": "100",
+            "date_code": "2023-10-15",
+            "last_seen": 1000,
+            "link_quality": 80,
+            "availability": "online",
+            "network_address": 1234,
+        }
+        d.update(overrides)
+        return d
+
+    def _bridge(self, site: str) -> dict:
+        return {
+            "site": site,
+            "z2m_version": "1.38.0",
+            "coordinator_ieee": "0x00aa",
+            "coordinator_type": "ConBee II",
+            "channel": 15,
+            "pan_id": "0x1a62",
+        }
+
+    def _save(self, db: DiscoveryDB, data: dict) -> int:
+        s = db.begin_scan("zigbee")
+        changed = db.save_zigbee(s, data)
+        db.finish_scan(s, host_count=len(data), changed_count=changed)
+        return changed
+
+    def test_save_and_load(self, db: DiscoveryDB):
+        data = {
+            "0x01": self._device("welland", "0x01"),
+            "_bridge/welland": self._bridge("welland"),
+        }
+        changed = self._save(db, data)
+        assert changed == 2
+        loaded = db.load_latest_zigbee()
+        assert loaded == data
+
+    def test_load_returns_none_with_no_scans(self, db: DiscoveryDB):
+        assert db.load_latest_zigbee() is None
+
+    def test_delta_ignores_volatile_fields(self, db: DiscoveryDB):
+        """last_seen / link_quality churn alone never inserts a new row."""
+        self._save(db, {"0x01": self._device("welland", "0x01")})
+        changed = self._save(db, {
+            "0x01": self._device(
+                "welland", "0x01", last_seen=2000, link_quality=60,
+            ),
+        })
+        assert changed == 0
+
+    def test_delta_detects_availability_change(self, db: DiscoveryDB):
+        self._save(db, {"0x01": self._device("welland", "0x01")})
+        changed = self._save(db, {
+            "0x01": self._device("welland", "0x01", availability="offline"),
+        })
+        assert changed == 1
+        loaded = db.load_latest_zigbee()
+        assert loaded["0x01"]["availability"] == "offline"
+
+    def test_volatile_fields_stored_on_real_change(self, db: DiscoveryDB):
+        """When a row IS inserted, it carries the latest volatile values."""
+        self._save(db, {"0x01": self._device("welland", "0x01")})
+        self._save(db, {
+            "0x01": self._device(
+                "welland", "0x01", availability="offline", last_seen=2000,
+            ),
+        })
+        assert db.load_latest_zigbee()["0x01"]["last_seen"] == 2000
+
+    def test_removed_device_is_tombstoned(self, db: DiscoveryDB):
+        self._save(db, {
+            "0x01": self._device("welland", "0x01"),
+            "0x02": self._device("welland", "0x02", object_id="plug_1"),
+        })
+        changed = self._save(db, {"0x01": self._device("welland", "0x01")})
+        assert changed == 1  # the tombstone
+        assert set(db.load_latest_zigbee()) == {"0x01"}
+
+    def test_tombstone_history_retained(self, db: DiscoveryDB):
+        self._save(db, {"0x01": self._device("welland", "0x01"),
+                        "0x02": self._device("welland", "0x02")})
+        self._save(db, {"0x01": self._device("welland", "0x01")})
+        changes = db.host_changes("zigbee_data", "0x02", scan_type="zigbee")
+        assert len(changes) == 2
+        assert changes[0][1] is None  # newest: the tombstone
+        assert changes[1][1]["ieee_address"] == "0x02"
+
+    def test_tombstone_is_idempotent(self, db: DiscoveryDB):
+        self._save(db, {"0x01": self._device("welland", "0x01"),
+                        "0x02": self._device("welland", "0x02")})
+        self._save(db, {"0x01": self._device("welland", "0x01")})
+        changed = self._save(db, {"0x01": self._device("welland", "0x01")})
+        assert changed == 0
+
+    def test_resurrection(self, db: DiscoveryDB):
+        device = self._device("welland", "0x02")
+        self._save(db, {"0x01": self._device("welland", "0x01"),
+                        "0x02": device})
+        self._save(db, {"0x01": self._device("welland", "0x01")})
+        changed = self._save(db, {"0x01": self._device("welland", "0x01"),
+                                  "0x02": device})
+        assert changed == 1  # the resurrected device
+        assert set(db.load_latest_zigbee()) == {"0x01", "0x02"}
+
+    def test_empty_data_fails_loud(self, db: DiscoveryDB):
+        s = db.begin_scan("zigbee")
+        with pytest.raises(ValueError, match="empty present set"):
+            db.save_zigbee(s, {})
+
+
 # -- Schema upgrade (v1 -> v2) ----------------------------------------------
 
 class TestSchemaUpgrade:
@@ -642,10 +768,40 @@ class TestSchemaUpgrade:
         """Create a current DB, then strip it back to schema v1."""
         d = DiscoveryDB(path)
         d.connection.execute("ALTER TABLE reachability DROP COLUMN is_tombstone")
+        d.connection.execute("DROP TABLE zigbee_data")
         d.connection.execute(
             "UPDATE _meta SET value = '1' WHERE key = 'schema_version'"
         )
         d.connection.commit()
+        d.close()
+
+    def _make_v2_db(self, path) -> None:
+        """Create a current DB, then strip it back to schema v2."""
+        d = DiscoveryDB(path)
+        d.connection.execute("DROP TABLE zigbee_data")
+        d.connection.execute(
+            "UPDATE _meta SET value = '2' WHERE key = 'schema_version'"
+        )
+        d.connection.commit()
+        d.close()
+
+    def _table_names(self, d: DiscoveryDB) -> set[str]:
+        return {
+            r[0] for r in d.connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+
+    def test_rw_open_upgrades_v2(self, tmp_path: Path):
+        path = tmp_path / "v2.db"
+        self._make_v2_db(path)
+
+        d = DiscoveryDB(path)  # read-write open applies the upgrade
+        assert "zigbee_data" in self._table_names(d)
+        version = d.connection.execute(
+            "SELECT value FROM _meta WHERE key = 'schema_version'"
+        ).fetchone()[0]
+        assert int(version) == DiscoveryDB.SCHEMA_VERSION
         d.close()
 
     def test_rw_open_upgrades_v1(self, tmp_path: Path):
@@ -657,6 +813,7 @@ class TestSchemaUpgrade:
             "PRAGMA table_info(reachability)"
         )]
         assert "is_tombstone" in cols
+        assert "zigbee_data" in self._table_names(d)  # v2->v3 step too
         version = d.connection.execute(
             "SELECT value FROM _meta WHERE key = 'schema_version'"
         ).fetchone()[0]

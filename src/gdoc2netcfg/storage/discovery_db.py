@@ -75,20 +75,6 @@ CREATE INDEX IF NOT EXISTS idx_bmc_scan ON bmc_firmware(scan_id);
 CREATE INDEX IF NOT EXISTS idx_bmc_host ON bmc_firmware(hostname);
 """
 
-# Legacy JSON-blob zigbee table — only used by the v2 -> v3 upgrade
-# step; v4 converts it into the structured tables below and drops it.
-_ZIGBEE_DATA_SQL = """\
-CREATE TABLE IF NOT EXISTS zigbee_data (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    scan_id   INTEGER NOT NULL REFERENCES scans(id),
-    hostname  TEXT NOT NULL,
-    data_json TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_zigbee_scan ON zigbee_data(scan_id);
-CREATE INDEX IF NOT EXISTS idx_zigbee_host ON zigbee_data(hostname);
-"""
-
-
 # ==========================================================================
 # Structured supplement tables (v4)
 # ==========================================================================
@@ -613,118 +599,15 @@ def _validate_zigbee_doc(site: str, doc: dict) -> None:
         raise ValueError(f"zigbee[{site}].devices: expected a dict")
 
 
-def _insert_zigbee_doc(
-    cur: sqlite3.Cursor, scan_id: int, site: str, doc: dict,
-) -> None:
-    """Insert a full site document (first appearance / migration)."""
-    _validate_zigbee_doc(site, doc)
-    _insert_zigbee_site_row(cur, scan_id, site, doc["bridge"])
-    for ieee, device in doc["devices"].items():
-        _insert_zigbee_device_row(cur, scan_id, site, ieee, device)
-
-
-# -- v3 -> v4 data migration --------------------------------------------------
-
-def _upgrade_v4_convert_blobs(conn: sqlite3.Connection) -> None:
-    """Convert every JSON-blob row into the structured tables.
-
-    Runs inside the upgrade transaction; scan_ids are preserved, so the
-    full delta history carries over.  Strict converters raise (rolling
-    the whole upgrade back) on any shape the schema does not cover.
-    """
-    cur = conn.cursor()
-
-    for table, insert in (
-        ("snmp_data", _insert_snmp_rows),
-        ("bridge_data", _insert_bridge_rows),
-        ("nsdp_data", _insert_nsdp_rows),
-        ("tasmota_data", _insert_tasmota_rows),
-    ):
-        rows = conn.execute(
-            f"SELECT scan_id, hostname, data_json FROM {table} "  # noqa: S608
-            f"ORDER BY id"
-        ).fetchall()
-        for scan_id, hostname, data_json in rows:
-            data = json.loads(data_json)
-            if data is None:
-                raise ValueError(
-                    f"{table}: unexpected null row for {hostname!r}"
-                )
-            insert(cur, scan_id, hostname, data)
-
-    _convert_zigbee_blobs(conn, cur)
-
-
-def _convert_zigbee_blobs(
-    conn: sqlite3.Connection, cur: sqlite3.Cursor,
-) -> None:
-    """Convert zigbee_data rows, which exist in three historical formats.
-
-    1. Site documents ({"bridge": ..., "devices": {...}}) keyed by site
-       — exploded into a site row plus per-device rows under their scan.
-    2. Legacy flat keys: device dicts keyed by IEEE address and bridge
-       dicts keyed by "_bridge/<site>" — these were per-device deltas
-       natively and convert row-for-row.
-    3. JSON-null tombstones: for legacy flat keys these only retired the
-       old keyspace and are dropped; for a site key they become a site
-       tombstone row.
-    """
-    for scan_id, key, data_json in conn.execute(
-        "SELECT scan_id, hostname, data_json FROM zigbee_data ORDER BY id"
-    ).fetchall():
-        data = json.loads(data_json)
-        if data is None:
-            if key.startswith(("0x", "_bridge/")):
-                continue  # retired a legacy flat key; carries no data
-            _insert_row(
-                cur, "zigbee_sites", "site", scan_id, key,
-                ("is_tombstone",), (1,),
-            )
-        elif isinstance(data, dict) and set(data) == {"bridge", "devices"}:
-            _insert_zigbee_doc(cur, scan_id, key, data)
-        elif key.startswith("_bridge/"):
-            site = key[len("_bridge/"):]
-            if data.get("site") != site:
-                raise ValueError(f"zigbee_data: bad bridge row {key!r}")
-            _insert_zigbee_site_row(cur, scan_id, site, data)
-        elif isinstance(data, dict) and "ieee_address" in data:
-            _insert_zigbee_device_row(
-                cur, scan_id, data["site"], key, data,
-            )
-        else:
-            raise ValueError(f"zigbee_data: unrecognised row {key!r}")
-
-
 class DiscoveryDB(BaseDatabase):
     """SQLite storage for supplement scan results."""
 
-    # v2: reachability.is_tombstone — records "host removed from the
-    # inventory" as an INSERT-only delta (see tombstone_missing_reachability).
-    # v3: zigbee_data JSON-blob table (superseded by v4).
-    # v4: structured tables replace ALL JSON-blob tables; existing blob
-    #     rows are converted in place (scan_ids preserved) and the blob
-    #     tables dropped.
+    # Version lineage: v2 added reachability.is_tombstone, v3 a zigbee
+    # JSON-blob table, v4 replaced ALL JSON-blob tables with the
+    # structured tables above (converting blob history in place).  The
+    # upgrade steps were removed once every production database reached
+    # v4 — an older database now fails loud and has no upgrade path.
     SCHEMA_VERSION = 4
-    SCHEMA_UPGRADES = {
-        2: [
-            "ALTER TABLE reachability "
-            "ADD COLUMN is_tombstone INTEGER NOT NULL DEFAULT 0",
-        ],
-        3: [
-            stmt.strip()
-            for stmt in _ZIGBEE_DATA_SQL.split(";")
-            if stmt.strip()
-        ],
-        4: [
-            *_structured_ddl_statements(),
-            _upgrade_v4_convert_blobs,
-            "DROP TABLE snmp_data",
-            "DROP TABLE bridge_data",
-            "DROP TABLE nsdp_data",
-            "DROP TABLE tasmota_data",
-            "DROP TABLE zigbee_data",
-        ],
-    }
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:
         for stmt in (

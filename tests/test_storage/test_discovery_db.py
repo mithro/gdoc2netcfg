@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -988,115 +987,35 @@ class TestZigbee:
             db.save_zigbee(s, {})
 
 
-# -- Schema upgrades & the v4 blob conversion ---------------------------------
+# -- Schema version checks ----------------------------------------------------
+#
+# The v1 -> v4 upgrade steps were removed once both production databases
+# reached v4: an older database now fails loud in every case.
 
-_OLD_BLOB_DDL = (
-    "CREATE TABLE {name} ("
-    " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-    " scan_id INTEGER NOT NULL REFERENCES scans(id),"
-    " hostname TEXT NOT NULL,"
-    " data_json TEXT NOT NULL)"
-)
-
-
-def _make_old_db(path: Path, version: int) -> sqlite3.Connection:
-    """Build a pre-v4 database from scratch, as old code created it."""
-    import sqlite3 as _sqlite3
-
-    conn = _sqlite3.connect(str(path), isolation_level=None)
-    conn.execute(
-        "CREATE TABLE scans (id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        " scan_type TEXT NOT NULL, started_at TEXT NOT NULL,"
-        " finished_at TEXT, host_count INTEGER, changed_count INTEGER,"
-        " metadata TEXT)"
-    )
-    conn.execute("CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-    conn.execute(
-        "INSERT INTO _meta (key, value) VALUES ('schema_version', ?)",
-        (str(version),),
-    )
-    tombstone_col = ", is_tombstone INTEGER NOT NULL DEFAULT 0" if version >= 2 else ""
-    conn.execute(
-        "CREATE TABLE reachability (id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        " scan_id INTEGER NOT NULL REFERENCES scans(id),"
-        " hostname TEXT NOT NULL, interface_idx INTEGER NOT NULL,"
-        " ip TEXT NOT NULL, is_reachable INTEGER NOT NULL,"
-        " transmitted INTEGER NOT NULL, received INTEGER NOT NULL,"
-        f" rtt_avg_ms REAL{tombstone_col})"
-    )
-    blob_tables = ["snmp_data", "bridge_data", "nsdp_data", "tasmota_data"]
-    if version >= 3:
-        blob_tables.append("zigbee_data")
-    for name in blob_tables:
-        conn.execute(_OLD_BLOB_DDL.format(name=name))
-    return conn
-
-
-def _finished_scan(conn: sqlite3.Connection, scan_type: str) -> int:
-    cur = conn.execute(
-        "INSERT INTO scans (scan_type, started_at, finished_at, host_count,"
-        " changed_count) VALUES (?, '2026-06-01T00:00:00+00:00',"
-        " '2026-06-01T00:01:00+00:00', 1, 1)",
-        (scan_type,),
-    )
-    return cur.lastrowid
-
-
-def _blob_row(
-    conn: sqlite3.Connection, table: str, scan_id: int, key: str, doc,
-) -> None:
-    import json
-
-    conn.execute(
-        f"INSERT INTO {table} (scan_id, hostname, data_json)"  # noqa: S608
-        " VALUES (?, ?, ?)",
-        (scan_id, key, json.dumps(doc, sort_keys=True)),
-    )
-
-
-class TestSchemaUpgrade:
-    def _table_names(self, d: DiscoveryDB) -> set[str]:
-        return {
-            r[0] for r in d.connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
-        }
-
-    def _assert_current(self, d: DiscoveryDB) -> None:
-        version = d.connection.execute(
-            "SELECT value FROM _meta WHERE key = 'schema_version'"
-        ).fetchone()[0]
-        assert int(version) == DiscoveryDB.SCHEMA_VERSION
-        tables = self._table_names(d)
-        assert {"zigbee_sites", "zigbee_devices", "snmp_hosts",
-                "bridge_switches", "nsdp_switches", "tasmota_devices"} <= tables
-        assert not {t for t in tables if t.endswith("_data")}
-
-    def test_rw_open_upgrades_v1(self, tmp_path: Path):
-        path = tmp_path / "v1.db"
-        _make_old_db(path, version=1).close()
-
-        d = DiscoveryDB(path)  # read-write open applies all upgrades
-        cols = [r[1] for r in d.connection.execute(
-            "PRAGMA table_info(reachability)"
-        )]
-        assert "is_tombstone" in cols  # v2 step
-        self._assert_current(d)       # v3 + v4 steps
-        d.close()
-
-    def test_rw_open_upgrades_v3(self, tmp_path: Path):
-        path = tmp_path / "v3.db"
-        _make_old_db(path, version=3).close()
-
+class TestSchemaVersion:
+    def _make_older_db(self, path: Path) -> None:
+        """Fabricate a database stamped with an older schema version."""
         d = DiscoveryDB(path)
-        self._assert_current(d)
+        d.connection.execute(
+            "UPDATE _meta SET value = '3' WHERE key = 'schema_version'"
+        )
+        d.connection.commit()
         d.close()
 
-    def test_read_only_open_of_old_db_fails_loud(self, tmp_path: Path):
+    def test_older_db_has_no_upgrade_path(self, tmp_path: Path):
         from gdoc2netcfg.storage.base import SchemaVersionError
 
         path = tmp_path / "v3.db"
-        _make_old_db(path, version=3).close()
+        self._make_older_db(path)
+
+        with pytest.raises(SchemaVersionError, match="no upgrade step"):
+            DiscoveryDB(path)
+
+    def test_read_only_open_of_older_db_fails_loud(self, tmp_path: Path):
+        from gdoc2netcfg.storage.base import SchemaVersionError
+
+        path = tmp_path / "v3.db"
+        self._make_older_db(path)
 
         with pytest.raises(SchemaVersionError, match="read-only open cannot"):
             DiscoveryDB(path, read_only=True)
@@ -1114,150 +1033,3 @@ class TestSchemaUpgrade:
 
         with pytest.raises(SchemaVersionError, match="newer than the code"):
             DiscoveryDB(path)
-
-
-class TestV4BlobConversion:
-    """The v4 upgrade converts every stored blob into structured rows,
-    preserving scan_ids (history) and the exact load_latest_* results."""
-
-    def _build_v3_with_data(self, path: Path) -> dict:
-        conn = _make_old_db(path, version=3)
-        expected: dict = {}
-
-        s = _finished_scan(conn, "snmp")
-        _blob_row(conn, "snmp_data", s, "printer1", _snmp_doc("old-name"))
-        s2 = _finished_scan(conn, "snmp")
-        _blob_row(conn, "snmp_data", s2, "printer1", _snmp_doc("new-name"))
-        expected["snmp"] = {"printer1": _snmp_doc("new-name")}
-
-        s = _finished_scan(conn, "bridge")
-        _blob_row(conn, "bridge_data", s, "sw1", _bridge_doc())
-        old_bridge = _bridge_doc()
-        del old_bridge["port_statistics"]  # pre-port_statistics generation
-        _blob_row(conn, "bridge_data", s, "sw-old", old_bridge)
-        expected["bridge"] = {"sw1": _bridge_doc(), "sw-old": old_bridge}
-
-        s = _finished_scan(conn, "nsdp")
-        _blob_row(conn, "nsdp_data", s, "sw-iot", _nsdp_doc_full())
-        _blob_row(conn, "nsdp_data", s, "sw-min",
-                  {"model": "GS108E", "mac": "AA:BB:CC:DD:EE:02"})
-        expected["nsdp"] = {
-            "sw-iot": _nsdp_doc_full(),
-            "sw-min": {"model": "GS108E", "mac": "AA:BB:CC:DD:EE:02"},
-        }
-
-        s = _finished_scan(conn, "tasmota")
-        _blob_row(conn, "tasmota_data", s, "plug1", _tasmota_doc("plug1"))
-        _blob_row(conn, "tasmota_data", s, "_unknown/10.1.90.42",
-                  _tasmota_doc("mystery"))
-        expected["tasmota"] = {
-            "plug1": _tasmota_doc("plug1"),
-            "_unknown/10.1.90.42": _tasmota_doc("mystery"),
-        }
-
-        # Zigbee history in all three formats:
-        # scan A — legacy flat keys (device + bridge rows);
-        # scan B — site documents + null rows retiring the legacy keys.
-        sa = _finished_scan(conn, "zigbee")
-        _blob_row(conn, "zigbee_data", sa, "0x01",
-                  _zb_device("welland", "0x01", availability="offline"))
-        _blob_row(conn, "zigbee_data", sa, "0x99",
-                  _zb_device("welland", "0x99"))
-        _blob_row(conn, "zigbee_data", sa, "_bridge/welland",
-                  _zb_bridge("welland"))
-        sb = _finished_scan(conn, "zigbee")
-        welland_doc = _zb_site_doc(
-            "welland",
-            _zb_device("welland", "0x01"),
-            _zb_device("welland", "0x99"),
-        )
-        _blob_row(conn, "zigbee_data", sb, "welland", welland_doc)
-        _blob_row(conn, "zigbee_data", sb, "0x01", None)
-        _blob_row(conn, "zigbee_data", sb, "0x99", None)
-        _blob_row(conn, "zigbee_data", sb, "_bridge/welland", None)
-        expected["zigbee"] = {"welland": welland_doc}
-
-        conn.close()
-        return expected
-
-    def test_conversion_preserves_latest_state(self, tmp_path: Path):
-        path = tmp_path / "v3.db"
-        expected = self._build_v3_with_data(path)
-
-        d = DiscoveryDB(path)  # rw open runs the v4 conversion
-        assert d.load_latest_snmp() == expected["snmp"]
-        assert d.load_latest_bridge() == expected["bridge"]
-        assert d.load_latest_nsdp() == expected["nsdp"]
-        assert d.load_latest_tasmota() == expected["tasmota"]
-        assert d.load_latest_zigbee() == expected["zigbee"]
-        d.close()
-
-    def test_conversion_preserves_history(self, tmp_path: Path):
-        path = tmp_path / "v3.db"
-        self._build_v3_with_data(path)
-
-        d = DiscoveryDB(path)
-        names = [r[0] for r in d.connection.execute(
-            "SELECT sys_name FROM snmp_hosts WHERE hostname = 'printer1' "
-            "ORDER BY id"
-        )]
-        assert names == ["old-name", "new-name"]
-        # The legacy zigbee device rows survive under their old scans.
-        avail = [r[0] for r in d.connection.execute(
-            "SELECT availability FROM zigbee_devices "
-            "WHERE site = 'welland' AND ieee_address = '0x01' ORDER BY id"
-        )]
-        assert avail == ["offline", "online"]
-        d.close()
-
-    def test_legacy_ghost_device_self_heals_on_next_save(self, tmp_path: Path):
-        """A legacy device row whose (site, ieee) never reappears in a
-        site document is visible after conversion (its latest row is
-        live data) — and the next save tombstones it, because the site's
-        document is authoritative."""
-        path = tmp_path / "v3.db"
-        conn = _make_old_db(path, version=3)
-        sa = _finished_scan(conn, "zigbee")
-        _blob_row(conn, "zigbee_data", sa, "0xghost",
-                  _zb_device("welland", "0xghost"))
-        _blob_row(conn, "zigbee_data", sa, "_bridge/welland",
-                  _zb_bridge("welland"))
-        sb = _finished_scan(conn, "zigbee")
-        _blob_row(conn, "zigbee_data", sb, "welland",
-                  _zb_site_doc("welland", _zb_device("welland", "0x01")))
-        _blob_row(conn, "zigbee_data", sb, "0xghost", None)
-        conn.close()
-
-        d = DiscoveryDB(path)
-        loaded = d.load_latest_zigbee()
-        assert set(loaded["welland"]["devices"]) == {"0x01", "0xghost"}
-
-        s = d.begin_scan("zigbee")
-        changed = d.save_zigbee(s, {
-            "welland": _zb_site_doc("welland", _zb_device("welland", "0x01")),
-        })
-        d.finish_scan(s, host_count=1, changed_count=changed)
-        assert changed == 1  # the ghost's tombstone
-        assert set(d.load_latest_zigbee()["welland"]["devices"]) == {"0x01"}
-        d.close()
-
-    def test_unconvertible_blob_rolls_back(self, tmp_path: Path):
-        path = tmp_path / "v3.db"
-        conn = _make_old_db(path, version=3)
-        s = _finished_scan(conn, "snmp")
-        _blob_row(conn, "snmp_data", s, "weird", {"not": "a snmp doc"})
-        conn.close()
-
-        with pytest.raises(ValueError, match="snmp"):
-            DiscoveryDB(path)
-
-        # Rolled back: still v3, blob data intact.
-        conn = sqlite3.connect(str(path))
-        version = conn.execute(
-            "SELECT value FROM _meta WHERE key = 'schema_version'"
-        ).fetchone()[0]
-        assert int(version) == 3
-        assert conn.execute(
-            "SELECT COUNT(*) FROM snmp_data"
-        ).fetchone()[0] == 1
-        conn.close()

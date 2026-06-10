@@ -278,7 +278,7 @@ The SQLite DBs (`.cache/config.db`, `.cache/discovery.db`) accrue historical sca
 cd /opt/gdoc2netcfg && .venv/bin/gdoc2netcfg db info   # sudo-free (read-only)
 ```
 
-**Ownership: root writes, anyone reads.** The reachability daemon runs as root, so `/opt/gdoc2netcfg/.cache` and `.venv` are owned by `root`. Reads are sudo-free — the DBs use DELETE journal and read-only opens (see *Journal mode* under *SQLite Storage*), so commands that only read (`generate`, `validate`, `password`, `db info`, `db history`, the show commands) work as a normal user. Commands that **write** the DBs (the supplement scan commands, `fetch`, `db migrate`) must run via `sudo`, using the direct `.venv/bin/gdoc2netcfg` (not `uv run`, which would re-sync the root-owned venv). The reachability daemon writes a new `reachability` scan to `discovery.db` each 5-minute cycle; the other supplements only gain history when their scan commands are run.
+**Ownership: root writes, anyone reads.** The reachability daemon runs as root, so `/opt/gdoc2netcfg/.cache` and `.venv` are owned by `root`. Reads are sudo-free — the DBs use DELETE journal and read-only opens (see *Journal mode* under *SQLite Storage*), so commands that only read (`generate`, `validate`, `password`, `db info`, `db history`, the show commands) work as a normal user. Commands that **write** the DBs (the supplement scan commands, `fetch`) must run via `sudo`, using the direct `.venv/bin/gdoc2netcfg` (not `uv run`, which would re-sync the root-owned venv). The reachability daemon writes a new `reachability` scan to `discovery.db` each 5-minute cycle; the other supplements only gain history when their scan commands are run.
 
 ### dnsmasq
 

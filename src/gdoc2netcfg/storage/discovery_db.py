@@ -600,7 +600,6 @@ class DiscoveryDB(BaseDatabase):
         table: str,
         scan_id: int,
         data: dict[str, dict],
-        scan_type: str,
     ) -> int:
         """Generic delta-based save for JSON-blob supplement tables.
 
@@ -672,7 +671,7 @@ class DiscoveryDB(BaseDatabase):
     # -- SNMP --
 
     def save_snmp(self, scan_id: int, data: dict[str, dict]) -> int:
-        return self._save_json_blob("snmp_data", scan_id, data, "snmp")
+        return self._save_json_blob("snmp_data", scan_id, data)
 
     def load_latest_snmp(self) -> dict[str, dict] | None:
         return self._load_latest_json_blob("snmp_data", "snmp")
@@ -680,7 +679,7 @@ class DiscoveryDB(BaseDatabase):
     # -- Bridge --
 
     def save_bridge(self, scan_id: int, data: dict[str, dict]) -> int:
-        return self._save_json_blob("bridge_data", scan_id, data, "bridge")
+        return self._save_json_blob("bridge_data", scan_id, data)
 
     def load_latest_bridge(self) -> dict[str, dict] | None:
         return self._load_latest_json_blob("bridge_data", "bridge")
@@ -688,7 +687,7 @@ class DiscoveryDB(BaseDatabase):
     # -- NSDP --
 
     def save_nsdp(self, scan_id: int, data: dict[str, dict]) -> int:
-        return self._save_json_blob("nsdp_data", scan_id, data, "nsdp")
+        return self._save_json_blob("nsdp_data", scan_id, data)
 
     def load_latest_nsdp(self) -> dict[str, dict] | None:
         return self._load_latest_json_blob("nsdp_data", "nsdp")
@@ -696,7 +695,7 @@ class DiscoveryDB(BaseDatabase):
     # -- Tasmota --
 
     def save_tasmota(self, scan_id: int, data: dict[str, dict]) -> int:
-        return self._save_json_blob("tasmota_data", scan_id, data, "tasmota")
+        return self._save_json_blob("tasmota_data", scan_id, data)
 
     def load_latest_tasmota(self) -> dict[str, dict] | None:
         return self._load_latest_json_blob("tasmota_data", "tasmota")

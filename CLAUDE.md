@@ -41,6 +41,9 @@ uv run gdoc2netcfg tasmota show            # Show cached Tasmota device data
 uv run gdoc2netcfg tasmota configure --dry-run --all  # Preview config changes
 uv run gdoc2netcfg tasmota configure <host>      # Push config to a specific device
 uv run gdoc2netcfg tasmota ha-status       # Check Home Assistant integration
+uv run gdoc2netcfg zigbee scan --force     # Scan Zigbee2MQTT sites via MQTT
+uv run gdoc2netcfg zigbee show             # Show cached Zigbee device data
+uv run gdoc2netcfg zigbee update-sheet --dry-run  # Preview Zigbee sheet updates
 uv run gdoc2netcfg reachability publish --force    # One-shot MQTT publish
 uv run gdoc2netcfg reachability publish --daemon   # MQTT daemon (5min interval)
 uv run scripts/ha-create-reachability-dashboard.py # Generate & deploy HA dashboard
@@ -148,7 +151,7 @@ The topology generator (`topology.py`) produces a Graphviz DOT diagram of the ph
 Supplement and spreadsheet data are stored in two SQLite databases under the cache directory (`storage/` modules):
 
 - `.cache/config.db` (`ConfigDB`) — spreadsheet data: CSV snapshots, device records, VLAN definitions (scan_type `csv_fetch`).
-- `.cache/discovery.db` (`DiscoveryDB`) — supplement scan results: reachability, SSH host keys, SSL certs, BMC firmware, SNMP, bridge, NSDP, Tasmota (one scan_type each).
+- `.cache/discovery.db` (`DiscoveryDB`) — supplement scan results: reachability, SSH host keys, SSL certs, BMC firmware, SNMP, bridge, NSDP, Tasmota, Zigbee (one scan_type each).
 
 Both inherit `BaseDatabase` (`storage/base.py`): DELETE journal mode, schema versioning, and a shared `scans` audit table (one row per scan/fetch). Storage is **delta-based** — data rows are INSERTed only when a value actually changes, so history accrues with bounded growth; reads reconstruct the latest state via `load_latest_*`.
 

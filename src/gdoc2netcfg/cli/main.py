@@ -2207,19 +2207,6 @@ def cmd_password(args: argparse.Namespace) -> int:
 # Subcommand: db (database management and history)
 # ---------------------------------------------------------------------------
 
-def cmd_db_migrate(args: argparse.Namespace) -> int:
-    """Import flat-file caches into SQLite databases."""
-    config = _load_config(args)
-
-    from gdoc2netcfg.storage import open_databases
-
-    print("Migrating flat-file caches to SQLite...", file=sys.stderr)
-    pair = open_databases(config.cache.directory, migrate=True)
-    pair.close()
-    print("Migration complete.", file=sys.stderr)
-    return 0
-
-
 def cmd_db_info(args: argparse.Namespace) -> int:
     """Show database sizes, scan counts, and status."""
     config = _load_config(args)
@@ -2272,7 +2259,11 @@ def cmd_db_history(args: argparse.Namespace) -> int:
     if missing:
         for p in missing:
             print(f"Database not found: {p}", file=sys.stderr)
-        print("Run 'gdoc2netcfg db migrate' first.", file=sys.stderr)
+        print(
+            "Databases are created by the reachability daemon, the scan "
+            "commands, and 'gdoc2netcfg fetch'.",
+            file=sys.stderr,
+        )
         return 1
 
     pair = open_databases(config.cache.directory, read_only=True)
@@ -2557,10 +2548,6 @@ def main(argv: list[str] | None = None) -> int:
     db_subparsers = db_parser.add_subparsers(dest="db_command")
 
     db_subparsers.add_parser(
-        "migrate", help="Import flat-file caches into SQLite databases",
-    )
-
-    db_subparsers.add_parser(
         "info", help="Show database sizes, scan counts, and status",
     )
 
@@ -2612,9 +2599,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Handle db subcommands
     if args.command == "db":
-        if args.db_command == "migrate":
-            return cmd_db_migrate(args)
-        elif args.db_command == "info":
+        if args.db_command == "info":
             return cmd_db_info(args)
         elif args.db_command == "history":
             return cmd_db_history(args)

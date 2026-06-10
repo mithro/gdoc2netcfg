@@ -155,14 +155,16 @@ class BaseDatabase:
         if row is None:
             raise SchemaVersionError(
                 f"Database {self._db_path} has no schema_version in _meta. "
-                "Delete the file and re-run, or run 'gdoc2netcfg db migrate'."
+                "The file is not a gdoc2netcfg database — investigate "
+                "before deleting it."
             )
         on_disk = int(row[0])
         if on_disk != SCHEMA_VERSION:
             raise SchemaVersionError(
                 f"Database {self._db_path} has schema version {on_disk}, "
                 f"but the code expects version {SCHEMA_VERSION}. "
-                "Run 'gdoc2netcfg db migrate' to upgrade."
+                "No automatic upgrade is implemented — investigate before "
+                "deleting the file (its scan history would be lost)."
             )
 
     # ------------------------------------------------------------------
@@ -188,22 +190,11 @@ class BaseDatabase:
     # Scan lifecycle
     # ------------------------------------------------------------------
 
-    def begin_scan(
-        self,
-        scan_type: str,
-        *,
-        started_at: str | None = None,
-    ) -> int:
-        """Record the start of a scan.  Returns the new scan ID.
-
-        If *started_at* is provided (ISO 8601), it is used as the scan
-        start time instead of the current time.  This is used by the
-        migration to preserve flat-file timestamps.
-        """
-        ts = started_at or _utcnow_iso()
+    def begin_scan(self, scan_type: str) -> int:
+        """Record the start of a scan.  Returns the new scan ID."""
         cur = self._conn.execute(
             "INSERT INTO scans (scan_type, started_at) VALUES (?, ?)",
-            (scan_type, ts),
+            (scan_type, _utcnow_iso()),
         )
         self._conn.commit()
         return cur.lastrowid  # type: ignore[return-value]

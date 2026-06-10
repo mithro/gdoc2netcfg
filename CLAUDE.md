@@ -30,7 +30,6 @@ uv run gdoc2netcfg bmc-firmware --force # Probe BMC firmware versions via ipmito
 uv run gdoc2netcfg bridge              # Unified switch data (SNMP + NSDP)
 uv run gdoc2netcfg nsdp                # Scan Netgear switches via NSDP
 uv run gdoc2netcfg cron                # Manage scheduled cron jobs
-uv run gdoc2netcfg db migrate          # Import flat-file caches into SQLite (one-time per site)
 uv run gdoc2netcfg db info             # Show SQLite DB sizes and per-scan_type scan counts
 uv run gdoc2netcfg db history          # Show scan history (flags: --type, --since, --limit)
 uv run gdoc2netcfg password <query>        # Look up device password by hostname/MAC/IP
@@ -153,7 +152,7 @@ Supplement and spreadsheet data are stored in two SQLite databases under the cac
 
 Both inherit `BaseDatabase` (`storage/base.py`): DELETE journal mode, schema versioning, and a shared `scans` audit table (one row per scan/fetch). Storage is **delta-based** — data rows are INSERTed only when a value actually changes, so history accrues with bounded growth; reads reconstruct the latest state via `load_latest_*`.
 
-**`discovery.db` is the sole source for supplement data.** Supplement scans take their last-known baseline from the DB and the CLI persists results back to the DB only — the flat supplement `.json` caches are neither read nor written. `_build_pipeline` and the show/publish commands load supplements via `load_latest_*` (a supplement with no completed scan contributes no enrichment). Scan freshness is the age of the latest completed scan per scan_type (`scans` table, 5-minute window) instead of file mtimes. `cmd_fetch` still writes the CSVs to both the flat cache (the parser input) and `config.db`. The one-time `db migrate` importer (`storage/migration.py`) seeds the DBs from pre-cutover flat files; inspect with `db info` / `db history`.
+**`discovery.db` is the sole source for supplement data.** Supplement scans take their last-known baseline from the DB and the CLI persists results back to the DB only — the flat supplement `.json` caches are neither read nor written. `_build_pipeline` and the show/publish commands load supplements via `load_latest_*` (a supplement with no completed scan contributes no enrichment). Scan freshness is the age of the latest completed scan per scan_type (`scans` table, 5-minute window) instead of file mtimes. `cmd_fetch` still writes the CSVs to both the flat cache (the parser input) and `config.db`. The DBs are created automatically on first write (daemon, scan commands, fetch); inspect with `db info` / `db history`.
 
 > **Journal mode:** the DBs use `journal_mode=DELETE` (not WAL), so a read-only open (`mode=ro` URI) needs no write access at all — a non-root user can read the root-owned production DBs. Writes serialize against reads; a 5s `busy_timeout` absorbs the contention.
 
@@ -270,11 +269,10 @@ Note: `uv` on monarto is at `~/.local/bin/uv` (not in PATH for non-interactive s
 
 ### SQLite databases
 
-The SQLite DBs (`.cache/config.db`, `.cache/discovery.db`) accrue historical scan data (see *SQLite Storage*). Create them once per site by importing the existing flat caches, run as **root** from the repo dir (the cache path is resolved relative to the working directory):
+The SQLite DBs (`.cache/config.db`, `.cache/discovery.db`) accrue historical scan data (see *SQLite Storage*). They are created automatically by the first write (the reachability daemon, a scan command, or `fetch`). Inspect from the repo dir (the cache path is resolved relative to the working directory):
 
 ```bash
-sudo bash -c 'cd /opt/gdoc2netcfg && .venv/bin/gdoc2netcfg db migrate'   # one-time import
-sudo bash -c 'cd /opt/gdoc2netcfg && .venv/bin/gdoc2netcfg db info'      # verify
+cd /opt/gdoc2netcfg && .venv/bin/gdoc2netcfg db info   # sudo-free (read-only)
 ```
 
 **Ownership: root writes, anyone reads.** The reachability daemon runs as root, so `/opt/gdoc2netcfg/.cache` and `.venv` are owned by `root`. Reads are sudo-free — the DBs use DELETE journal and read-only opens (see *Journal mode* under *SQLite Storage*), so commands that only read (`generate`, `validate`, `password`, `db info`, `db history`, the show commands) work as a normal user. Commands that **write** the DBs (the supplement scan commands, `fetch`, `db migrate`) must run via `sudo`, using the direct `.venv/bin/gdoc2netcfg` (not `uv run`, which would re-sync the root-owned venv). The reachability daemon writes a new `reachability` scan to `discovery.db` each 5-minute cycle; the other supplements only gain history when their scan commands are run.

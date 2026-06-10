@@ -243,11 +243,44 @@ class TestGenerateCronEntries:
         assert len(bmc) == 1
         assert bmc[0].schedule == "0 4 * * 0"
 
+    def test_no_zigbee_entry_by_default(self):
+        """Machines without [[zigbee.sites]] must not schedule zigbee scans."""
+        from gdoc2netcfg.cli.cron import generate_cron_entries
+
+        entries = generate_cron_entries()
+        assert [e for e in entries if "zigbee" in e.command] == []
+
+    def test_zigbee_schedule_when_configured(self):
+        """zigbee scan should run daily at 02:15 where sites are configured."""
+        from gdoc2netcfg.cli.cron import generate_cron_entries
+
+        entries = generate_cron_entries(zigbee=True)
+        zigbee = [e for e in entries if e.lock_name == "zigbee"]
+        assert len(zigbee) == 1
+        assert zigbee[0].schedule == "15 2 * * *"
+        assert zigbee[0].command == "gdoc2netcfg zigbee scan"
+
+    def test_zigbee_configured_reads_toml(self, tmp_path):
+        """zigbee_configured() reflects the [[zigbee.sites]] entries."""
+        from gdoc2netcfg.cli.cron import zigbee_configured
+
+        toml = tmp_path / "gdoc2netcfg.toml"
+        toml.write_text(
+            '[site]\nname = "welland"\ndomain = "example.com"\n'
+        )
+        assert zigbee_configured(tmp_path) is False
+
+        toml.write_text(
+            '[site]\nname = "welland"\ndomain = "example.com"\n\n'
+            '[[zigbee.sites]]\nname = "welland"\nmqtt_host = "mqtt.example"\n'
+        )
+        assert zigbee_configured(tmp_path) is True
+
     def test_all_lock_names_unique(self):
         """All lock names should be unique."""
         from gdoc2netcfg.cli.cron import generate_cron_entries
 
-        entries = generate_cron_entries()
+        entries = generate_cron_entries(zigbee=True)
         lock_names = [e.lock_name for e in entries]
         assert len(lock_names) == len(set(lock_names))
 

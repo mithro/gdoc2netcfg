@@ -70,7 +70,7 @@ def detect_project_root(start: Path | None = None) -> Path:
     )
 
 
-def generate_cron_entries() -> list[CronEntry]:
+def generate_cron_entries(*, zigbee: bool = False) -> list[CronEntry]:
     """Generate the list of cron entries for the agreed schedule.
 
     Each command persists its results to the SQLite databases (delta-based),
@@ -78,11 +78,15 @@ def generate_cron_entries() -> list[CronEntry]:
     intentionally NOT here — it is handled by the ``gdoc2netcfg-reachability``
     systemd daemon (every 5 minutes), which also publishes to MQTT.
 
+    *zigbee* adds the daily zigbee scan — only the machine whose config
+    has ``[[zigbee.sites]]`` entries can run it (welland scans both
+    sites' MQTT brokers cross-site; monarto has none configured).
+
     Under the production "everything root" model the databases are root-owned,
     so install this as root (``sudo gdoc2netcfg cron install``) — the scans
     need write access to the DBs.
     """
-    return [
+    entries = [
         # Every 15 minutes: fetch + generate
         CronEntry(
             schedule="*/15 * * * *",
@@ -117,6 +121,7 @@ def generate_cron_entries() -> list[CronEntry]:
             lock_name="tasmota",
             comment="Scan IoT VLAN for Tasmota devices",
         ),
+        # Daily 02:15: zigbee — appended below when configured
         # Daily 03:00: snmp-host
         CronEntry(
             schedule="0 3 * * *",
@@ -139,6 +144,22 @@ def generate_cron_entries() -> list[CronEntry]:
             comment="Scan BMC firmware information",
         ),
     ]
+    if zigbee:
+        entries.append(CronEntry(
+            schedule="15 2 * * *",
+            command="gdoc2netcfg zigbee scan",
+            lock_name="zigbee",
+            comment="Scan Zigbee2MQTT sites for device data",
+        ))
+    return entries
+
+
+def zigbee_configured(project_root: Path) -> bool:
+    """True if the project's gdoc2netcfg.toml has [[zigbee.sites]] entries."""
+    from gdoc2netcfg.config import load_config
+
+    config = load_config(project_root / "gdoc2netcfg.toml")
+    return bool(config.zigbee.sites)
 
 
 _BEGIN_MARKER = "# BEGIN gdoc2netcfg managed entries - DO NOT EDIT THIS BLOCK"
@@ -291,7 +312,7 @@ def cmd_cron_show() -> int:
     """Print the crontab block that would be installed."""
     uv_path = detect_uv_path()
     project_root = detect_project_root()
-    entries = generate_cron_entries()
+    entries = generate_cron_entries(zigbee=zigbee_configured(project_root))
     block = format_crontab_block(entries, uv_path, project_root)
 
     print(f"# uv path: {uv_path}")
@@ -305,7 +326,7 @@ def cmd_cron_install() -> int:
     """Install cron entries into the user's crontab."""
     uv_path = detect_uv_path()
     project_root = detect_project_root()
-    entries = generate_cron_entries()
+    entries = generate_cron_entries(zigbee=zigbee_configured(project_root))
     block = format_crontab_block(entries, uv_path, project_root)
 
     current = read_current_crontab()

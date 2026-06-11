@@ -82,11 +82,11 @@ class TestTopologyLLDPEdges:
         """Two switches connected via LLDP produce a bold bidirectional edge."""
         sw1_bridge = BridgeData(
             port_names=((1, "0/1"),),
-            lldp_neighbors=((1, "sw-floor1", "0/2", "AA:BB:CC:DD:E2:01"),),
+            lldp_neighbors=((1, "sw-floor1", "0/2", "AA:BB:CC:DD:E2:01", ""),),
         )
         sw2_bridge = BridgeData(
             port_names=((1, "0/2"),),
-            lldp_neighbors=((1, "sw-core", "0/1", "AA:BB:CC:DD:E1:01"),),
+            lldp_neighbors=((1, "sw-core", "0/1", "AA:BB:CC:DD:E1:01", ""),),
         )
         hosts = [
             _switch("sw-core", "10.1.5.1", mac="AA:BB:CC:DD:E1:01",
@@ -104,11 +104,11 @@ class TestTopologyLLDPEdges:
         """Both sides of an LLDP link produce only one edge."""
         sw1_bridge = BridgeData(
             port_names=((1, "0/1"),),
-            lldp_neighbors=((1, "sw-floor1", "0/2", "AA:BB:CC:DD:E2:01"),),
+            lldp_neighbors=((1, "sw-floor1", "0/2", "AA:BB:CC:DD:E2:01", ""),),
         )
         sw2_bridge = BridgeData(
             port_names=((1, "0/2"),),
-            lldp_neighbors=((1, "sw-core", "0/1", "AA:BB:CC:DD:E1:01"),),
+            lldp_neighbors=((1, "sw-core", "0/1", "AA:BB:CC:DD:E1:01", ""),),
         )
         hosts = [
             _switch("sw-core", "10.1.5.1", mac="AA:BB:CC:DD:E1:01",
@@ -124,7 +124,7 @@ class TestTopologyLLDPEdges:
     def test_lldp_edge_labels_include_port_names(self):
         sw_bridge = BridgeData(
             port_names=((5, "0/5"),),
-            lldp_neighbors=((5, "sw-floor1", "0/10", "AA:BB:CC:DD:E2:01"),),
+            lldp_neighbors=((5, "sw-floor1", "0/10", "AA:BB:CC:DD:E2:01", ""),),
         )
         hosts = [
             _switch("sw-core", "10.1.5.1", mac="AA:BB:CC:DD:E1:01",
@@ -227,7 +227,7 @@ class TestTopologyLLDPMACOverlap:
         floor1_mac = "00:BB:CC:DD:E2:01"
         sw1_bridge = BridgeData(
             port_names=((1, "0/1"),),
-            lldp_neighbors=((1, "sw-floor1", "0/2", floor1_mac),),
+            lldp_neighbors=((1, "sw-floor1", "0/2", floor1_mac, ""),),
             mac_table=((floor1_mac, 1, 1, "0/1"),),
         )
         hosts = [

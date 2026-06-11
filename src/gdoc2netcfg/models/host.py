@@ -193,7 +193,8 @@ class BridgeData:
             host).  Unset aliases are empty strings.
         port_status: (ifIndex, oper_status, speed_mbps) tuples.
         lldp_neighbors: (local_ifIndex, remote_sysname, remote_port_id,
-            remote_chassis_mac) tuples.
+            remote_chassis_mac, remote_port_desc) tuples.  remote_port_desc
+            is None on records stored before it was captured.
         vlan_egress_ports: (vlan_id, port_bitmap_hex) tuples for tagged membership.
         vlan_untagged_ports: (vlan_id, port_bitmap_hex) tuples for untagged membership.
         poe_status: (ifIndex, admin_status, detection_status) tuples.
@@ -208,7 +209,7 @@ class BridgeData:
     port_names: tuple[tuple[int, str], ...] = ()
     port_aliases: tuple[tuple[int, str], ...] = ()
     port_status: tuple[tuple[int, int, int], ...] = ()
-    lldp_neighbors: tuple[tuple[int, str, str, str], ...] = ()
+    lldp_neighbors: tuple[tuple[int, str, str, str, str | None], ...] = ()
     vlan_egress_ports: tuple[tuple[int, str], ...] = ()
     vlan_untagged_ports: tuple[tuple[int, str], ...] = ()
     poe_status: tuple[tuple[int, int, int], ...] = ()

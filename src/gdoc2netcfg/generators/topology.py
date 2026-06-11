@@ -101,7 +101,9 @@ def generate_topology(
         switch_macs = {str(m).upper() for m in switch.all_macs}
 
         # --- LLDP edges ---
-        for local_if, remote_sysname, remote_port_id, _chassis_mac in bd.lldp_neighbors:
+        for local_if, remote_sysname, remote_port_id, _chassis_mac, _port_desc in (
+            bd.lldp_neighbors
+        ):
             remote_host = _resolve_lldp_host(
                 remote_sysname, hostname_to_host, domain,
             )

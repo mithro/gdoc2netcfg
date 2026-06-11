@@ -1431,9 +1431,11 @@ def _print_switch_data(data: SwitchData) -> None:
 
     lldp_map: dict[int, list[tuple[str, str, str]]] = {}
     if data.lldp_neighbors:
-        for port_id, rsys, rport, rmac in data.lldp_neighbors:
+        for port_id, rsys, rport, rmac, rdesc in data.lldp_neighbors:
+            # Prefer the neighbour's interface name over its port ID
+            # (often just a MAC) for display.
             lldp_map.setdefault(port_id, []).append(
-                (rsys, rport, rmac)
+                (rsys, rdesc or rport, rmac)
             )
 
     poe_map: dict[int, tuple[int, int]] = {}

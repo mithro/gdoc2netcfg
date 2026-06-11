@@ -123,8 +123,8 @@ class SwitchData:
     # SNMP-only (None for NSDP)
     mac_table: tuple[tuple[str, int, int, str], ...] | None = None
     # (mac, vlan_id, port_id, port_name)
-    lldp_neighbors: tuple[tuple[int, str, str, str], ...] | None = None
-    # (port_id, remote_name, remote_port, remote_mac)
+    lldp_neighbors: tuple[tuple[int, str, str, str, str | None], ...] | None = None
+    # (port_id, remote_name, remote_port, remote_mac, remote_port_desc)
     poe_status: tuple[tuple[int, int, int], ...] | None = None
     # (port_id, admin_status, detection_status)
 

@@ -417,7 +417,7 @@ def _bridge_doc(port_name: str = "2/0/49") -> dict:
         "port_names": [[1, "Port 1"]],
         "port_aliases": [[1, "eth0.rpi5-pmod"]],
         "port_status": [[1, 1, 1000]],
-        "lldp_neighbors": [[101, "sw-other", "gi27", "\xc8\x00q"]],
+        "lldp_neighbors": [[101, "sw-other", "gi27", "\xc8\x00q", "eth0"]],
         "vlan_egress_ports": [[1, "ff00"]],
         "vlan_untagged_ports": [[1, "ff00"]],
         "poe_status": [],
@@ -752,6 +752,9 @@ class TestTasmotaShapes:
 
 def _strip_v7(conn: sqlite3.Connection) -> None:
     """Regress a current DB's v7 features back to the v6 shape."""
+    conn.execute(
+        "ALTER TABLE bridge_lldp_neighbors DROP COLUMN remote_port_desc"
+    )
     conn.execute("DROP TABLE bridge_port_statistics")
     conn.execute(
         "CREATE TABLE bridge_port_statistics (\n"

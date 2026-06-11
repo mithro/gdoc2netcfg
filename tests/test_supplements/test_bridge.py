@@ -195,12 +195,34 @@ class TestParseLldpNeighbors:
             ("1.0.8802.1.1.2.1.4.1.1.5.97.50.1", "0xc80084897170"),
             # lldpRemPortId (OID .7)
             ("1.0.8802.1.1.2.1.4.1.1.7.97.50.1", "gi24"),
+            # lldpRemPortDesc (OID .8)
+            ("1.0.8802.1.1.2.1.4.1.1.8.97.50.1", "gi24.uplink"),
             # lldpRemSysName (OID .9)
             ("1.0.8802.1.1.2.1.4.1.1.9.97.50.1", "sw-cisco-shed"),
         ]
         result = parse_lldp_neighbors(walk)
         assert len(result) == 1
-        assert result[0] == (50, "sw-cisco-shed", "gi24", "C8:00:84:89:71:70")
+        assert result[0] == (
+            50, "sw-cisco-shed", "gi24", "C8:00:84:89:71:70", "gi24.uplink",
+        )
+
+    def test_missing_port_desc_is_empty(self):
+        """Neighbours that don't send a port description get ''."""
+        walk = [
+            ("1.0.8802.1.1.2.1.4.1.1.5.97.50.1", "0xc80084897170"),
+            ("1.0.8802.1.1.2.1.4.1.1.7.97.50.1", "gi24"),
+            ("1.0.8802.1.1.2.1.4.1.1.9.97.50.1", "sw-cisco-shed"),
+        ]
+        result = parse_lldp_neighbors(walk)
+        assert result[0][4] == ""
+
+    def test_chassis_only_neighbor_kept(self):
+        """A neighbour reporting only a chassis ID is still data."""
+        walk = [
+            ("1.0.8802.1.1.2.1.4.1.1.5.97.50.1", "0xc80084897170"),
+        ]
+        result = parse_lldp_neighbors(walk)
+        assert result == [(50, "", "", "C8:00:84:89:71:70", "")]
 
     def test_multiple_neighbors(self):
         walk = [

@@ -104,9 +104,11 @@ _BRIDGE_DOC_FIELDS = (
      ("port", "alias"), (int, str)),
     ("port_status", "bridge_port_status",
      ("port", "oper_status", "speed_mbps"), (int, int, int)),
+    # remote_port_desc is None on rows stored before it was captured.
     ("lldp_neighbors", "bridge_lldp_neighbors",
-     ("local_port", "remote_sysname", "remote_port_id", "remote_chassis"),
-     (int, str, str, str)),
+     ("local_port", "remote_sysname", "remote_port_id", "remote_chassis",
+      "remote_port_desc"),
+     (int, str, str, str, (str, type(None)))),
     ("vlan_egress_ports", "bridge_vlan_egress_ports",
      ("vlan_id", "port_bitmap_hex"), (int, str)),
     ("vlan_untagged_ports", "bridge_vlan_untagged_ports",
@@ -650,13 +652,17 @@ def _upgrade_v6_port_aliases(conn: sqlite3.Connection) -> None:
 
 
 def _upgrade_v7_extended_bridge_data(conn: sqlite3.Connection) -> None:
-    """Schema v7: nullable traffic counters.
+    """Schema v7: nullable traffic counters + LLDP port descriptions.
 
     bridge_port_statistics is rebuilt because SQLite cannot drop a
     NOT NULL constraint in place; pre-v7 rows keep their values (the
     old scanner fabricated 0 for missing counters — indistinguishable
-    from real zeros, so they are carried over as-is).
+    from real zeros, so they are carried over as-is).  Pre-v7 LLDP rows
+    get NULL remote_port_desc (not captured), reconstructed as None.
     """
+    conn.execute(
+        "ALTER TABLE bridge_lldp_neighbors ADD COLUMN remote_port_desc TEXT"
+    )
     conn.execute(
         "ALTER TABLE bridge_port_statistics RENAME TO bridge_port_statistics_v6"
     )

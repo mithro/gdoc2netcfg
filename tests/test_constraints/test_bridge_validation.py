@@ -313,7 +313,7 @@ class TestValidateLldpTopology:
         # Use a non-matching sysName to prove matching is MAC-based
         switch = _make_switch_with_bridge(
             "sw-test", [],
-            lldp_neighbors=((50, "different-name", "gi24", "C8:00:84:89:71:70"),),
+            lldp_neighbors=((50, "different-name", "gi24", "C8:00:84:89:71:70", ""),),
         )
         inventory = _make_inventory_with_switch(switch, [neighbor_switch], site)
         result = validate_lldp_topology(inventory)
@@ -325,7 +325,7 @@ class TestValidateLldpTopology:
         site = _make_site_with_vlans()
         switch = _make_switch_with_bridge(
             "sw-test", [],
-            lldp_neighbors=((50, "unknown-device", "eth0", "AA:BB:CC:DD:EE:FF"),),
+            lldp_neighbors=((50, "unknown-device", "eth0", "AA:BB:CC:DD:EE:FF", ""),),
         )
         inventory = _make_inventory_with_switch(switch, [], site)
         result = validate_lldp_topology(inventory)
@@ -365,7 +365,7 @@ class TestValidateLldpTopology:
         switch = _make_switch_with_bridge(
             "sw-test", [],
             lldp_neighbors=(
-                (3, "manage-sw-netgear-s3300-1", "gi24", "AA:BB:CC:00:11:22"),
+                (3, "manage-sw-netgear-s3300-1", "gi24", "AA:BB:CC:00:11:22", ""),
             ),
         )
         inventory = _make_inventory_with_switch(switch, [neighbor], site)
@@ -378,7 +378,7 @@ class TestValidateLldpTopology:
         site = _make_site_with_vlans()
         switch = _make_switch_with_bridge(
             "sw-test", [],
-            lldp_neighbors=((50, "some-device", "eth0", ""),),
+            lldp_neighbors=((50, "some-device", "eth0", "", ""),),
         )
         inventory = _make_inventory_with_switch(switch, [], site)
         result = validate_lldp_topology(inventory)
@@ -422,10 +422,10 @@ class TestValidateLldpTopology:
             "sw-test", [],
             lldp_neighbors=(
                 # Known by MAC (sysName doesn't match hostname)
-                (50, "manage-sw-known", "gi24", "C8:00:84:89:71:70"),
+                (50, "manage-sw-known", "gi24", "C8:00:84:89:71:70", ""),
                 # Unknown MACs
-                (51, "mystery-device", "eth1", "DD:EE:FF:00:11:22"),
-                (52, "another-mystery", "eth2", "DD:EE:FF:00:33:44"),
+                (51, "mystery-device", "eth1", "DD:EE:FF:00:11:22", ""),
+                (52, "another-mystery", "eth2", "DD:EE:FF:00:33:44", ""),
             ),
         )
         inventory = _make_inventory_with_switch(switch, [known_host], site)
@@ -440,7 +440,7 @@ class TestValidateLldpTopology:
         site = _make_site_with_vlans()
         switch = _make_switch_with_bridge(
             "sw-main", [],
-            lldp_neighbors=((25, "stranger", "ge-0/0/1", "11:22:33:44:55:66"),),
+            lldp_neighbors=((25, "stranger", "ge-0/0/1", "11:22:33:44:55:66", ""),),
         )
         inventory = _make_inventory_with_switch(switch, [], site)
         result = validate_lldp_topology(inventory)

@@ -359,8 +359,10 @@ def parse_port_status(
 
 def parse_lldp_neighbors(
     walk: list[tuple[str, str]],
-) -> list[tuple[int, str, str, str]]:
-    """Parse lldpRemTable walk into (localPort, sysName, portId, chassisId) tuples.
+) -> list[tuple[int, str, str, str, str]]:
+    """Parse lldpRemTable walk into per-neighbor tuples.
+
+    Returns (localPort, sysName, portId, chassisId, portDesc) tuples.
 
     The LLDP remote table OID structure is:
         1.0.8802.1.1.2.1.4.1.1.<column>.<timeMark>.<localPortNum>.<remIndex>
@@ -368,6 +370,7 @@ def parse_lldp_neighbors(
     Columns of interest:
         5 = lldpRemChassisId
         7 = lldpRemPortId
+        8 = lldpRemPortDesc (the neighbour's interface name, e.g. "eth0")
         9 = lldpRemSysName
 
     Entries are grouped by (timeMark, localPortNum, remIndex) to build
@@ -407,9 +410,10 @@ def parse_lldp_neighbors(
     for (_, local_port, _), columns in neighbors.items():
         chassis_id = columns.get(5, "")
         port_id = columns.get(7, "")
+        port_desc = columns.get(8, "")
         sys_name = columns.get(9, "")
 
-        if not sys_name and not port_id:
+        if not (sys_name or port_id or chassis_id or port_desc):
             continue
 
         # Format IDs (handles raw binary from pysnmp)
@@ -421,7 +425,7 @@ def parse_lldp_neighbors(
         except ValueError:
             continue
 
-        result.append((local_port_int, sys_name, port_id, chassis_id))
+        result.append((local_port_int, sys_name, port_id, chassis_id, port_desc))
 
     return result
 

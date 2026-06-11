@@ -154,9 +154,13 @@ def validate_lldp_topology(
         if host.bridge_data is None:
             continue
 
-        for _local_ifindex, remote_sysname, remote_port_id, remote_chassis_mac in (
-            host.bridge_data.lldp_neighbors
-        ):
+        for (
+            _local_ifindex,
+            remote_sysname,
+            remote_port_id,
+            remote_chassis_mac,
+            _remote_port_desc,
+        ) in host.bridge_data.lldp_neighbors:
             if not remote_chassis_mac:
                 continue
 

@@ -760,7 +760,14 @@ class TestScanTasmota:
 class TestScanSubnet:
     @patch("gdoc2netcfg.supplements.tasmota._fetch_tasmota_status")
     def test_finds_responding_hosts(self, mock_fetch):
+        # The scanner calls the mock from worker threads, and
+        # Mock.call_count increments are not atomic — counts get lost
+        # under concurrency.  Track probed IPs with list.append (atomic
+        # in CPython) instead.
+        probed: list[str] = []
+
         def side_effect(ip, timeout):
+            probed.append(ip)
             if ip == "10.1.90.10":
                 return SAMPLE_STATUS_0
             return None
@@ -773,7 +780,9 @@ class TestScanSubnet:
         assert "10.1.90.10" in result
         assert result["10.1.90.10"]["device_name"] == "au-plug-10"
         # All 254 IPs were probed
-        assert mock_fetch.call_count == 254
+        assert sorted(probed) == sorted(
+            f"10.1.90.{n}" for n in range(1, 255)
+        )
 
     @patch("gdoc2netcfg.supplements.tasmota._fetch_tasmota_status")
     def test_empty_subnet(self, mock_fetch):

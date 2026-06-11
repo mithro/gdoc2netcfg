@@ -107,13 +107,14 @@ updater:
    drift and must raise. Add a parser test using a fixture captured from the
    real gsm7252ps-s1 walk (columns 3–14 present, 1–2 absent).
 2. **Walk ifAlias** (1.3.6.1.2.1.31.1.1.1.18) in the bridge table OIDs and
-   carry it through the bridge document as a per-port alias alongside the
-   existing ifName, so port descriptions (`eth0.rpi5-pmod`) land in the DB.
-3. **Storage**: extend the bridge document spec (`_BRIDGE_DOC_FIELDS` et
-   al.) and `bridge_port_names` with the alias field — discovery.db schema
-   upgrade to v6 (`ALTER TABLE bridge_port_names ADD COLUMN alias TEXT`;
-   NULL on pre-v6 rows means "not captured", reconstructed as absent —
-   same presence-faithful pattern as `has_port_statistics`).
+   carry it through the bridge document as a per-port `port_aliases` list
+   alongside the existing `port_names`, so port descriptions
+   (`eth0.rpi5-pmod`) land in the DB.
+3. **Storage**: a new `_BRIDGE_DOC_FIELDS` entry backed by a
+   `bridge_port_aliases` table (keeping every spec row uniform), with
+   presence recorded as `bridge_switches.has_port_aliases` — the same
+   presence-faithful pattern as `has_port_statistics`, so pre-v6 documents
+   reconstruct without the key. Discovery.db schema upgrade to v6.
 
 After this phase a `bridge` scan populates `bridge_poe_status` (admin +
 detection per port) and per-port aliases; LLDP names are already stored.

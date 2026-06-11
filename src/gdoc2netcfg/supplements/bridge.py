@@ -445,12 +445,20 @@ def parse_poe_status(
 ) -> list[tuple[int, int, int]]:
     """Parse pethPsePortTable walk into (port, admin_status, detection_status) tuples.
 
-    OID format:
-        1.3.6.1.2.1.105.1.1.1.1.<groupIndex>.<portIndex> = INTEGER: <adminEnable>
-        1.3.6.1.2.1.105.1.1.1.6.<groupIndex>.<portIndex> = INTEGER: <detectionStatus>
+    OID format (RFC 3621 pethPsePortEntry, 1.3.6.1.2.1.105.1.1.1):
+        1.3.6.1.2.1.105.1.1.1.<column>.<groupIndex>.<portIndex> = INTEGER
 
-    Column 1 = pethPsePortAdminEnable
-    Column 6 = pethPsePortDetectionStatus
+    Column 3 = pethPsePortAdminEnable (1=enabled, 2=disabled)
+    Column 6 = pethPsePortDetectionStatus (1=disabled, 2=searching,
+               3=deliveringPower, 4=fault, 5=test, 6=otherFault)
+
+    Columns 1-2 are the not-accessible row indices and never appear in
+    walks; the remaining columns (4-14) are ignored.
+
+    Raises ValueError when a port is missing either column or carries a
+    non-integer value: partial rows mean the table layout has drifted
+    from what we expect, and silently dropping them is how this parser
+    previously returned no PoE data at all.
     """
     prefix = _PETH_PSE_PORT_TABLE + ".1."
 
@@ -460,39 +468,40 @@ def parse_poe_status(
     for oid, value in walk:
         if not oid.startswith(prefix):
             continue
-        suffix = oid[len(prefix) :]
-        parts = suffix.split(".")
-        if len(parts) < 3:
+        parts = oid[len(prefix) :].split(".")
+        if len(parts) != 3:
             continue
+
+        column = int(parts[0])
+        if column not in (3, 6):
+            continue
+        group_index, port_index = parts[1], parts[2]
 
         try:
-            column = int(parts[0])
-            group_index = parts[1]
-            port_index = parts[2]
-        except (ValueError, IndexError):
-            continue
-
-        if not value:
-            continue
-
-        key = (group_index, port_index)
-        if key not in ports:
-            ports[key] = {}
-        try:
-            ports[key][column] = int(value)
-        except ValueError:
-            continue
+            ports.setdefault((group_index, port_index), {})[column] = int(value)
+        except ValueError as exc:
+            raise ValueError(
+                f"non-integer value {value!r} for pethPsePortEntry column "
+                f"{column}, port {group_index}.{port_index}"
+            ) from exc
 
     result = []
-    for (_, port_index), columns in ports.items():
-        admin_status = columns.get(1)
+    for (group_index, port_index), columns in sorted(
+        ports.items(), key=lambda item: (int(item[0][0]), int(item[0][1]))
+    ):
+        admin_status = columns.get(3)
         detection_status = columns.get(6)
-        if admin_status is not None and detection_status is not None:
-            try:
-                port_num = int(port_index)
-            except ValueError:
-                continue
-            result.append((port_num, admin_status, detection_status))
+        if admin_status is None:
+            raise ValueError(
+                f"pethPsePortEntry port {group_index}.{port_index} is "
+                f"missing admin status (column 3)"
+            )
+        if detection_status is None:
+            raise ValueError(
+                f"pethPsePortEntry port {group_index}.{port_index} is "
+                f"missing detection status (column 6)"
+            )
+        result.append((int(port_index), admin_status, detection_status))
 
     return result
 

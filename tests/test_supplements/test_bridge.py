@@ -2,6 +2,8 @@
 
 from unittest.mock import patch
 
+import pytest
+
 from gdoc2netcfg.models.addressing import IPv4Address, MACAddress
 from gdoc2netcfg.models.host import Host, NetworkInterface
 from gdoc2netcfg.supplements.bridge import (
@@ -428,24 +430,52 @@ class TestParsePortStatistics:
 
 
 class TestParsePoeStatus:
-    def test_parses_poe(self):
-        walk = [
-            # pethPsePortAdminEnable .1.3.6.1.2.1.105.1.1.1.1.1.1 = INTEGER: 1 (enabled)
-            ("1.3.6.1.2.1.105.1.1.1.1.1.1", "1"),
-            # pethPsePortDetectionStatus .1.3.6.1.2.1.105.1.1.1.6.1.1 = INTEGER: 3 (deliveringPower)
-            ("1.3.6.1.2.1.105.1.1.1.6.1.1", "3"),
-            # pethPsePortAdminEnable .1.3.6.1.2.1.105.1.1.1.1.1.2 = INTEGER: 2 (disabled)
-            ("1.3.6.1.2.1.105.1.1.1.1.1.2", "2"),
-            # pethPsePortDetectionStatus .1.3.6.1.2.1.105.1.1.1.6.1.2 = INTEGER: 1 (disabled)
-            ("1.3.6.1.2.1.105.1.1.1.6.1.2", "1"),
-        ]
-        result = parse_poe_status(walk)
-        assert len(result) == 2
-        assert (1, 1, 3) in result
-        assert (2, 2, 1) in result
+    def test_parses_real_walk_layout(self):
+        # Layout captured live from sw-netgear-gsm7252ps-s1 (GSM7252PS):
+        # pethPsePortEntry exposes columns 3-14. RFC 3621 columns 1-2
+        # (group/port index) are not-accessible and never appear in walks.
+        # Port 1 is delivering power, port 43 has a self-powered device
+        # attached (admin on, detection searching).
+        walk = []
+        for col, port1, port43 in [
+            (3, "1", "1"),   # pethPsePortAdminEnable: both enabled
+            (4, "1", "1"),   # pethPsePortPowerPairsControlAbility
+            (5, "1", "1"),   # pethPsePortPowerPairs
+            (6, "3", "2"),   # pethPsePortDetectionStatus: delivering / searching
+            (7, "3", "3"),   # pethPsePortPowerPriority
+            (8, "0", "0"),   # pethPsePortMPSAbsentCounter
+            (9, "1", "1"),   # pethPsePortType
+            (11, "0", "0"),  # pethPsePortInvalidSignatureCounter
+            (12, "0", "0"),
+            (13, "0", "0"),
+            (14, "0", "0"),
+        ]:
+            walk.append((f"1.3.6.1.2.1.105.1.1.1.{col}.1.1", port1))
+            walk.append((f"1.3.6.1.2.1.105.1.1.1.{col}.1.43", port43))
+
+        assert parse_poe_status(walk) == [(1, 1, 3), (43, 1, 2)]
 
     def test_empty(self):
+        # Non-PoE switches return nothing for the pethPsePortTable walk.
         assert parse_poe_status([]) == []
+
+    def test_missing_admin_column_raises(self):
+        walk = [("1.3.6.1.2.1.105.1.1.1.6.1.1", "3")]
+        with pytest.raises(ValueError, match="missing admin"):
+            parse_poe_status(walk)
+
+    def test_missing_detection_column_raises(self):
+        walk = [("1.3.6.1.2.1.105.1.1.1.3.1.1", "1")]
+        with pytest.raises(ValueError, match="missing detection"):
+            parse_poe_status(walk)
+
+    def test_non_integer_value_raises(self):
+        walk = [
+            ("1.3.6.1.2.1.105.1.1.1.3.1.1", "1"),
+            ("1.3.6.1.2.1.105.1.1.1.6.1.1", "bogus"),
+        ]
+        with pytest.raises(ValueError, match="non-integer"):
+            parse_poe_status(walk)
 
 
 class TestBridgeCapableHardware:

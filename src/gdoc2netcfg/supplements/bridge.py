@@ -536,7 +536,7 @@ def parse_poe_status(
 
 def _parse_port_statistics(
     raw: dict[str, list[tuple[str, str]]],
-) -> tuple[tuple[int, int, int, int], ...]:
+) -> tuple[tuple[int, int | None, int | None, int | None], ...]:
     """Parse interface statistics from SNMP walk results.
 
     Extracts ifHCInOctets (bytes received), ifHCOutOctets (bytes transmitted),
@@ -548,7 +548,11 @@ def _parse_port_statistics(
             Values are lists of (oid, value) tuples from SNMP walk.
 
     Returns:
-        Tuple of (ifIndex, bytes_rx, bytes_tx, errors) tuples, sorted by ifIndex.
+        Tuple of (ifIndex, bytes_rx, bytes_tx, errors) tuples, sorted by
+        ifIndex, covering every interface that exposes at least one
+        counter.  A counter the switch doesn't expose for an interface is
+        None — never fabricated as 0 (e.g. M4300 VLAN interfaces report
+        ifInErrors but no HC octet counters).
     """
     in_octets: dict[int, int] = {}
     out_octets: dict[int, int] = {}
@@ -587,15 +591,15 @@ def _parse_port_statistics(
             except ValueError:
                 continue
 
-    # Combine into tuples for all interfaces that have data
-    all_ifidx = set(in_octets.keys()) | set(out_octets.keys())
+    # Combine into tuples for all interfaces that have any counter
+    all_ifidx = set(in_octets) | set(out_octets) | set(in_errors)
     result = []
     for ifidx in sorted(all_ifidx):
         result.append((
             ifidx,
-            in_octets.get(ifidx, 0),
-            out_octets.get(ifidx, 0),
-            in_errors.get(ifidx, 0),
+            in_octets.get(ifidx),
+            out_octets.get(ifidx),
+            in_errors.get(ifidx),
         ))
     return tuple(result)
 

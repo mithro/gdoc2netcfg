@@ -363,7 +363,7 @@ class TestParsePortStatistics:
         assert result == ()
 
     def test_missing_out_octets(self):
-        """Port with in octets but no out octets defaults out to 0."""
+        """A counter the switch doesn't expose is None, never 0."""
         raw = {
             "ifHCInOctets": [
                 ("1.3.6.1.2.1.31.1.1.1.6.5", "9999"),
@@ -375,10 +375,9 @@ class TestParsePortStatistics:
         result = _parse_port_statistics(raw)
 
         assert len(result) == 1
-        assert result[0] == (5, 9999, 0, 3)
+        assert result[0] == (5, 9999, None, 3)
 
     def test_missing_in_octets(self):
-        """Port with out octets but no in octets defaults in to 0."""
         raw = {
             "ifHCOutOctets": [
                 ("1.3.6.1.2.1.31.1.1.1.10.3", "7777"),
@@ -387,10 +386,9 @@ class TestParsePortStatistics:
         result = _parse_port_statistics(raw)
 
         assert len(result) == 1
-        assert result[0] == (3, 0, 7777, 0)
+        assert result[0] == (3, None, 7777, None)
 
     def test_missing_errors(self):
-        """Port with octets but no errors defaults errors to 0."""
         raw = {
             "ifHCInOctets": [
                 ("1.3.6.1.2.1.31.1.1.1.6.1", "1000"),
@@ -402,7 +400,27 @@ class TestParsePortStatistics:
         result = _parse_port_statistics(raw)
 
         assert len(result) == 1
-        assert result[0] == (1, 1000, 500, 0)
+        assert result[0] == (1, 1000, 500, None)
+
+    def test_errors_only_interface_included(self):
+        """Interfaces exposing only ifInErrors (e.g. VLAN interfaces on
+        the M4300, which have no HC octet counters) are kept, not
+        silently dropped."""
+        raw = {
+            "ifHCInOctets": [
+                ("1.3.6.1.2.1.31.1.1.1.6.1", "1000"),
+            ],
+            "ifHCOutOctets": [
+                ("1.3.6.1.2.1.31.1.1.1.10.1", "500"),
+            ],
+            "ifInErrors": [
+                ("1.3.6.1.2.1.2.2.1.14.1", "0"),
+                ("1.3.6.1.2.1.2.2.1.14.898", "7"),
+            ],
+        }
+        result = _parse_port_statistics(raw)
+
+        assert result == ((1, 1000, 500, 0), (898, None, None, 7))
 
     def test_large_counter_values(self):
         """64-bit counter values are handled correctly."""
@@ -417,7 +435,7 @@ class TestParsePortStatistics:
         result = _parse_port_statistics(raw)
 
         assert len(result) == 1
-        assert result[0] == (1, 18446744073709551615, 9223372036854775807, 0)
+        assert result[0] == (1, 18446744073709551615, 9223372036854775807, None)
 
     def test_sorted_by_ifindex(self):
         """Results are sorted by ifIndex."""

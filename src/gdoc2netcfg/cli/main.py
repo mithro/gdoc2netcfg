@@ -1475,12 +1475,13 @@ def _print_switch_data(data: SwitchData) -> None:
                 f"  VLAN {pvid:4d}" if pvid is not None else ""
             )
 
-            # Traffic stats inline (human-readable)
+            # Traffic stats inline (human-readable).  Counters the
+            # switch doesn't expose are None and shown as "-".
             stats = stats_map.get(ps.port_id)
             if stats and (stats.bytes_rx or stats.bytes_tx):
                 err = f"  Err {stats.errors}" if stats.errors else ""
-                rx = _human_bytes(stats.bytes_rx)
-                tx = _human_bytes(stats.bytes_tx)
+                rx = _human_bytes(stats.bytes_rx) if stats.bytes_rx is not None else "-"
+                tx = _human_bytes(stats.bytes_tx) if stats.bytes_tx is not None else "-"
                 stats_str = f"  RX {rx:>5s}  TX {tx:>5s}{err}"
             else:
                 stats_str = ""

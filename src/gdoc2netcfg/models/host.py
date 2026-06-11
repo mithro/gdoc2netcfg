@@ -198,7 +198,8 @@ class BridgeData:
         vlan_untagged_ports: (vlan_id, port_bitmap_hex) tuples for untagged membership.
         poe_status: (ifIndex, admin_status, detection_status) tuples.
         port_statistics: (ifIndex, bytes_rx, bytes_tx, errors) tuples
-            from ifHCInOctets, ifHCOutOctets, ifInErrors.
+            from ifHCInOctets, ifHCOutOctets, ifInErrors.  Counters the
+            switch doesn't expose for an interface are None.
     """
 
     mac_table: tuple[tuple[str, int, int, str], ...] = ()
@@ -211,7 +212,7 @@ class BridgeData:
     vlan_egress_ports: tuple[tuple[int, str], ...] = ()
     vlan_untagged_ports: tuple[tuple[int, str], ...] = ()
     poe_status: tuple[tuple[int, int, int], ...] = ()
-    port_statistics: tuple[tuple[int, int, int, int], ...] = ()
+    port_statistics: tuple[tuple[int, int | None, int | None, int | None], ...] = ()
 
 
 @dataclass(frozen=True)

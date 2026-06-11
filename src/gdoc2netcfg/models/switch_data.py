@@ -42,15 +42,17 @@ class PortTrafficStats:
 
     Attributes:
         port_id: 1-based port number.
-        bytes_rx: Total bytes received.
-        bytes_tx: Total bytes transmitted.
-        errors: Error count (CRC errors for NSDP, ifInErrors for SNMP).
+        bytes_rx: Total bytes received (None when the source doesn't
+            expose the counter for this interface).
+        bytes_tx: Total bytes transmitted (None when not exposed).
+        errors: Error count (CRC errors for NSDP, ifInErrors for SNMP;
+            None when not exposed).
     """
 
     port_id: int
-    bytes_rx: int
-    bytes_tx: int
-    errors: int
+    bytes_rx: int | None
+    bytes_tx: int | None
+    errors: int | None
 
 
 @dataclass(frozen=True)

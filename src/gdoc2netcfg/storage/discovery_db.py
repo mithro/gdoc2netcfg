@@ -113,8 +113,11 @@ _BRIDGE_DOC_FIELDS = (
      ("vlan_id", "port_bitmap_hex"), (int, str)),
     ("poe_status", "bridge_poe_status",
      ("port", "admin_status", "detection_status"), (int, int, int)),
+    # Counters a switch doesn't expose for an interface are None (e.g.
+    # M4300 VLAN interfaces report ifInErrors but no HC octets).
     ("port_statistics", "bridge_port_statistics",
-     ("port", "bytes_rx", "bytes_tx", "errors"), (int, int, int, int)),
+     ("port", "bytes_rx", "bytes_tx", "errors"),
+     (int, (int, type(None)), (int, type(None)), (int, type(None)))),
 )
 
 # NSDP scalar fields: (doc key, column, type).  Every one is optional in
@@ -646,6 +649,34 @@ def _upgrade_v6_port_aliases(conn: sqlite3.Connection) -> None:
         conn.execute(stmt)
 
 
+def _upgrade_v7_extended_bridge_data(conn: sqlite3.Connection) -> None:
+    """Schema v7: nullable traffic counters.
+
+    bridge_port_statistics is rebuilt because SQLite cannot drop a
+    NOT NULL constraint in place; pre-v7 rows keep their values (the
+    old scanner fabricated 0 for missing counters — indistinguishable
+    from real zeros, so they are carried over as-is).
+    """
+    conn.execute(
+        "ALTER TABLE bridge_port_statistics RENAME TO bridge_port_statistics_v6"
+    )
+    conn.execute("DROP INDEX idx_bridge_port_statistics")
+    _key, table, cols, types = next(
+        f for f in _BRIDGE_DOC_FIELDS if f[0] == "port_statistics"
+    )
+    for stmt in _entity_table_ddl(table, "hostname", tuple(
+        (col, _sql_type(typ)) for col, typ in zip(cols, types)
+    )):
+        conn.execute(stmt)
+    conn.execute(
+        "INSERT INTO bridge_port_statistics "
+        "(id, scan_id, hostname, port, bytes_rx, bytes_tx, errors) "
+        "SELECT id, scan_id, hostname, port, bytes_rx, bytes_tx, errors "
+        "FROM bridge_port_statistics_v6"
+    )
+    conn.execute("DROP TABLE bridge_port_statistics_v6")
+
+
 class DiscoveryDB(BaseDatabase):
     """SQLite storage for supplement scan results."""
 
@@ -656,10 +687,13 @@ class DiscoveryDB(BaseDatabase):
     # reached v4 — older databases fail loud with no upgrade path.
     # v5: tasmota_devices.mqtt_count (MQTT connection diagnostics).
     # v6: bridge port_aliases (ifAlias port descriptions).
-    SCHEMA_VERSION = 6
+    # v7: nullable traffic counters; vendor PoE power, box sensors,
+    #     bridge MAC, LLDP port descriptions.
+    SCHEMA_VERSION = 7
     SCHEMA_UPGRADES = {
         5: ["ALTER TABLE tasmota_devices ADD COLUMN mqtt_count INTEGER"],
         6: [_upgrade_v6_port_aliases],
+        7: [_upgrade_v7_extended_bridge_data],
     }
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:

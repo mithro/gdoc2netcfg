@@ -421,7 +421,9 @@ def _bridge_doc(port_name: str = "2/0/49") -> dict:
         "vlan_egress_ports": [[1, "ff00"]],
         "vlan_untagged_ports": [[1, "ff00"]],
         "poe_status": [],
-        "port_statistics": [[1, 1000, 2000, 0]],
+        # Interface 898 exposes only ifInErrors (M4300 VLAN interface) —
+        # the missing octet counters are None, never fabricated as 0.
+        "port_statistics": [[1, 1000, 2000, 0], [898, None, None, 7]],
     }
 
 
@@ -748,10 +750,30 @@ class TestTasmotaShapes:
         assert db.load_latest_tasmota()["plug1"]["mqtt_count"] == 3
 
 
+def _strip_v7(conn: sqlite3.Connection) -> None:
+    """Regress a current DB's v7 features back to the v6 shape."""
+    conn.execute("DROP TABLE bridge_port_statistics")
+    conn.execute(
+        "CREATE TABLE bridge_port_statistics (\n"
+        "    id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+        "    scan_id INTEGER NOT NULL REFERENCES scans(id),\n"
+        "    hostname TEXT NOT NULL,\n"
+        "    port INTEGER NOT NULL,\n"
+        "    bytes_rx INTEGER NOT NULL,\n"
+        "    bytes_tx INTEGER NOT NULL,\n"
+        "    errors INTEGER NOT NULL\n)"
+    )
+    conn.execute(
+        "CREATE INDEX idx_bridge_port_statistics "
+        "ON bridge_port_statistics(hostname, scan_id)"
+    )
+
+
 class TestSchemaUpgradeV5:
     def _make_v4_db(self, path: Path) -> None:
         """Create a current DB, then strip it back to schema v4."""
         d = DiscoveryDB(path)
+        _strip_v7(d.connection)
         d.connection.execute(
             "ALTER TABLE tasmota_devices DROP COLUMN mqtt_count"  # v5
         )
@@ -817,6 +839,7 @@ class TestSchemaUpgradeV6:
     def _make_v5_db(self, path: Path) -> None:
         """Create a current DB, then strip it back to schema v5."""
         d = DiscoveryDB(path)
+        _strip_v7(d.connection)
         d.connection.execute("DROP TABLE bridge_port_aliases")
         d.connection.execute(
             "ALTER TABLE bridge_switches DROP COLUMN has_port_aliases"
@@ -879,6 +902,60 @@ class TestSchemaUpgradeV6:
         assert loaded["sw-old"]["port_names"] == [[1, "Port 1"]]
         assert "port_aliases" not in loaded["sw-old"]
         assert "port_statistics" not in loaded["sw-old"]
+        d.close()
+
+
+class TestSchemaUpgradeV7:
+    def _make_v6_db(self, path: Path) -> None:
+        """Create a current DB, then strip it back to schema v6."""
+        d = DiscoveryDB(path)
+        _strip_v7(d.connection)
+        d.connection.execute(
+            "UPDATE _meta SET value = '6' WHERE key = 'schema_version'"
+        )
+        d.connection.commit()
+        d.close()
+
+    def test_rw_open_upgrades_v6(self, tmp_path: Path):
+        path = tmp_path / "v6.db"
+        self._make_v6_db(path)
+
+        # Write a stats row while the DB is at v6 (NOT NULL counters).
+        conn = sqlite3.connect(str(path))
+        cur = conn.execute(
+            "INSERT INTO scans (scan_type, started_at, finished_at, "
+            "host_count, changed_count) VALUES ('bridge', "
+            "'2026-06-01T00:00:00+00:00', '2026-06-01T00:01:00+00:00', 1, 1)"
+        )
+        scan_id = cur.lastrowid
+        conn.execute(
+            "INSERT INTO bridge_port_statistics "
+            "(scan_id, hostname, port, bytes_rx, bytes_tx, errors) "
+            "VALUES (?, 'sw-old', 1, 1000, 2000, 0)",
+            (scan_id,),
+        )
+        conn.commit()
+        conn.close()
+
+        d = DiscoveryDB(path)  # read-write open applies the upgrade
+        version = d.connection.execute(
+            "SELECT value FROM _meta WHERE key = 'schema_version'"
+        ).fetchone()[0]
+        assert int(version) == DiscoveryDB.SCHEMA_VERSION
+
+        # The pre-upgrade row survived the table rebuild.
+        rows = d.connection.execute(
+            "SELECT port, bytes_rx, bytes_tx, errors "
+            "FROM bridge_port_statistics WHERE hostname = 'sw-old'"
+        ).fetchall()
+        assert rows == [(1, 1000, 2000, 0)]
+
+        # NULL counters are accepted after the rebuild.
+        s = d.begin_scan("bridge")
+        changed = d.save_bridge(s, {"sw1": _bridge_doc()})
+        d.finish_scan(s, host_count=1, changed_count=changed)
+        loaded = d.load_latest_bridge()["sw1"]
+        assert loaded["port_statistics"] == [[1, 1000, 2000, 0], [898, None, None, 7]]
         d.close()
 
 

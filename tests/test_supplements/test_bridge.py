@@ -14,11 +14,14 @@ from gdoc2netcfg.supplements.bridge import (
     _format_octet_string,
     _parse_port_statistics,
     enrich_hosts_with_bridge_data,
+    parse_box_sensors,
+    parse_bridge_mac,
     parse_bridge_port_map,
     parse_if_aliases,
     parse_if_names,
     parse_lldp_neighbors,
     parse_mac_table,
+    parse_poe_power,
     parse_poe_status,
     parse_port_pvids,
     parse_port_status,
@@ -549,6 +552,78 @@ class TestParseIfAliases:
         assert parse_if_aliases([]) == {}
 
 
+class TestParsePoePower:
+    def test_parses_power_draw(self):
+        # Layout captured live from sw-netgear-gsm7252ps-s1: vendor PoE
+        # table column 2, indexed <group>.<port>, value in milliwatts.
+        walk = [
+            ("1.3.6.1.4.1.4526.10.15.1.1.1.2.1.1", "3200"),
+            ("1.3.6.1.4.1.4526.10.15.1.1.1.2.1.2", "2700"),
+            ("1.3.6.1.4.1.4526.10.15.1.1.1.2.1.4", "0"),
+        ]
+        result = parse_poe_power(walk, "1.3.6.1.4.1.4526.10.15.1.1.1.2")
+        assert result == [(1, 3200), (2, 2700), (4, 0)]
+
+    def test_empty(self):
+        assert parse_poe_power([], "1.3.6.1.4.1.4526.10.15.1.1.1.2") == []
+
+    def test_non_integer_raises(self):
+        walk = [("1.3.6.1.4.1.4526.10.15.1.1.1.2.1.1", "bogus")]
+        with pytest.raises(ValueError, match="non-integer PoE power"):
+            parse_poe_power(walk, "1.3.6.1.4.1.4526.10.15.1.1.1.2")
+
+
+class TestParseBoxSensors:
+    def test_parses_sensors(self):
+        # Layout captured live from sw-netgear-m4300-24x boxServices.
+        raw = {
+            "box_fan_fm": [
+                ("1.3.6.1.4.1.4526.10.43.1.6.1.4.1.0", "5280"),
+                ("1.3.6.1.4.1.4526.10.43.1.6.1.4.1.1", "4680"),
+            ],
+            "box_psu_fm": [
+                ("1.3.6.1.4.1.4526.10.43.1.8.1.5.1.0", "53"),
+            ],
+            "box_temp_fm": [
+                ("1.3.6.1.4.1.4526.10.43.1.15.1.3.1", "53"),
+            ],
+        }
+        assert parse_box_sensors(raw) == [
+            ("fan", "1.0", 5280),
+            ("fan", "1.1", 4680),
+            ("psu_power", "1.0", 53),
+            ("temperature", "1", 53),
+        ]
+
+    def test_no_vendor_mib(self):
+        assert parse_box_sensors({}) == []
+
+    def test_not_supported_marker_skipped(self):
+        """The GSM7252PS answers its fan table with the literal vendor
+        marker 'Not Supported' — an absent sensor, not parse drift."""
+        raw = {"box_fan_fm": [
+            ("1.3.6.1.4.1.4526.10.43.1.6.1.4.1", "Not Supported"),
+        ]}
+        assert parse_box_sensors(raw) == []
+
+    def test_non_integer_raises(self):
+        raw = {"box_temp_smp": [
+            ("1.3.6.1.4.1.4526.11.43.1.15.1.3.1", "warm"),
+        ]}
+        with pytest.raises(ValueError, match="non-integer temperature"):
+            parse_box_sensors(raw)
+
+
+class TestParseBridgeMac:
+    def test_parses_raw_binary_mac(self):
+        # pysnmp renders the OCTET STRING as raw 6-byte characters.
+        walk = [("1.3.6.1.2.1.17.1.1.0", "\xe0\x91\xf5\x0c\xd6\xdb")]
+        assert parse_bridge_mac(walk) == "E0:91:F5:0C:D6:DB"
+
+    def test_no_answer(self):
+        assert parse_bridge_mac([]) is None
+
+
 class TestCollectBridgeData:
     def test_walks_if_alias(self):
         assert _BRIDGE_TABLE_OIDS["if_alias"] == "1.3.6.1.2.1.31.1.1.1.18"
@@ -572,6 +647,34 @@ class TestCollectBridgeData:
         }
         doc = _collect_bridge_data("10.1.5.22", _make_switch())
         assert doc["port_aliases"] == []
+
+    @patch("gdoc2netcfg.supplements.bridge.try_snmp_credentials")
+    def test_collects_vendor_data_and_bridge_mac(self, mock_try):
+        mock_try.return_value = {
+            "poe_power_fm": [
+                ("1.3.6.1.4.1.4526.10.15.1.1.1.2.1.1", "3200"),
+            ],
+            "box_fan_fm": [
+                ("1.3.6.1.4.1.4526.10.43.1.6.1.4.1.0", "5280"),
+            ],
+            "bridge_mac": [
+                ("1.3.6.1.2.1.17.1.1.0", "\xe0\x91\xf5\x0c\xd6\xdb"),
+            ],
+        }
+        doc = _collect_bridge_data("10.1.5.22", _make_switch())
+        assert doc["poe_power"] == [(1, 3200)]
+        assert doc["box_sensors"] == [("fan", "1.0", 5280)]
+        assert doc["bridge_mac"] == "E0:91:F5:0C:D6:DB"
+
+    @patch("gdoc2netcfg.supplements.bridge.try_snmp_credentials")
+    def test_no_bridge_mac_answer_omits_key(self, mock_try):
+        mock_try.return_value = {
+            "if_name": [("1.3.6.1.2.1.31.1.1.1.1.1", "1/g1")],
+        }
+        doc = _collect_bridge_data("10.1.5.22", _make_switch())
+        assert "bridge_mac" not in doc
+        assert doc["poe_power"] == []
+        assert doc["box_sensors"] == []
 
 
 class TestBridgeCapableHardware:

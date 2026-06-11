@@ -201,6 +201,13 @@ class BridgeData:
         port_statistics: (ifIndex, bytes_rx, bytes_tx, errors) tuples
             from ifHCInOctets, ifHCOutOctets, ifInErrors.  Counters the
             switch doesn't expose for an interface are None.
+        poe_power: (port, milliwatts) tuples from the Netgear vendor PoE
+            table -- actual power draw per port.
+        box_sensors: (kind, instance, value) tuples from the Netgear
+            boxServices MIB: "fan" (RPM), "psu_power" (W),
+            "temperature" (deg C).
+        bridge_mac: the switch's own base MAC (dot1dBaseBridgeAddress),
+            or None when not captured.
     """
 
     mac_table: tuple[tuple[str, int, int, str], ...] = ()
@@ -214,6 +221,9 @@ class BridgeData:
     vlan_untagged_ports: tuple[tuple[int, str], ...] = ()
     poe_status: tuple[tuple[int, int, int], ...] = ()
     port_statistics: tuple[tuple[int, int | None, int | None, int | None], ...] = ()
+    poe_power: tuple[tuple[int, int], ...] = ()
+    box_sensors: tuple[tuple[str, str, int], ...] = ()
+    bridge_mac: str | None = None
 
 
 @dataclass(frozen=True)

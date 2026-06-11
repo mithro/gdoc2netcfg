@@ -80,6 +80,36 @@ _LLDP_REM_TABLE = "1.0.8802.1.1.2.1.4.1"
 # POWER-ETHERNET-MIB: pethPsePortTable -- PoE status
 _PETH_PSE_PORT_TABLE = "1.3.6.1.2.1.105.1.1"
 
+# BRIDGE-MIB: dot1dBaseBridgeAddress -- the switch's own base MAC
+_DOT1D_BASE_BRIDGE_ADDRESS = "1.3.6.1.2.1.17.1.1"
+
+# Netgear vendor MIBs.  4526.10 = fully-managed fastpath (M4300,
+# GSM7252PS); 4526.11 = Smart Managed Pro (S3300).  A switch answers at
+# most one family; the other walk returns nothing.
+#
+# Per-port PoE power draw in milliwatts (column 2 of the vendor PoE
+# table, indexed <group>.<port> like pethPsePortTable).
+_NETGEAR_POE_POWER_FM = "1.3.6.1.4.1.4526.10.15.1.1.1.2"
+_NETGEAR_POE_POWER_SMP = "1.3.6.1.4.1.4526.11.15.1.1.1.2"
+
+# boxServices environmental sensors.  Sub-OIDs verified live on the
+# M4300-24X and matching sensors2mqtt's collector:
+#   {box}.6.1.4.<unit>.<fan>  = fan speed (RPM)
+#   {box}.8.1.5.<unit>.<psu>  = PSU active power (W)
+#   {box}.15.1.3.<sensor>     = temperature (degrees C)
+_NETGEAR_BOX_FM = "1.3.6.1.4.1.4526.10.43.1"
+_NETGEAR_BOX_SMP = "1.3.6.1.4.1.4526.11.43.1"
+
+# (kind, walk key, table OID) for every boxServices sensor walk.
+_BOX_SENSOR_WALKS = (
+    ("fan", "box_fan_fm", _NETGEAR_BOX_FM + ".6.1.4"),
+    ("fan", "box_fan_smp", _NETGEAR_BOX_SMP + ".6.1.4"),
+    ("psu_power", "box_psu_fm", _NETGEAR_BOX_FM + ".8.1.5"),
+    ("psu_power", "box_psu_smp", _NETGEAR_BOX_SMP + ".8.1.5"),
+    ("temperature", "box_temp_fm", _NETGEAR_BOX_FM + ".15.1.3"),
+    ("temperature", "box_temp_smp", _NETGEAR_BOX_SMP + ".15.1.3"),
+)
+
 # IF-MIB: interface statistics (64-bit counters)
 _IF_HC_IN_OCTETS = "1.3.6.1.2.1.31.1.1.1.6"
 _IF_HC_OUT_OCTETS = "1.3.6.1.2.1.31.1.1.1.10"
@@ -102,6 +132,10 @@ _BRIDGE_TABLE_OIDS: dict[str, str] = {
     "ifHCInOctets": _IF_HC_IN_OCTETS,
     "ifHCOutOctets": _IF_HC_OUT_OCTETS,
     "ifInErrors": _IF_IN_ERRORS,
+    "bridge_mac": _DOT1D_BASE_BRIDGE_ADDRESS,
+    "poe_power_fm": _NETGEAR_POE_POWER_FM,
+    "poe_power_smp": _NETGEAR_POE_POWER_SMP,
+    **{key: oid for _kind, key, oid in _BOX_SENSOR_WALKS},
 }
 
 # The base OID prefix for dot1qTpFdbPort entries:
@@ -430,6 +464,78 @@ def parse_lldp_neighbors(
     return result
 
 
+def parse_poe_power(
+    walk: list[tuple[str, str]], table_oid: str,
+) -> list[tuple[int, int]]:
+    """Parse a Netgear vendor PoE power walk into (port, milliwatts) tuples.
+
+    OID format: {table_oid}.<groupIndex>.<portIndex> = INTEGER milliwatts
+
+    Ports not delivering power report 0 mW (a real reading, kept as-is).
+    Raises ValueError on non-integer values — the table layout has
+    drifted from what we expect.
+    """
+    prefix = table_oid + "."
+    result = []
+    for oid, value in walk:
+        if not oid.startswith(prefix):
+            continue
+        parts = oid[len(prefix) :].split(".")
+        if len(parts) != 2:
+            continue
+        try:
+            milliwatts = int(value)
+        except ValueError as exc:
+            raise ValueError(
+                f"non-integer PoE power {value!r} at {oid}"
+            ) from exc
+        result.append((int(parts[1]), milliwatts))
+    return result
+
+
+def parse_box_sensors(
+    raw: dict[str, list[tuple[str, str]]],
+) -> list[tuple[str, str, int]]:
+    """Parse Netgear boxServices sensor walks into (kind, instance, value).
+
+    Kinds and units: "fan" (RPM), "psu_power" (W), "temperature" (deg C).
+    The instance is the OID suffix under the sensor column (e.g. "1.0" =
+    unit 1, fan 0).  Switches without the vendor MIB return no rows, and
+    rows reporting the vendor's literal "Not Supported" marker (e.g. the
+    GSM7252PS fan table) describe a sensor that doesn't exist — they are
+    skipped.  Any other non-integer value raises ValueError.
+    """
+    result = []
+    for kind, key, table_oid in _BOX_SENSOR_WALKS:
+        prefix = table_oid + "."
+        for oid, value in raw.get(key, []):
+            if not oid.startswith(prefix):
+                continue
+            if value == "Not Supported":
+                continue
+            try:
+                reading = int(value)
+            except ValueError as exc:
+                raise ValueError(
+                    f"non-integer {kind} reading {value!r} at {oid}"
+                ) from exc
+            result.append((kind, oid[len(prefix) :], reading))
+    return result
+
+
+def parse_bridge_mac(walk: list[tuple[str, str]]) -> str | None:
+    """Parse a dot1dBaseBridgeAddress walk into the switch's base MAC.
+
+    Returns the colon-separated MAC, or None when the switch didn't
+    answer (the key is then omitted from the document).
+    """
+    prefix = _DOT1D_BASE_BRIDGE_ADDRESS + "."
+    for oid, value in walk:
+        if oid.startswith(prefix) and value:
+            return _format_hex_mac(value)
+    return None
+
+
 def parse_vlan_egress_ports(
     walk: list[tuple[str, str]],
 ) -> list[tuple[int, str]]:
@@ -749,13 +855,19 @@ def _collect_bridge_data(ip: str, host: Host) -> dict | None:
     vlan_egress = parse_vlan_egress_ports(raw.get("vlan_egress", []))
     vlan_untagged = parse_vlan_untagged_ports(raw.get("vlan_untagged", []))
     poe = parse_poe_status(raw.get("poe", []))
+    poe_power = (
+        parse_poe_power(raw.get("poe_power_fm", []), _NETGEAR_POE_POWER_FM)
+        + parse_poe_power(raw.get("poe_power_smp", []), _NETGEAR_POE_POWER_SMP)
+    )
+    box_sensors = parse_box_sensors(raw)
+    bridge_mac = parse_bridge_mac(raw.get("bridge_mac", []))
     port_statistics = _parse_port_statistics(raw)
 
     # Port names/aliases as lists of (ifIndex, value) tuples
     port_names = [(k, v) for k, v in sorted(if_names.items())]
     port_aliases = [(k, v) for k, v in sorted(if_aliases.items())]
 
-    return {
+    doc = {
         "mac_table": mac_table,
         "vlan_names": vlan_names,
         "port_pvids": port_pvids,
@@ -766,8 +878,13 @@ def _collect_bridge_data(ip: str, host: Host) -> dict | None:
         "vlan_egress_ports": vlan_egress,
         "vlan_untagged_ports": vlan_untagged,
         "poe_status": poe,
+        "poe_power": poe_power,
+        "box_sensors": box_sensors,
         "port_statistics": port_statistics,
     }
+    if bridge_mac is not None:
+        doc["bridge_mac"] = bridge_mac
+    return doc
 
 
 def _is_bridge_candidate(host: Host) -> bool:
@@ -893,6 +1010,13 @@ def enrich_hosts_with_bridge_data(
             poe_status=tuple(
                 tuple(entry) for entry in info.get("poe_status", [])
             ),
+            poe_power=tuple(
+                tuple(entry) for entry in info.get("poe_power", [])
+            ),
+            box_sensors=tuple(
+                tuple(entry) for entry in info.get("box_sensors", [])
+            ),
+            bridge_mac=info.get("bridge_mac"),
             port_statistics=tuple(
                 tuple(entry) for entry in info.get("port_statistics", [])
             ),

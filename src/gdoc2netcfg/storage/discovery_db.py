@@ -115,6 +115,13 @@ _BRIDGE_DOC_FIELDS = (
      ("vlan_id", "port_bitmap_hex"), (int, str)),
     ("poe_status", "bridge_poe_status",
      ("port", "admin_status", "detection_status"), (int, int, int)),
+    # Netgear vendor data: actual PoE power draw (mW) per port, and
+    # boxServices environmental sensors (fan RPM / psu_power W /
+    # temperature deg C, keyed by the vendor's dotted instance suffix).
+    ("poe_power", "bridge_poe_power",
+     ("port", "milliwatts"), (int, int)),
+    ("box_sensors", "bridge_box_sensors",
+     ("kind", "instance", "value"), (str, str, int)),
     # Counters a switch doesn't expose for an interface are None (e.g.
     # M4300 VLAN interfaces report ifInErrors but no HC octets).
     ("port_statistics", "bridge_port_statistics",
@@ -267,12 +274,15 @@ def _structured_ddl_statements() -> list[str]:
     ))
 
     # Bridge: head row per switch + one table per BridgeData field.
-    # port_statistics and port_aliases were added to the scanner later,
-    # so historical documents may lack them — the head row records
-    # their presence.
+    # Fields the scanner gained over time are optional in the document,
+    # with presence recorded on the head row.  bridge_mac is an optional
+    # scalar stored directly on the head row (NULL = not captured).
     stmts += _entity_table_ddl("bridge_switches", "hostname", (
         ("has_port_statistics", "INTEGER NOT NULL"),
         ("has_port_aliases", "INTEGER NOT NULL"),
+        ("has_poe_power", "INTEGER NOT NULL"),
+        ("has_box_sensors", "INTEGER NOT NULL"),
+        ("bridge_mac", "TEXT"),
     ))
     for _key, table, cols, types in _BRIDGE_DOC_FIELDS:
         stmts += _entity_table_ddl(table, "hostname", tuple(
@@ -454,8 +464,11 @@ def _insert_snmp_rows(
 
 
 # Bridge doc keys that later scanner generations added: optional in the
-# document, with presence recorded on the bridge_switches head row.
-_BRIDGE_OPTIONAL_KEYS = ("port_statistics", "port_aliases")
+# document, with presence recorded on the bridge_switches head row (the
+# order here matches the head-row flag columns).
+_BRIDGE_OPTIONAL_KEYS = (
+    "port_statistics", "port_aliases", "poe_power", "box_sensors",
+)
 
 
 def _insert_bridge_rows(
@@ -467,12 +480,15 @@ def _insert_bridge_rows(
             key for key, _t, _c, _ty in _BRIDGE_DOC_FIELDS
             if key not in _BRIDGE_OPTIONAL_KEYS
         ),
-        optional=frozenset(_BRIDGE_OPTIONAL_KEYS),
+        optional=frozenset(_BRIDGE_OPTIONAL_KEYS) | {"bridge_mac"},
     )
+    if "bridge_mac" in doc:
+        _typecheck(f"bridge[{hostname}].bridge_mac", doc["bridge_mac"], str)
     _insert_row(
         cur, "bridge_switches", "hostname", scan_id, hostname,
-        ("has_port_statistics", "has_port_aliases"),
-        (int("port_statistics" in doc), int("port_aliases" in doc)),
+        (*(f"has_{key}" for key in _BRIDGE_OPTIONAL_KEYS), "bridge_mac"),
+        (*(int(key in doc) for key in _BRIDGE_OPTIONAL_KEYS),
+         doc.get("bridge_mac")),
     )
     for key, table, cols, types in _BRIDGE_DOC_FIELDS:
         if key not in doc:
@@ -652,17 +668,33 @@ def _upgrade_v6_port_aliases(conn: sqlite3.Connection) -> None:
 
 
 def _upgrade_v7_extended_bridge_data(conn: sqlite3.Connection) -> None:
-    """Schema v7: nullable traffic counters + LLDP port descriptions.
+    """Schema v7: extended bridge data.
 
-    bridge_port_statistics is rebuilt because SQLite cannot drop a
-    NOT NULL constraint in place; pre-v7 rows keep their values (the
-    old scanner fabricated 0 for missing counters — indistinguishable
-    from real zeros, so they are carried over as-is).  Pre-v7 LLDP rows
-    get NULL remote_port_desc (not captured), reconstructed as None.
+    - nullable traffic counters: bridge_port_statistics is rebuilt
+      because SQLite cannot drop a NOT NULL constraint in place; pre-v7
+      rows keep their values (the old scanner fabricated 0 for missing
+      counters — indistinguishable from real zeros, carried over as-is).
+    - LLDP remote_port_desc column (NULL = not captured).
+    - Netgear vendor PoE power + boxServices sensor tables with head-row
+      presence flags, and the bridge_mac head-row scalar.
     """
     conn.execute(
         "ALTER TABLE bridge_lldp_neighbors ADD COLUMN remote_port_desc TEXT"
     )
+    for flag in ("has_poe_power", "has_box_sensors"):
+        conn.execute(
+            f"ALTER TABLE bridge_switches ADD COLUMN "
+            f"{flag} INTEGER NOT NULL DEFAULT 0"
+        )
+    conn.execute("ALTER TABLE bridge_switches ADD COLUMN bridge_mac TEXT")
+    for field in ("poe_power", "box_sensors"):
+        _key, table, cols, types = next(
+            f for f in _BRIDGE_DOC_FIELDS if f[0] == field
+        )
+        for stmt in _entity_table_ddl(table, "hostname", tuple(
+            (col, _sql_type(typ)) for col, typ in zip(cols, types)
+        )):
+            conn.execute(stmt)
     conn.execute(
         "ALTER TABLE bridge_port_statistics RENAME TO bridge_port_statistics_v6"
     )
@@ -1286,21 +1318,25 @@ class DiscoveryDB(BaseDatabase):
         return self._latest_bridge()
 
     def _latest_bridge(self) -> dict[str, dict]:
+        flag_cols = ", ".join(f"has_{key}" for key in _BRIDGE_OPTIONAL_KEYS)
         result = {}
         for hostname, scan_id in sorted(
             self._latest_entity_scans("bridge_switches", "hostname").items()
         ):
             head = self._conn.execute(
-                "SELECT has_port_statistics, has_port_aliases "
+                f"SELECT {flag_cols}, bridge_mac "  # noqa: S608
                 "FROM bridge_switches WHERE scan_id = ? AND hostname = ?",
                 (scan_id, hostname),
             ).fetchone()
             present = dict(zip(_BRIDGE_OPTIONAL_KEYS, head))
-            result[hostname] = {
+            doc = {
                 key: self._load_list_rows(table, cols, scan_id, hostname)
                 for key, table, cols, _types in _BRIDGE_DOC_FIELDS
                 if present.get(key, True)
             }
+            if head[-1] is not None:
+                doc["bridge_mac"] = head[-1]
+            result[hostname] = doc
         return result
 
     # -- NSDP --

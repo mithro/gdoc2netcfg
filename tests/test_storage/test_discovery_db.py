@@ -421,6 +421,13 @@ def _bridge_doc(port_name: str = "2/0/49") -> dict:
         "vlan_egress_ports": [[1, "ff00"]],
         "vlan_untagged_ports": [[1, "ff00"]],
         "poe_status": [],
+        "poe_power": [[1, 3200], [2, 0]],
+        "box_sensors": [
+            ["fan", "1.0", 5280],
+            ["psu_power", "1.0", 53],
+            ["temperature", "1", 53],
+        ],
+        "bridge_mac": "E0:91:F5:0C:D6:DB",
         # Interface 898 exposes only ifInErrors (M4300 VLAN interface) —
         # the missing octet counters are None, never fabricated as 0.
         "port_statistics": [[1, 1000, 2000, 0], [898, None, None, 7]],
@@ -648,6 +655,35 @@ class TestBridgeShapes:
         db.finish_scan(s, host_count=1, changed_count=1)
         assert db.load_latest_bridge()["sw1"]["port_aliases"] == []
 
+    def test_document_without_v7_fields_roundtrips(self, db: DiscoveryDB):
+        """Pre-v7 documents lack poe_power/box_sensors/bridge_mac — the
+        keys stay absent, never fabricated."""
+        doc = _bridge_doc()
+        del doc["poe_power"]
+        del doc["box_sensors"]
+        del doc["bridge_mac"]
+        s = db.begin_scan("bridge")
+        changed = db.save_bridge(s, {"sw-old": doc})
+        db.finish_scan(s, host_count=1, changed_count=changed)
+
+        loaded = db.load_latest_bridge()
+        assert loaded == {"sw-old": doc}
+        for key in ("poe_power", "box_sensors", "bridge_mac"):
+            assert key not in loaded["sw-old"]
+
+    def test_empty_v7_lists_stay_present(self, db: DiscoveryDB):
+        """A switch without the vendor MIB still records the walks
+        happened: present-and-empty, distinct from pre-capture history."""
+        doc = _bridge_doc()
+        doc["poe_power"] = []
+        doc["box_sensors"] = []
+        s = db.begin_scan("bridge")
+        db.save_bridge(s, {"sw1": doc})
+        db.finish_scan(s, host_count=1, changed_count=1)
+        loaded = db.load_latest_bridge()["sw1"]
+        assert loaded["poe_power"] == []
+        assert loaded["box_sensors"] == []
+
     def test_alias_change_is_a_delta(self, db: DiscoveryDB):
         doc = _bridge_doc()
         s1 = db.begin_scan("bridge")
@@ -755,6 +791,11 @@ def _strip_v7(conn: sqlite3.Connection) -> None:
     conn.execute(
         "ALTER TABLE bridge_lldp_neighbors DROP COLUMN remote_port_desc"
     )
+    conn.execute("DROP TABLE bridge_poe_power")
+    conn.execute("DROP TABLE bridge_box_sensors")
+    conn.execute("ALTER TABLE bridge_switches DROP COLUMN has_poe_power")
+    conn.execute("ALTER TABLE bridge_switches DROP COLUMN has_box_sensors")
+    conn.execute("ALTER TABLE bridge_switches DROP COLUMN bridge_mac")
     conn.execute("DROP TABLE bridge_port_statistics")
     conn.execute(
         "CREATE TABLE bridge_port_statistics (\n"

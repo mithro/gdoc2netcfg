@@ -415,6 +415,7 @@ def _bridge_doc(port_name: str = "2/0/49") -> dict:
         "vlan_names": [[1, "default"], [90, "iot"]],
         "port_pvids": [[1, 1]],
         "port_names": [[1, "Port 1"]],
+        "port_aliases": [[1, "eth0.rpi5-pmod"]],
         "port_status": [[1, 1, 1000]],
         "lldp_neighbors": [[101, "sw-other", "gi27", "\xc8\x00q"]],
         "vlan_egress_ports": [[1, "ff00"]],
@@ -622,6 +623,44 @@ class TestBridgeShapes:
         db.finish_scan(s, host_count=1, changed_count=1)
         assert db.load_latest_bridge()["sw1"]["port_statistics"] == []
 
+    def test_document_without_port_aliases_roundtrips(self, db: DiscoveryDB):
+        """Scans from before ifAlias capture lack port_aliases — the key
+        must stay absent, not be fabricated as []."""
+        doc = _bridge_doc()
+        del doc["port_aliases"]
+        s = db.begin_scan("bridge")
+        changed = db.save_bridge(s, {"sw-old": doc})
+        db.finish_scan(s, host_count=1, changed_count=changed)
+
+        loaded = db.load_latest_bridge()
+        assert loaded == {"sw-old": doc}
+        assert "port_aliases" not in loaded["sw-old"]
+
+    def test_empty_port_aliases_stays_present(self, db: DiscoveryDB):
+        """A switch that doesn't expose ifAlias still records the walk
+        happened: present-and-empty, distinct from pre-capture history."""
+        doc = _bridge_doc()
+        doc["port_aliases"] = []
+        s = db.begin_scan("bridge")
+        db.save_bridge(s, {"sw1": doc})
+        db.finish_scan(s, host_count=1, changed_count=1)
+        assert db.load_latest_bridge()["sw1"]["port_aliases"] == []
+
+    def test_alias_change_is_a_delta(self, db: DiscoveryDB):
+        doc = _bridge_doc()
+        s1 = db.begin_scan("bridge")
+        db.save_bridge(s1, {"sw1": doc})
+        db.finish_scan(s1, host_count=1, changed_count=1)
+
+        changed_doc = _bridge_doc()
+        changed_doc["port_aliases"] = [[1, "eth0.rpi4-kindle"]]
+        s2 = db.begin_scan("bridge")
+        changed = db.save_bridge(s2, {"sw1": changed_doc})
+        db.finish_scan(s2, host_count=1, changed_count=changed)
+
+        assert changed == 1
+        assert db.load_latest_bridge()["sw1"] == changed_doc
+
 
 class TestNSDPShapes:
     def _save(self, db: DiscoveryDB, data: dict) -> int:
@@ -714,7 +753,11 @@ class TestSchemaUpgradeV5:
         """Create a current DB, then strip it back to schema v4."""
         d = DiscoveryDB(path)
         d.connection.execute(
-            "ALTER TABLE tasmota_devices DROP COLUMN mqtt_count"
+            "ALTER TABLE tasmota_devices DROP COLUMN mqtt_count"  # v5
+        )
+        d.connection.execute("DROP TABLE bridge_port_aliases")  # v6
+        d.connection.execute(
+            "ALTER TABLE bridge_switches DROP COLUMN has_port_aliases"  # v6
         )
         d.connection.execute(
             "UPDATE _meta SET value = '4' WHERE key = 'schema_version'"
@@ -767,6 +810,75 @@ class TestSchemaUpgradeV5:
         loaded = d.load_latest_tasmota()
         assert loaded == {"plug-old": doc}
         assert "mqtt_count" not in loaded["plug-old"]
+        d.close()
+
+
+class TestSchemaUpgradeV6:
+    def _make_v5_db(self, path: Path) -> None:
+        """Create a current DB, then strip it back to schema v5."""
+        d = DiscoveryDB(path)
+        d.connection.execute("DROP TABLE bridge_port_aliases")
+        d.connection.execute(
+            "ALTER TABLE bridge_switches DROP COLUMN has_port_aliases"
+        )
+        d.connection.execute(
+            "UPDATE _meta SET value = '5' WHERE key = 'schema_version'"
+        )
+        d.connection.commit()
+        d.close()
+
+    def test_rw_open_upgrades_v5(self, tmp_path: Path):
+        path = tmp_path / "v5.db"
+        self._make_v5_db(path)
+
+        d = DiscoveryDB(path)  # read-write open applies the upgrade
+        cols = [r[1] for r in d.connection.execute(
+            "PRAGMA table_info(bridge_switches)"
+        )]
+        assert "has_port_aliases" in cols
+        tables = [r[0] for r in d.connection.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'bridge_port_aliases'"
+        )]
+        assert tables == ["bridge_port_aliases"]
+        version = d.connection.execute(
+            "SELECT value FROM _meta WHERE key = 'schema_version'"
+        ).fetchone()[0]
+        assert int(version) == DiscoveryDB.SCHEMA_VERSION
+        d.close()
+
+    def test_pre_v6_bridge_rows_load_without_port_aliases(self, tmp_path: Path):
+        """Bridge scans written before the upgrade never captured
+        aliases — the reconstructed document omits the key."""
+        path = tmp_path / "v5.db"
+        self._make_v5_db(path)
+
+        # Write a bridge scan while the DB is at v5.
+        conn = sqlite3.connect(str(path))
+        cur = conn.execute(
+            "INSERT INTO scans (scan_type, started_at, finished_at, "
+            "host_count, changed_count) VALUES ('bridge', "
+            "'2026-06-01T00:00:00+00:00', '2026-06-01T00:01:00+00:00', 1, 1)"
+        )
+        scan_id = cur.lastrowid
+        conn.execute(
+            "INSERT INTO bridge_switches (scan_id, hostname, "
+            "has_port_statistics) VALUES (?, 'sw-old', 0)",
+            (scan_id,),
+        )
+        conn.execute(
+            "INSERT INTO bridge_port_names (scan_id, hostname, port, name) "
+            "VALUES (?, 'sw-old', 1, 'Port 1')",
+            (scan_id,),
+        )
+        conn.commit()
+        conn.close()
+
+        d = DiscoveryDB(path)  # applies the v6 upgrade
+        loaded = d.load_latest_bridge()
+        assert loaded["sw-old"]["port_names"] == [[1, "Port 1"]]
+        assert "port_aliases" not in loaded["sw-old"]
+        assert "port_statistics" not in loaded["sw-old"]
         d.close()
 
 

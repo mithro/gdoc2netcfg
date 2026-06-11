@@ -100,6 +100,8 @@ _BRIDGE_DOC_FIELDS = (
      ("port", "pvid"), (int, int)),
     ("port_names", "bridge_port_names",
      ("port", "name"), (int, str)),
+    ("port_aliases", "bridge_port_aliases",
+     ("port", "alias"), (int, str)),
     ("port_status", "bridge_port_status",
      ("port", "oper_status", "speed_mbps"), (int, int, int)),
     ("lldp_neighbors", "bridge_lldp_neighbors",
@@ -260,10 +262,12 @@ def _structured_ddl_statements() -> list[str]:
     ))
 
     # Bridge: head row per switch + one table per BridgeData field.
-    # port_statistics was added to the scanner later, so historical
-    # documents may lack it — the head row records its presence.
+    # port_statistics and port_aliases were added to the scanner later,
+    # so historical documents may lack them — the head row records
+    # their presence.
     stmts += _entity_table_ddl("bridge_switches", "hostname", (
         ("has_port_statistics", "INTEGER NOT NULL"),
+        ("has_port_aliases", "INTEGER NOT NULL"),
     ))
     for _key, table, cols, types in _BRIDGE_DOC_FIELDS:
         stmts += _entity_table_ddl(table, "hostname", tuple(
@@ -444,6 +448,11 @@ def _insert_snmp_rows(
         put("ip_address", i, row)
 
 
+# Bridge doc keys that later scanner generations added: optional in the
+# document, with presence recorded on the bridge_switches head row.
+_BRIDGE_OPTIONAL_KEYS = ("port_statistics", "port_aliases")
+
+
 def _insert_bridge_rows(
     cur: sqlite3.Cursor, scan_id: int, hostname: str, doc: dict,
 ) -> None:
@@ -451,13 +460,14 @@ def _insert_bridge_rows(
         f"bridge[{hostname}]", doc,
         frozenset(
             key for key, _t, _c, _ty in _BRIDGE_DOC_FIELDS
-            if key != "port_statistics"
+            if key not in _BRIDGE_OPTIONAL_KEYS
         ),
-        optional=frozenset({"port_statistics"}),
+        optional=frozenset(_BRIDGE_OPTIONAL_KEYS),
     )
     _insert_row(
         cur, "bridge_switches", "hostname", scan_id, hostname,
-        ("has_port_statistics",), (int("port_statistics" in doc),),
+        ("has_port_statistics", "has_port_aliases"),
+        (int("port_statistics" in doc), int("port_aliases" in doc)),
     )
     for key, table, cols, types in _BRIDGE_DOC_FIELDS:
         if key not in doc:
@@ -615,6 +625,27 @@ def _validate_zigbee_doc(site: str, doc: dict) -> None:
         raise ValueError(f"zigbee[{site}].devices: expected a dict")
 
 
+def _upgrade_v6_port_aliases(conn: sqlite3.Connection) -> None:
+    """Schema v6: bridge scans gained per-port ifAlias capture.
+
+    Pre-v6 head rows default has_port_aliases to 0, so their documents
+    reconstruct without the key (aliases were never captured).  The new
+    table's DDL is derived from _BRIDGE_DOC_FIELDS so it cannot drift
+    from what fresh installs create.
+    """
+    conn.execute(
+        "ALTER TABLE bridge_switches ADD COLUMN "
+        "has_port_aliases INTEGER NOT NULL DEFAULT 0"
+    )
+    _key, table, cols, types = next(
+        f for f in _BRIDGE_DOC_FIELDS if f[0] == "port_aliases"
+    )
+    for stmt in _entity_table_ddl(table, "hostname", tuple(
+        (col, _sql_type(typ)) for col, typ in zip(cols, types)
+    )):
+        conn.execute(stmt)
+
+
 class DiscoveryDB(BaseDatabase):
     """SQLite storage for supplement scan results."""
 
@@ -624,9 +655,11 @@ class DiscoveryDB(BaseDatabase):
     # v1->v4 upgrade steps were removed once every production database
     # reached v4 — older databases fail loud with no upgrade path.
     # v5: tasmota_devices.mqtt_count (MQTT connection diagnostics).
-    SCHEMA_VERSION = 5
+    # v6: bridge port_aliases (ifAlias port descriptions).
+    SCHEMA_VERSION = 6
     SCHEMA_UPGRADES = {
         5: ["ALTER TABLE tasmota_devices ADD COLUMN mqtt_count INTEGER"],
+        6: [_upgrade_v6_port_aliases],
     }
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:
@@ -1217,15 +1250,16 @@ class DiscoveryDB(BaseDatabase):
         for hostname, scan_id in sorted(
             self._latest_entity_scans("bridge_switches", "hostname").items()
         ):
-            has_port_statistics = self._conn.execute(
-                "SELECT has_port_statistics FROM bridge_switches "
-                "WHERE scan_id = ? AND hostname = ?",
+            head = self._conn.execute(
+                "SELECT has_port_statistics, has_port_aliases "
+                "FROM bridge_switches WHERE scan_id = ? AND hostname = ?",
                 (scan_id, hostname),
-            ).fetchone()[0]
+            ).fetchone()
+            present = dict(zip(_BRIDGE_OPTIONAL_KEYS, head))
             result[hostname] = {
                 key: self._load_list_rows(table, cols, scan_id, hostname)
                 for key, table, cols, _types in _BRIDGE_DOC_FIELDS
-                if key != "port_statistics" or has_port_statistics
+                if present.get(key, True)
             }
         return result
 

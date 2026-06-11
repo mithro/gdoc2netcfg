@@ -188,6 +188,9 @@ class BridgeData:
         vlan_names: (vlan_id, name) tuples from dot1qVlanStaticName.
         port_pvids: (ifIndex, pvid) tuples from dot1qPvid.
         port_names: (ifIndex, name) tuples from ifName.
+        port_aliases: (ifIndex, alias) tuples from ifAlias -- operator-set
+            port descriptions (e.g. "eth0.rpi5-pmod" naming the attached
+            host).  Unset aliases are empty strings.
         port_status: (ifIndex, oper_status, speed_mbps) tuples.
         lldp_neighbors: (local_ifIndex, remote_sysname, remote_port_id,
             remote_chassis_mac) tuples.
@@ -202,6 +205,7 @@ class BridgeData:
     vlan_names: tuple[tuple[int, str], ...] = ()
     port_pvids: tuple[tuple[int, int], ...] = ()
     port_names: tuple[tuple[int, str], ...] = ()
+    port_aliases: tuple[tuple[int, str], ...] = ()
     port_status: tuple[tuple[int, int, int], ...] = ()
     lldp_neighbors: tuple[tuple[int, str, str, str], ...] = ()
     vlan_egress_ports: tuple[tuple[int, str], ...] = ()

@@ -65,6 +65,9 @@ _DOT1Q_VLAN_STATIC_UNTAGGED = "1.3.6.1.2.1.17.7.1.4.3.1.4"
 # IF-MIB: ifName -- interface names
 _IF_NAME = "1.3.6.1.2.1.31.1.1.1.1"
 
+# IF-MIB: ifAlias -- operator-set port descriptions
+_IF_ALIAS = "1.3.6.1.2.1.31.1.1.1.18"
+
 # IF-MIB: ifOperStatus -- up/down status
 _IF_OPER_STATUS = "1.3.6.1.2.1.2.2.1.8"
 
@@ -91,6 +94,7 @@ _BRIDGE_TABLE_OIDS: dict[str, str] = {
     "vlan_egress": _DOT1Q_VLAN_STATIC_EGRESS,
     "vlan_untagged": _DOT1Q_VLAN_STATIC_UNTAGGED,
     "if_name": _IF_NAME,
+    "if_alias": _IF_ALIAS,
     "if_oper_status": _IF_OPER_STATUS,
     "if_high_speed": _IF_HIGH_SPEED,
     "lldp_rem": _LLDP_REM_TABLE,
@@ -208,13 +212,12 @@ def parse_mac_table(
     return results
 
 
-def parse_if_names(walk: list[tuple[str, str]]) -> dict[int, str]:
-    """Parse ifName walk results into ifIndex -> name mapping.
-
-    OID format: 1.3.6.1.2.1.31.1.1.1.1.<ifIndex> = STRING: <name>
-    """
+def _parse_ifindex_strings(
+    walk: list[tuple[str, str]], table_oid: str,
+) -> dict[int, str]:
+    """Parse an ifIndex-keyed string column walk into ifIndex -> value."""
     result = {}
-    prefix = _IF_NAME + "."
+    prefix = table_oid + "."
     for oid, value in walk:
         if not oid.startswith(prefix):
             continue
@@ -225,6 +228,27 @@ def parse_if_names(walk: list[tuple[str, str]]) -> dict[int, str]:
             continue
         result[if_index] = value
     return result
+
+
+def parse_if_names(walk: list[tuple[str, str]]) -> dict[int, str]:
+    """Parse ifName walk results into ifIndex -> name mapping.
+
+    OID format: 1.3.6.1.2.1.31.1.1.1.1.<ifIndex> = STRING: <name>
+    """
+    return _parse_ifindex_strings(walk, _IF_NAME)
+
+
+def parse_if_aliases(walk: list[tuple[str, str]]) -> dict[int, str]:
+    """Parse ifAlias walk results into ifIndex -> alias mapping.
+
+    OID format: 1.3.6.1.2.1.31.1.1.1.18.<ifIndex> = STRING: <alias>
+
+    Aliases are the operator-set port descriptions (e.g.
+    "eth0.rpi5-pmod" naming the attached host).  Unset aliases are
+    empty strings and are kept, so every interface the switch reports
+    has an entry.
+    """
+    return _parse_ifindex_strings(walk, _IF_ALIAS)
 
 
 def parse_bridge_port_map(walk: list[tuple[str, str]]) -> dict[int, int]:
@@ -699,6 +723,7 @@ def _collect_bridge_data(ip: str, host: Host) -> dict | None:
 
     bridge_to_if = parse_bridge_port_map(bridge_port_walk)
     if_names = parse_if_names(if_name_walk)
+    if_aliases = parse_if_aliases(raw.get("if_alias", []))
 
     # Parse all tables
     mac_table = parse_mac_table(raw.get("dot1q_tp_fdb", []), bridge_to_if, if_names)
@@ -714,14 +739,16 @@ def _collect_bridge_data(ip: str, host: Host) -> dict | None:
     poe = parse_poe_status(raw.get("poe", []))
     port_statistics = _parse_port_statistics(raw)
 
-    # Port names as list of (ifIndex, name) tuples
+    # Port names/aliases as lists of (ifIndex, value) tuples
     port_names = [(k, v) for k, v in sorted(if_names.items())]
+    port_aliases = [(k, v) for k, v in sorted(if_aliases.items())]
 
     return {
         "mac_table": mac_table,
         "vlan_names": vlan_names,
         "port_pvids": port_pvids,
         "port_names": port_names,
+        "port_aliases": port_aliases,
         "port_status": port_status,
         "lldp_neighbors": lldp_neighbors,
         "vlan_egress_ports": vlan_egress,
@@ -835,6 +862,9 @@ def enrich_hosts_with_bridge_data(
             ),
             port_names=tuple(
                 tuple(entry) for entry in info.get("port_names", [])
+            ),
+            port_aliases=tuple(
+                tuple(entry) for entry in info.get("port_aliases", [])
             ),
             port_status=tuple(
                 tuple(entry) for entry in info.get("port_status", [])

@@ -7,12 +7,15 @@ import pytest
 from gdoc2netcfg.models.addressing import IPv4Address, MACAddress
 from gdoc2netcfg.models.host import Host, NetworkInterface
 from gdoc2netcfg.supplements.bridge import (
+    _BRIDGE_TABLE_OIDS,
     BRIDGE_CAPABLE_HARDWARE,
+    _collect_bridge_data,
     _format_hex_mac,
     _format_octet_string,
     _parse_port_statistics,
     enrich_hosts_with_bridge_data,
     parse_bridge_port_map,
+    parse_if_aliases,
     parse_if_names,
     parse_lldp_neighbors,
     parse_mac_table,
@@ -478,6 +481,55 @@ class TestParsePoeStatus:
             parse_poe_status(walk)
 
 
+class TestParseIfAliases:
+    def test_parses_aliases(self):
+        # Values captured live from sw-netgear-gsm7252ps-s1: operator-set
+        # port descriptions naming the attached host.  Unset aliases are
+        # empty strings and are kept.
+        walk = [
+            ("1.3.6.1.2.1.31.1.1.1.18.1", "eth0.rpi5-pmod"),
+            ("1.3.6.1.2.1.31.1.1.1.18.2", ""),
+            ("1.3.6.1.2.1.31.1.1.1.18.48", "gi28.sw-cisco-shed"),
+        ]
+        assert parse_if_aliases(walk) == {
+            1: "eth0.rpi5-pmod",
+            2: "",
+            48: "gi28.sw-cisco-shed",
+        }
+
+    def test_ignores_other_oids(self):
+        walk = [("1.3.6.1.2.1.31.1.1.1.1.1", "1/g1")]  # ifName, not ifAlias
+        assert parse_if_aliases(walk) == {}
+
+    def test_empty(self):
+        assert parse_if_aliases([]) == {}
+
+
+class TestCollectBridgeData:
+    def test_walks_if_alias(self):
+        assert _BRIDGE_TABLE_OIDS["if_alias"] == "1.3.6.1.2.1.31.1.1.1.18"
+
+    @patch("gdoc2netcfg.supplements.bridge.try_snmp_credentials")
+    def test_collects_port_aliases(self, mock_try):
+        mock_try.return_value = {
+            "if_name": [("1.3.6.1.2.1.31.1.1.1.1.1", "1/g1")],
+            "if_alias": [("1.3.6.1.2.1.31.1.1.1.18.1", "eth0.rpi5-pmod")],
+        }
+        doc = _collect_bridge_data("10.1.5.22", _make_switch())
+        assert doc["port_names"] == [(1, "1/g1")]
+        assert doc["port_aliases"] == [(1, "eth0.rpi5-pmod")]
+
+    @patch("gdoc2netcfg.supplements.bridge.try_snmp_credentials")
+    def test_no_alias_support_yields_empty_list(self, mock_try):
+        """A switch that answers nothing for ifAlias still produces the
+        key — present-and-empty, distinct from pre-capture history."""
+        mock_try.return_value = {
+            "if_name": [("1.3.6.1.2.1.31.1.1.1.1.1", "1/g1")],
+        }
+        doc = _collect_bridge_data("10.1.5.22", _make_switch())
+        assert doc["port_aliases"] == []
+
+
 class TestBridgeCapableHardware:
     def test_includes_netgear_switch(self):
         assert "netgear-switch" in BRIDGE_CAPABLE_HARDWARE
@@ -498,6 +550,7 @@ class TestEnrichHostsWithBridgeData:
                 "vlan_names": [[1, "Default"], [5, "net"]],
                 "port_pvids": [[1, 31]],
                 "port_names": [[1, "1/g1"]],
+                "port_aliases": [[1, "eth0.rpi5-pmod"]],
                 "port_status": [[1, 2, 0]],
                 "lldp_neighbors": [],
                 "vlan_egress_ports": [],
@@ -512,6 +565,7 @@ class TestEnrichHostsWithBridgeData:
         assert len(host.bridge_data.vlan_names) == 2
         assert host.bridge_data.vlan_names[0] == (1, "Default")
         assert host.bridge_data.vlan_names[1] == (5, "net")
+        assert host.bridge_data.port_aliases == ((1, "eth0.rpi5-pmod"),)
 
     def test_no_data_for_host(self):
         host = _make_switch()
@@ -555,6 +609,7 @@ class TestEnrichHostsWithBridgeData:
         assert len(host.bridge_data.mac_table) == 1
         assert host.bridge_data.vlan_names == ()
         assert host.bridge_data.port_pvids == ()
+        assert host.bridge_data.port_aliases == ()
 
 
 class TestScanBridge:

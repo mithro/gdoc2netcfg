@@ -100,8 +100,11 @@ def validate_mac_connectivity(
         if host.bridge_data is None:
             continue
 
-        for mac_str, vlan_id, _bridge_port, port_name in host.bridge_data.mac_table:
+        for mac_str, vlan_id, bridge_port, port_name in host.bridge_data.mac_table:
             mac_upper = mac_str.upper()
+            # Unresolvable port names (LAG/CPU bridge ports) are empty;
+            # fall back to the raw bridge port number for the message.
+            port_label = port_name or f"bridge-port {bridge_port}"
 
             # Skip locally administered MACs (containers, VMs)
             if _is_locally_administered(mac_upper):
@@ -116,7 +119,7 @@ def validate_mac_connectivity(
                 code="bridge_unknown_mac",
                 message=(
                     f"Unknown MAC {mac_upper} seen on {host.hostname} "
-                    f"port {port_name} VLAN {vlan_id}"
+                    f"port {port_label} VLAN {vlan_id}"
                 ),
                 record_id=host.hostname,
                 field="bridge_data.mac_table",

@@ -203,9 +203,13 @@ def parse_mac_table(
 
         mac_str = _format_mac_bytes(mac_bytes)
 
-        # Resolve bridge port -> ifIndex -> name
+        # Resolve bridge port -> ifIndex -> name.  Some switches report
+        # FDB entries on bridge ports with no dot1dBasePortIfIndex entry
+        # (LAG and CPU ports on Cisco small-business switches); the name
+        # is unresolvable there and stays empty — never fabricated — with
+        # the bridge_port number preserved.
         if_index = bridge_to_if.get(bridge_port, bridge_port)
-        port_name = if_names.get(if_index, f"port{bridge_port}")
+        port_name = if_names.get(if_index, "")
 
         results.append((mac_str, vlan_id, bridge_port, port_name))
 

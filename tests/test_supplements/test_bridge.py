@@ -66,13 +66,17 @@ class TestParseMacTable:
     def test_empty_walk(self):
         assert parse_mac_table([], {}, {}) == []
 
-    def test_unknown_bridge_port(self):
+    def test_unknown_bridge_port_keeps_empty_name(self):
+        """Bridge ports with no dot1dBasePortIfIndex entry (LAG/CPU ports
+        on e.g. Cisco small-business switches) have no resolvable name —
+        the name stays empty rather than being fabricated, and the
+        bridge_port number is preserved."""
         walk = [
             ("1.3.6.1.2.1.17.7.1.2.2.1.2.5.170.187.204.221.238.255", "99"),
         ]
         result = parse_mac_table(walk, {}, {})
         assert len(result) == 1
-        assert result[0] == ("AA:BB:CC:DD:EE:FF", 5, 99, "port99")
+        assert result[0] == ("AA:BB:CC:DD:EE:FF", 5, 99, "")
 
     def test_skips_malformed_oid(self):
         """OID with wrong number of components should be silently skipped."""

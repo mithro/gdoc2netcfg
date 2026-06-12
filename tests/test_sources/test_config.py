@@ -59,3 +59,53 @@ class TestLoadConfig:
         )
         config = load_config(config_file)
         assert config.site.site_octet == 0
+
+
+class TestSheetsConfig:
+    def _write(self, tmp_path: Path, body: str) -> Path:
+        p = tmp_path / "gdoc2netcfg.toml"
+        p.write_text(body)
+        return p
+
+    def test_sheets_config_parsed_from_sheets_section(self, tmp_path: Path):
+        config = load_config(self._write(tmp_path, """
+[site]
+name = "test"
+domain = "test.example.com"
+
+[sheets]
+network = "https://example.com/network.csv"
+spreadsheet_url = "https://docs.google.com/spreadsheets/d/x/edit"
+credentials_file = "client_secret.json"
+token_cache = ".cache/tok.json"
+service_account_file = "sa.json"
+"""))
+        assert config.sheets_config.credentials_file == "client_secret.json"
+        assert config.sheets_config.token_cache == ".cache/tok.json"
+        assert config.sheets_config.service_account_file == "sa.json"
+
+    def test_reserved_keys_are_not_sheet_urls(self, tmp_path: Path):
+        """Cred keys in [sheets] must not become SheetConfig entries."""
+        config = load_config(self._write(tmp_path, """
+[site]
+name = "test"
+domain = "test.example.com"
+
+[sheets]
+network = "https://example.com/network.csv"
+spreadsheet_url = "https://docs.google.com/spreadsheets/d/x/edit"
+credentials_file = "client_secret.json"
+token_cache = ".cache/tok.json"
+service_account_file = "sa.json"
+"""))
+        assert [s.name for s in config.sheets] == ["network"]
+
+    def test_sheets_config_defaults(self, tmp_path: Path):
+        config = load_config(self._write(tmp_path, """
+[site]
+name = "test"
+domain = "test.example.com"
+"""))
+        assert config.sheets_config.credentials_file == ""
+        assert config.sheets_config.token_cache == ".cache/google_oauth_token.json"
+        assert config.sheets_config.service_account_file == ""

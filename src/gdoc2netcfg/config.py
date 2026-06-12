@@ -92,6 +92,19 @@ class ZigbeeConfig:
 
 
 @dataclass
+class SheetsConfig:
+    """Google Sheets write-access credentials, from the [sheets] section.
+
+    OAuth2 (credentials_file + token_cache) or a service account
+    (service_account_file). Used by sheet-writing commands.
+    """
+
+    credentials_file: str = ""      # OAuth2 client_secret.json path
+    token_cache: str = ".cache/google_oauth_token.json"
+    service_account_file: str = ""  # Alternative: service account JSON key path
+
+
+@dataclass
 class HomeAssistantConfig:
     """Configuration for Home Assistant integration checks.
 
@@ -114,6 +127,7 @@ class PipelineConfig:
     site: Site
     sheets: list[SheetConfig] = field(default_factory=list)
     spreadsheet_url: str = ""  # Edit URL for write access (from [sheets] spreadsheet_url)
+    sheets_config: SheetsConfig = field(default_factory=SheetsConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     generators: dict[str, GeneratorConfig] = field(default_factory=dict)
     tasmota: TasmotaConfig = field(default_factory=TasmotaConfig)
@@ -149,17 +163,36 @@ def _build_site(data: dict) -> Site:
     )
 
 
+# [sheets] keys that are settings, not sheet-name→URL pairs.
+_RESERVED_SHEET_KEYS = frozenset({
+    "spreadsheet_url", "credentials_file", "token_cache",
+    "service_account_file",
+})
+
+
 def _build_sheets(data: dict) -> list[SheetConfig]:
     """Build sheet configs from parsed TOML data.
 
-    Skips the special 'spreadsheet_url' key (used for write access).
+    Skips reserved settings keys (_RESERVED_SHEET_KEYS).
     """
     sheets = []
     for name, url in data.get("sheets", {}).items():
-        if name == "spreadsheet_url":
+        if name in _RESERVED_SHEET_KEYS:
             continue
         sheets.append(SheetConfig(name=name, url=url))
     return sheets
+
+
+def _build_sheets_config(data: dict) -> SheetsConfig:
+    """Build sheet write-access credentials from the [sheets] section."""
+    section = data.get("sheets", {})
+    return SheetsConfig(
+        credentials_file=section.get("credentials_file", ""),
+        token_cache=section.get(
+            "token_cache", ".cache/google_oauth_token.json",
+        ),
+        service_account_file=section.get("service_account_file", ""),
+    )
 
 
 def _build_generators(data: dict) -> dict[str, GeneratorConfig]:
@@ -249,6 +282,7 @@ def load_config(config_path: Path | str | None = None) -> PipelineConfig:
         site=_build_site(data),
         sheets=_build_sheets(data),
         spreadsheet_url=data.get("sheets", {}).get("spreadsheet_url", ""),
+        sheets_config=_build_sheets_config(data),
         cache=CacheConfig(
             directory=Path(data.get("cache", {}).get("directory", ".cache")),
         ),

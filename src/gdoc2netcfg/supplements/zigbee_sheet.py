@@ -2,7 +2,8 @@
 
 Reads the 'Zigbee Info' tab of the configured spreadsheet and upserts
 rows with fresh data from the Zigbee2MQTT scan cache.  Matches existing
-rows by IEEE address.  New devices are appended.
+rows by (Site, IEEE address) — each site manages only its own rows.
+New devices are appended.
 
 Column layout (from live sheet, gid=283200403):
   A: Site
@@ -13,7 +14,7 @@ Column layout (from live sheet, gid=283200403):
   F: State           (Online/Offline)
   G: (unnamed)       source unknown; existing values are preserved
   H: Model           (device-reported model_id string)
-  I: IEEE Address    <- primary key for upserts
+  I: IEEE Address    <- key together with Site (column A)
   J: Power Source
   K: Connected Via
 """
@@ -31,6 +32,9 @@ if TYPE_CHECKING:
 
 # Expected column header for the primary key.  Must exist in the sheet.
 _IEEE_COL = "IEEE Address"
+
+# Expected column header for the row-owning site.  Must exist in the sheet.
+_SITE_COL = "Site"
 
 # Index of the unnamed column G (0-based).  Value source is unknown;
 # preserved from the sheet on updates, left blank for new rows.
@@ -102,10 +106,17 @@ def update_zigbee_sheet(
 ) -> int:
     """Update the Zigbee Info sheet with fresh device data.
 
-    Upserts rows matched by IEEE address.  New devices are appended.
-    Returns the number of rows written (or that would be written in dry-run).
+    Upserts rows matched by (Site, IEEE address) — each site manages
+    only its own rows.  Rows whose Site cell is outside this run's
+    configured sites are never read or written, so a device present at
+    two sites keeps one row per site.  New devices are appended;
+    rows already showing the current values are left alone.
+    Returns the number of rows written (or that would be in dry-run).
     """
-    zigbee_config = config.zigbee
+    if not config.zigbee.sites:
+        raise RuntimeError("No zigbee sites configured in gdoc2netcfg.toml")
+    site_scope = {s.name.strip().lower() for s in config.zigbee.sites}
+
     if not config.spreadsheet_url:
         raise RuntimeError(
             "spreadsheet_url not configured. Add it to the [sheets] section of "
@@ -114,38 +125,78 @@ def update_zigbee_sheet(
         )
     client = get_gspread_client(config.sheets_config)
     sh = client.open_by_url(config.spreadsheet_url)
-    ws = sh.worksheet(zigbee_config.sheet_name)
+    ws = sh.worksheet(config.zigbee.sheet_name)
 
     all_values = ws.get_all_values()
     if not all_values:
-        raise RuntimeError(f"Sheet '{zigbee_config.sheet_name}' is empty")
+        raise RuntimeError(f"Sheet '{config.zigbee.sheet_name}' is empty")
 
     header = all_values[0]
     data_rows = all_values[1:]
 
-    if _IEEE_COL not in header:
-        raise RuntimeError(
-            f"Column '{_IEEE_COL}' not found in sheet header: {header}"
-        )
+    for col in (_SITE_COL, _IEEE_COL):
+        if col not in header:
+            raise RuntimeError(
+                f"Column '{col}' not found in sheet header: {header}"
+            )
+    site_col_idx = header.index(_SITE_COL)
     ieee_col_idx = header.index(_IEEE_COL)
     type_col_idx = header.index("Type") if "Type" in header else 1
 
-    # Build IEEE address → row index (0-based in data_rows) map
-    ieee_to_row_idx: dict[str, int] = {}
+    def _cell(row: list[str], idx: int) -> str:
+        return row[idx].strip() if idx < len(row) else ""
+
+    # (site, ieee) -> row index (0-based in data_rows), for rows owned
+    # by this run's sites.  Blank-Site rows are collected separately so
+    # an IEEE collision with them can be flagged for manual fixing.
+    key_to_row_idx: dict[tuple[str, str], int] = {}
+    blank_site_ieees: set[str] = set()
     for i, row in enumerate(data_rows):
-        ieee = row[ieee_col_idx].strip() if ieee_col_idx < len(row) else ""
-        if ieee:
-            ieee_to_row_idx[ieee] = i
+        ieee = _cell(row, ieee_col_idx)
+        if not ieee:
+            continue
+        row_site = _cell(row, site_col_idx).lower()
+        if not row_site:
+            blank_site_ieees.add(ieee)
+            continue
+        if row_site not in site_scope:
+            continue  # another site's row — not ours to touch
+        key = (row_site, ieee)
+        if key in key_to_row_idx:
+            print(
+                f"Warning: duplicate rows for site={row_site} ieee={ieee} "
+                f"(sheet rows {key_to_row_idx[key] + 2} and {i + 2}); "
+                "using the first",
+                file=sys.stderr,
+            )
+            continue
+        key_to_row_idx[key] = i
 
     updates: list[dict] = []
     appends: list[list[str]] = []
 
     for device in sorted(devices, key=lambda d: (d.site, d.object_id)):
+        device_site = device.site.strip().lower()
+        if device_site not in site_scope:
+            raise RuntimeError(
+                f"Device {device.ieee_address} belongs to site "
+                f"'{device.site}', not in this run's configured sites "
+                f"{sorted(site_scope)}"
+            )
         bridge = bridge_infos.get(device.site)
         ieee = device.ieee_address
 
-        if ieee in ieee_to_row_idx:
-            row_idx = ieee_to_row_idx[ieee]
+        if ieee in blank_site_ieees:
+            print(
+                f"Warning: IEEE {ieee} also appears in a row with a blank "
+                "Site cell — that row was left untouched; fill in its Site "
+                "column manually",
+                file=sys.stderr,
+            )
+
+        key = (device_site, ieee)
+        if key in key_to_row_idx:
+            row_idx = key_to_row_idx[key]
             existing_row = data_rows[row_idx]
             col_g_val = (
                 existing_row[_UNNAMED_COL_IDX]
@@ -158,6 +209,13 @@ def update_zigbee_sheet(
                 else ""
             )
             new_row = _device_to_row(device, bridge, col_g_val, existing_type)
+
+            padded_existing = [
+                existing_row[i] if i < len(existing_row) else ""
+                for i in range(len(new_row))
+            ]
+            if padded_existing == new_row:
+                continue  # row already current — idempotent re-run
 
             # Sheet rows are 1-indexed; +1 for header row, +1 for 1-indexing
             sheet_row = row_idx + 2

@@ -1273,7 +1273,8 @@ def cmd_bridge_scan(args: argparse.Namespace) -> int:
             hosts,
             _load_latest_from_db(config, "load_latest_nsdp"),
             verbose=True,
-        )
+            last_changed=_load_latest_from_db(config, "nsdp_last_changed"),
+        ).data
         if nsdp_data:
             _save_to_discovery_db(config, "nsdp", "save_nsdp", nsdp_data)
     enrich_hosts_with_nsdp(hosts, nsdp_data)
@@ -1631,12 +1632,15 @@ def cmd_nsdp_scan(args: argparse.Namespace) -> int:
     if age is not None:
         print(f"Using cached nsdp scan ({age:.0f}s old).", file=sys.stderr)
         nsdp_data = _load_latest_from_db(config, "load_latest_nsdp") or {}
+        scan_result = None
     else:
-        nsdp_data = scan_nsdp(
+        scan_result = scan_nsdp(
             hosts,
             _load_latest_from_db(config, "load_latest_nsdp"),
             verbose=True,
+            last_changed=_load_latest_from_db(config, "nsdp_last_changed"),
         )
+        nsdp_data = scan_result.data
         if nsdp_data:
             _save_to_discovery_db(config, "nsdp", "save_nsdp", nsdp_data)
 
@@ -1645,7 +1649,16 @@ def cmd_nsdp_scan(args: argparse.Namespace) -> int:
     # Report - count only Netgear switches
     netgear_hosts = [h for h in hosts if h.hardware_type in NSDP_HARDWARE_TYPES]
     hosts_with_nsdp = sum(1 for h in netgear_hosts if h.nsdp_data is not None)
-    print(f"\nNSDP data for {hosts_with_nsdp}/{len(netgear_hosts)} Netgear switches.")
+    if scan_result is None:
+        print(
+            f"\nNSDP data cached for {hosts_with_nsdp}/{len(netgear_hosts)} "
+            f"Netgear switches.",
+        )
+    else:
+        print(
+            f"\n{len(scan_result.responded)}/{len(scan_result.queried)} "
+            f"Netgear switch(es) responded.",
+        )
 
     return 0
 

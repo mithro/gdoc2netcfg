@@ -1,5 +1,8 @@
 """Tests for the NSDP supplement."""
 
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
 from gdoc2netcfg.cli.main import main
 from gdoc2netcfg.models.addressing import IPv4Address, MACAddress
 from gdoc2netcfg.models.host import Host, NetworkInterface, NSDPData
@@ -7,6 +10,7 @@ from gdoc2netcfg.models.switch_data import SwitchDataSource
 from gdoc2netcfg.supplements.nsdp import (
     enrich_hosts_with_nsdp,
     nsdp_to_switch_data,
+    scan_nsdp,
 )
 
 
@@ -39,6 +43,65 @@ def _make_host(hostname="gs110emx", ip="10.1.20.1", hardware_type="netgear-switc
         ],
         hardware_type=hardware_type,
     )
+
+
+def _make_device(model="GS110EMX", mac="00:09:5b:aa:bb:cc"):
+    return SimpleNamespace(
+        model=model, mac=mac, hostname=None, ip=None, netmask=None,
+        gateway=None, firmware_version="1.0.1.4", dhcp_enabled=None,
+        port_count=None, serial_number=None, port_status=[],
+        port_pvids=[], vlan_engine=None, vlan_members=[],
+        port_statistics=[], qos_engine=None, port_mirroring=None,
+        igmp_snooping=None, broadcast_filtering=None, loop_detection=None,
+    )
+
+
+class TestScanNSDP:
+    """scan_nsdp reports who responded vs. data carried from baseline."""
+
+    def _run(self, hosts, baseline, responders, last_changed=None):
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.query_ip.side_effect = lambda ip, timeout=2.0: (
+            _make_device() if ip in responders else None
+        )
+        with patch("nsdp.NSDPClient", return_value=client):
+            return scan_nsdp(
+                hosts, baseline, verbose=True, last_changed=last_changed,
+            )
+
+    def test_responded_and_queried(self):
+        hosts = [
+            _make_host("sw-up", ip="10.1.20.1"),
+            _make_host("sw-down", ip="10.1.20.2"),
+        ]
+        baseline = {"sw-down": {"model": "GS110EMX", "mac": "aa:aa:aa:aa:aa:01"}}
+        result = self._run(hosts, baseline, responders={"10.1.20.1"})
+
+        assert result.queried == ("sw-up", "sw-down")
+        assert result.responded == ("sw-up",)
+        # Fresh data for the responder, baseline carried for the rest.
+        assert result.data["sw-up"]["firmware_version"] == "1.0.1.4"
+        assert result.data["sw-down"] == baseline["sw-down"]
+
+    def test_no_response_reports_last_changed(self, capsys):
+        hosts = [_make_host("sw-down", ip="10.1.20.2")]
+        self._run(
+            hosts, None, responders=set(),
+            last_changed={"sw-down": "2026-02-05T08:52:44.544988+00:00"},
+        )
+        assert "no response (data last changed 2026-02-05)" in capsys.readouterr().err
+
+    def test_no_response_without_history(self, capsys):
+        hosts = [_make_host("sw-new", ip="10.1.20.3")]
+        self._run(hosts, None, responders=set())
+        assert "no response (no prior data)" in capsys.readouterr().err
+
+    def test_no_switches_to_query(self):
+        result = scan_nsdp([_make_host(hardware_type="server")], None)
+        assert result.data == {}
+        assert result.queried == ()
+        assert result.responded == ()
 
 
 class TestEnrichHostsWithNSDP:

@@ -2,7 +2,7 @@
 
 Scans Netgear switches via the NSDP broadcast protocol to retrieve
 device identity, firmware version, port status, and VLAN configuration.
-Results are cached in nsdp.json.
+Results are persisted to the discovery database.
 
 This is primarily useful for unmanaged switches (hardware_type =
 "netgear-switch-plus") that lack SNMP support. NSDP provides the only
@@ -16,7 +16,7 @@ supplement pipeline.
 from __future__ import annotations
 
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from gdoc2netcfg.derivations.hardware import HARDWARE_NETGEAR_SWITCH_PLUS
 from gdoc2netcfg.models.host import NSDPData
@@ -95,12 +95,26 @@ def nsdp_to_switch_data(nsdp: NSDPData) -> SwitchData:
     )
 
 
+class NSDPScanResult(NamedTuple):
+    """Outcome of one NSDP scan sweep."""
+
+    data: dict[str, dict]
+    """hostname -> NSDP doc: fresh responses merged over the baseline."""
+
+    queried: tuple[str, ...]
+    """Hostnames a query was sent to this sweep."""
+
+    responded: tuple[str, ...]
+    """Hostnames that answered this sweep."""
+
+
 def scan_nsdp(
     hosts: list[Host],
     baseline: dict[str, dict] | None,
     *,
     verbose: bool = False,
-) -> dict[str, dict]:
+    last_changed: dict[str, str] | None = None,
+) -> NSDPScanResult:
     """Scan Netgear switches via NSDP unicast queries.
 
     Queries each known Netgear switch by IP address using the NSDP
@@ -112,11 +126,16 @@ def scan_nsdp(
         baseline: Last-known NSDP data (from the DiscoveryDB).  Fresh
             results are merged over it; the caller persists the result.
         verbose: Print progress to stderr.
+        last_changed: hostname -> ISO timestamp of each switch's last
+            data change (DiscoveryDB.nsdp_last_changed), reported on
+            the "no response" line so staleness is visible.
 
     Returns:
-        Mapping of hostname to NSDP data dict.
+        NSDPScanResult: merged data plus which switches were queried
+        and which responded this sweep.
     """
     nsdp_data = dict(baseline or {})
+    responded: list[str] = []
 
     # Build list of (hostname, ip) pairs for switches to query
     switches_to_query: list[tuple[str, str]] = []
@@ -127,10 +146,12 @@ def scan_nsdp(
             continue
         switches_to_query.append((host.hostname, str(host.first_ipv4)))
 
+    queried = tuple(hostname for hostname, _ip in switches_to_query)
+
     if not switches_to_query:
         if verbose:
             print("No Netgear switches to scan.", file=sys.stderr)
-        return nsdp_data
+        return NSDPScanResult(nsdp_data, queried, ())
 
     if verbose:
         print(f"Scanning {len(switches_to_query)} Netgear switch(es) via NSDP...", file=sys.stderr)
@@ -147,7 +168,12 @@ def scan_nsdp(
                 device = client.query_ip(ip, timeout=2.0)
                 if device is None:
                     if verbose:
-                        print("no response", file=sys.stderr)
+                        when = (last_changed or {}).get(hostname)
+                        note = (
+                            f"data last changed {when.split('T')[0]}"
+                            if when else "no prior data"
+                        )
+                        print(f"no response ({note})", file=sys.stderr)
                     continue
 
                 entry: dict = {
@@ -202,6 +228,7 @@ def scan_nsdp(
                     entry["loop_detection"] = device.loop_detection
 
                 nsdp_data[hostname] = entry
+                responded.append(hostname)
                 if verbose:
                     fw = device.firmware_version or "?"
                     print(f"{device.model} fw={fw}", file=sys.stderr)
@@ -216,7 +243,7 @@ def scan_nsdp(
     except OSError as e:
         print(f"Error during NSDP scan: {e}", file=sys.stderr)
 
-    return nsdp_data
+    return NSDPScanResult(nsdp_data, queried, tuple(responded))
 
 
 def enrich_hosts_with_nsdp(

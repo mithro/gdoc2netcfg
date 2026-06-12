@@ -16,7 +16,8 @@ site_octet = 1  # Second octet: 10.1.X.X for Welland, 10.2.X.X for Monarto
 # all_sites (valid "Site" values) is read from the Sites sheet — see [sheets] below.
 
 [sheets]
-# Google Sheets published CSV URLs for each data source (read-only, no auth required)
+# Read sources: published CSV URLs per data source (read-only, no auth).
+# Write access (spreadsheet_url + credentials below) is separate.
 network = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=1476589425&single=true&output=csv"
 iot = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=1695016218&single=true&output=csv"
 vlan_allocations = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=208407908&single=true&output=csv"

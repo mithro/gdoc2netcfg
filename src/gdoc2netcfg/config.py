@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 from gdoc2netcfg.models.network import IPv6Prefix, Site
@@ -160,11 +160,11 @@ def _build_site(data: dict) -> Site:
     )
 
 
-# [sheets] keys that are settings, not sheet-name→URL pairs.
-_RESERVED_SHEET_KEYS = frozenset({
-    "spreadsheet_url", "credentials_file", "token_cache",
-    "service_account_file",
-})
+# [sheets] keys that are settings, not sheet-name→URL pairs — derived
+# from SheetsConfig so a new field can never be misparsed as a URL.
+_RESERVED_SHEET_KEYS = frozenset(
+    f.name for f in fields(SheetsConfig)
+) | {"spreadsheet_url"}
 
 
 def _build_sheets(data: dict) -> list[SheetConfig]:
@@ -181,15 +181,17 @@ def _build_sheets(data: dict) -> list[SheetConfig]:
 
 
 def _build_sheets_config(data: dict) -> SheetsConfig:
-    """Build sheet write-access credentials from the [sheets] section."""
+    """Build sheet write-access credentials from the [sheets] section.
+
+    SheetsConfig's dataclass defaults are the single source of truth —
+    only keys present in the TOML override them.
+    """
     section = data.get("sheets", {})
-    return SheetsConfig(
-        credentials_file=section.get("credentials_file", ""),
-        token_cache=section.get(
-            "token_cache", ".cache/google_oauth_token.json",
-        ),
-        service_account_file=section.get("service_account_file", ""),
-    )
+    return SheetsConfig(**{
+        f.name: section[f.name]
+        for f in fields(SheetsConfig)
+        if f.name in section
+    })
 
 
 def _build_generators(data: dict) -> dict[str, GeneratorConfig]:

@@ -2119,6 +2119,14 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
     """Write cached Zigbee data to the Google Sheet."""
     config = _load_config(args)
 
+    if not config.zigbee.sites:
+        print(
+            "Error: No zigbee sites configured in gdoc2netcfg.toml "
+            "([[zigbee.sites]])",
+            file=sys.stderr,
+        )
+        return 1
+
     if not config.spreadsheet_url:
         print(
             "Error: spreadsheet_url must be configured in the [sheets] section of "
@@ -2140,30 +2148,33 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
         )
         return 1
 
-    from gdoc2netcfg.supplements.zigbee import (
-        ZigbeeBridgeInfo,
-        ZigbeeDevice,
-        best_device_view,
-    )
+    from gdoc2netcfg.supplements.zigbee import ZigbeeBridgeInfo, ZigbeeDevice
     from gdoc2netcfg.supplements.zigbee_sheet import update_zigbee_sheet
 
     zigbee_data = _load_latest_from_db(config, "load_latest_zigbee") or {}
 
-    # The sheet has one row per IEEE address, but a device listed by
-    # two sites (moved without removing the old Z2M entry) has a view
-    # in each site's document — project to the best view per device.
+    # Each site manages only its own rows: project every configured
+    # site's registry view directly (one row per site per device).
+    # DB data for a site no longer configured (stale until the next
+    # scan tombstones it) is skipped loudly.
+    configured = {site_cfg.name for site_cfg in config.zigbee.sites}
     bridge_infos: dict[str, ZigbeeBridgeInfo | None] = {}
-    views_by_ieee: dict[str, list[dict]] = {}
+    all_devices: list[ZigbeeDevice] = []
     for site_name, doc in sorted(zigbee_data.items()):
+        if site_name not in configured:
+            print(
+                f"Skipping site '{site_name}': in the database but not in "
+                "this run's configured [[zigbee.sites]]",
+                file=sys.stderr,
+            )
+            continue
         bridge_infos[site_name] = (
             ZigbeeBridgeInfo(**doc["bridge"]) if doc["bridge"] else None
         )
-        for ieee, device in doc["devices"].items():
-            views_by_ieee.setdefault(ieee, []).append(device)
-    all_devices: list[ZigbeeDevice] = [
-        ZigbeeDevice(**best_device_view(views))
-        for _ieee, views in sorted(views_by_ieee.items())
-    ]
+        all_devices.extend(
+            ZigbeeDevice(**device)
+            for _ieee, device in sorted(doc["devices"].items())
+        )
 
     for site_cfg in config.zigbee.sites:
         if site_cfg.name not in zigbee_data:

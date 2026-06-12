@@ -209,9 +209,9 @@ class TestZigbeeUpdateSheet:
         assert [d.ieee_address for d in devices] == ["0x01"]
         assert bridge_infos["welland"].coordinator_type == "ConBee II"
 
-    def test_update_sheet_projects_one_view_per_device(self, tmp_path):
-        """A device in both sites' registries becomes ONE sheet row,
-        using the best view (online beats offline)."""
+    def test_update_sheet_one_row_per_site(self, tmp_path):
+        """A device in both configured sites' registries becomes one
+        sheet row PER SITE — no cross-site projection."""
         config = _config(tmp_path, "welland", "monarto")
         _seed_db(config, {
             "welland": _site_doc(
@@ -228,14 +228,48 @@ class TestZigbeeUpdateSheet:
         with patch("gdoc2netcfg.cli.main._load_config", return_value=config), \
              patch(
                  "gdoc2netcfg.supplements.zigbee_sheet.update_zigbee_sheet",
-                 return_value=1,
+                 return_value=2,
              ) as mock_update:
             rc = cmd_zigbee_update_sheet(args)
 
         assert rc == 0
         _, devices, _bridge_infos = mock_update.call_args.args[:3]
-        assert len(devices) == 1
-        assert devices[0].site == "monarto"  # the online view won
+        assert sorted((d.site, d.ieee_address) for d in devices) == [
+            ("monarto", "0x01"), ("welland", "0x01"),
+        ]
+
+    def test_update_sheet_skips_unconfigured_site(self, tmp_path, capsys):
+        """DB data for a site no longer in config (stale, pre-tombstone)
+        contributes no rows."""
+        config = _config(tmp_path, "welland")
+        _seed_db(config, {
+            "welland": _site_doc("welland", _device("welland", "0x01")),
+            "monarto": _site_doc("monarto", _device("monarto", "0x02")),
+        })
+        args = argparse.Namespace(config=None, dry_run=True)
+
+        with patch("gdoc2netcfg.cli.main._load_config", return_value=config), \
+             patch(
+                 "gdoc2netcfg.supplements.zigbee_sheet.update_zigbee_sheet",
+                 return_value=1,
+             ) as mock_update:
+            rc = cmd_zigbee_update_sheet(args)
+
+        assert rc == 0
+        _, devices, _ = mock_update.call_args.args[:3]
+        assert [d.ieee_address for d in devices] == ["0x01"]
+        assert "monarto" in capsys.readouterr().err
+
+    def test_update_sheet_no_sites_configured_errors(self, tmp_path, capsys):
+        config = _config(tmp_path)
+        config.zigbee.sites = []
+        args = argparse.Namespace(config=None, dry_run=True)
+
+        with patch("gdoc2netcfg.cli.main._load_config", return_value=config):
+            rc = cmd_zigbee_update_sheet(args)
+
+        assert rc == 1
+        assert "No zigbee sites configured" in capsys.readouterr().err
 
     def test_update_sheet_without_data_errors(self, tmp_path, capsys):
         config = _config(tmp_path)

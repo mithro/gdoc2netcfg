@@ -230,7 +230,16 @@ def parse_discovery_response(packet: NSDPPacket) -> NSDPDevice:
                 raise ValueError("PORT_COUNT tag has empty value")
             port_count = val[0]
         elif tag == Tag.SERIAL_NUMBER:
-            serial_number = val.decode("ascii", errors="replace").rstrip("\x00")
+            # Wire format (captured live from GS110EMX): one prefix byte
+            # 0x01, then the ASCII serial.
+            if not val:
+                raise ValueError("SERIAL_NUMBER tag has empty value")
+            if val[0] != 0x01:
+                raise ValueError(
+                    f"SERIAL_NUMBER tag has unexpected prefix byte "
+                    f"0x{val[0]:02X} (expected 0x01): {val!r}"
+                )
+            serial_number = val[1:].decode("ascii").rstrip("\x00")
         elif tag == Tag.PORT_STATUS:
             port_statuses.append(parse_port_status(val))
         elif tag == Tag.PORT_STATISTICS:

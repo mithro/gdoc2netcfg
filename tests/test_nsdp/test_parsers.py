@@ -137,6 +137,43 @@ class TestParseDiscoveryResponse:
         assert device.port_status[1].speed is LinkSpeed.DOWN
 
 
+class TestParseSerialNumber:
+    """Serial number TLV (0x7800): one 0x01 prefix byte, then ASCII serial.
+
+    Wire format captured live from a GS110EMX (raw=b'\\x0153H6025EA0083').
+    """
+
+    def _packet_with_serial(self, raw: bytes) -> NSDPPacket:
+        pkt = NSDPPacket(
+            op=Op.READ_RESPONSE,
+            client_mac=b"\x00" * 6,
+            server_mac=b"\x00\x09\x5b\xaa\xbb\xcc",
+        )
+        pkt.add_tlv(Tag.MODEL, b"GS110EMX")
+        pkt.add_tlv(Tag.SERIAL_NUMBER, raw)
+        return pkt
+
+    def test_prefix_byte_stripped(self):
+        pkt = self._packet_with_serial(b"\x0153H6025EA0083")
+        device = parse_discovery_response(pkt)
+        assert device.serial_number == "53H6025EA0083"
+
+    def test_unexpected_prefix_raises(self):
+        pkt = self._packet_with_serial(b"\x0253H6025EA0083")
+        with pytest.raises(ValueError, match="prefix byte 0x02"):
+            parse_discovery_response(pkt)
+
+    def test_empty_value_raises(self):
+        pkt = self._packet_with_serial(b"")
+        with pytest.raises(ValueError, match="SERIAL_NUMBER"):
+            parse_discovery_response(pkt)
+
+    def test_non_ascii_serial_raises(self):
+        pkt = self._packet_with_serial(b"\x0153H\xc8\x84A0083")
+        with pytest.raises(ValueError):
+            parse_discovery_response(pkt)
+
+
 class TestParsePortQoS:
     def test_valid(self):
         result = parse_port_qos(b"\x01\x08")

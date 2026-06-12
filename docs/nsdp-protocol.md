@@ -74,7 +74,7 @@ Every packet ends with tag=0xFFFF, length=0x0000 (4 bytes: FF FF 00 00).
 | 0x000D   | firmware_ver_1   | string  | R   | Firmware version (slot 1) |
 | 0x000E   | firmware_ver_2   | string  | R   | Firmware version (slot 2) |
 | 0x6000   | port_count       | 1 byte  | R   | Number of ports |
-| 0x7800   | serial_number    | string  | R   | Device serial number |
+| 0x7800   | serial_number    | 1 byte + string | R | Device serial number: one prefix byte `0x01`, then the ASCII serial (observed on GS110EMX) |
 
 ### Port Information
 

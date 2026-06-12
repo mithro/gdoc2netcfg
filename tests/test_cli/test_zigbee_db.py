@@ -40,7 +40,6 @@ def _config(tmp_path, *site_names: str) -> PipelineConfig:
                 ZigbeeSiteConfig(name=name, mqtt_host=f"mqtt.{name}.example")
                 for name in (site_names or ("welland",))
             ],
-            credentials_file="client_secret.json",
         ),
     )
 

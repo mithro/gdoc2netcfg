@@ -109,3 +109,12 @@ domain = "test.example.com"
         assert config.sheets_config.credentials_file == ""
         assert config.sheets_config.token_cache == ".cache/google_oauth_token.json"
         assert config.sheets_config.service_account_file == ""
+
+    def test_zigbee_config_has_no_credential_fields(self):
+        import dataclasses
+
+        from gdoc2netcfg.config import ZigbeeConfig
+        names = {f.name for f in dataclasses.fields(ZigbeeConfig)}
+        assert "credentials_file" not in names
+        assert "token_cache" not in names
+        assert "service_account_file" not in names

@@ -80,15 +80,12 @@ class ZigbeeSiteConfig:
 class ZigbeeConfig:
     """Configuration for Zigbee2MQTT device scanning and sheet updates.
 
-    Supports multiple sites (each with its own MQTT broker).
-    Google Sheet credentials can be OAuth2 (default) or service account.
+    Supports multiple sites (each with its own MQTT broker).  Sheet
+    credentials live in SheetsConfig ([sheets] section).
     """
 
     sites: list[ZigbeeSiteConfig] = field(default_factory=list)
     sheet_name: str = "Zigbee Info"
-    credentials_file: str = ""      # OAuth2 client_secret.json path
-    token_cache: str = ".cache/google_oauth_token.json"
-    service_account_file: str = ""  # Alternative: service account JSON key path
 
 
 @dataclass
@@ -247,9 +244,6 @@ def _build_zigbee(data: dict) -> ZigbeeConfig:
     return ZigbeeConfig(
         sites=sites,
         sheet_name=section.get("sheet_name", "Zigbee Info"),
-        credentials_file=section.get("credentials_file", ""),
-        token_cache=section.get("token_cache", ".cache/google_oauth_token.json"),
-        service_account_file=section.get("service_account_file", ""),
     )
 
 

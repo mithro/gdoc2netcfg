@@ -255,7 +255,7 @@ class TestErrors:
 
     def test_missing_site_column_raises(self):
         header = [c for c in HEADER if c != "Site"]
-        with pytest.raises(RuntimeError, match="'Site' not found"):
+        with pytest.raises(RuntimeError, match="does not match the expected layout"):
             _run(_config("welland"), [_device("welland", "0x01")], [header])
 
     def test_dry_run_writes_nothing(self):
@@ -270,5 +270,13 @@ class TestErrors:
     def test_reordered_columns_raise(self):
         header = list(HEADER)
         header[0], header[1] = header[1], header[0]  # swap Site and Type
-        with pytest.raises(RuntimeError, match="layout has changed"):
+        with pytest.raises(RuntimeError, match="does not match the expected layout"):
+            _run(_config("welland"), [_device("welland", "0x01")], [header])
+
+    def test_inner_column_reorder_raises(self):
+        """A reorder confined to columns C-H (the old anchors untouched)
+        must still refuse to write — it would corrupt column G serials."""
+        header = list(HEADER)
+        header[3], header[6] = header[6], header[3]  # swap Description and the serial column
+        with pytest.raises(RuntimeError, match="does not match the expected layout"):
             _run(_config("welland"), [_device("welland", "0x01")], [header])

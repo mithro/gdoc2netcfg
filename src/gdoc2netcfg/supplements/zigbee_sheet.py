@@ -40,6 +40,14 @@ _SITE_COL = "Site"
 # preserved from the sheet on updates, left blank for new rows.
 _UNNAMED_COL_IDX = 6
 
+# The full header layout that _device_to_row produces and updates
+# overwrite (A..K).  Writes refuse to run against anything else —
+# a reordered or renamed sheet would otherwise be silently corrupted.
+_EXPECTED_HEADER = [
+    "Site", "Type", "Entity Name", "Description", "Friendly Name",
+    "State", "", "Model", "IEEE Address", "Power Source", "Connected Via",
+]
+
 
 def _device_type_label(device: ZigbeeDevice) -> str:
     """Derive a human-readable device type from Z2M model information.
@@ -134,30 +142,15 @@ def update_zigbee_sheet(
     header = all_values[0]
     data_rows = all_values[1:]
 
-    for col in (_SITE_COL, "Type", _IEEE_COL):
-        if col not in header:
-            raise RuntimeError(
-                f"Column '{col}' not found in sheet header: {header}"
-            )
+    if header[: len(_EXPECTED_HEADER)] != _EXPECTED_HEADER:
+        raise RuntimeError(
+            "Sheet header does not match the expected layout — refusing "
+            f"to write.\n  expected: {_EXPECTED_HEADER}\n  found:    "
+            f"{header[: len(_EXPECTED_HEADER)]}"
+        )
     site_col_idx = header.index(_SITE_COL)
     type_col_idx = header.index("Type")
     ieee_col_idx = header.index(_IEEE_COL)
-
-    # Updates write the fixed A..K layout produced by _device_to_row,
-    # so the named columns must sit where that layout puts them —
-    # otherwise a reordered sheet would be silently corrupted.
-    expected_positions = {
-        _SITE_COL: (site_col_idx, 0),
-        "Type": (type_col_idx, 1),
-        _IEEE_COL: (ieee_col_idx, 8),
-    }
-    for col, (actual, expected) in expected_positions.items():
-        if actual != expected:
-            raise RuntimeError(
-                f"Column '{col}' is at position {actual}, expected "
-                f"{expected} — the sheet layout has changed; refusing "
-                f"to write. Header: {header}"
-            )
 
     def _cell(row: list[str], idx: int) -> str:
         return row[idx].strip() if idx < len(row) else ""

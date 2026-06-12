@@ -134,14 +134,30 @@ def update_zigbee_sheet(
     header = all_values[0]
     data_rows = all_values[1:]
 
-    for col in (_SITE_COL, _IEEE_COL):
+    for col in (_SITE_COL, "Type", _IEEE_COL):
         if col not in header:
             raise RuntimeError(
                 f"Column '{col}' not found in sheet header: {header}"
             )
     site_col_idx = header.index(_SITE_COL)
+    type_col_idx = header.index("Type")
     ieee_col_idx = header.index(_IEEE_COL)
-    type_col_idx = header.index("Type") if "Type" in header else 1
+
+    # Updates write the fixed A..K layout produced by _device_to_row,
+    # so the named columns must sit where that layout puts them —
+    # otherwise a reordered sheet would be silently corrupted.
+    expected_positions = {
+        _SITE_COL: (site_col_idx, 0),
+        "Type": (type_col_idx, 1),
+        _IEEE_COL: (ieee_col_idx, 8),
+    }
+    for col, (actual, expected) in expected_positions.items():
+        if actual != expected:
+            raise RuntimeError(
+                f"Column '{col}' is at position {actual}, expected "
+                f"{expected} — the sheet layout has changed; refusing "
+                f"to write. Header: {header}"
+            )
 
     def _cell(row: list[str], idx: int) -> str:
         return row[idx].strip() if idx < len(row) else ""

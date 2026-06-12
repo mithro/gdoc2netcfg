@@ -166,6 +166,58 @@ class TestPerSiteKeying:
         assert ws.batch_updates == []
         assert ws.appended == []
 
+    def test_multi_site_run_mixes_update_and_append(self):
+        """A run configured with both sites updates one site's stale row
+        and appends the other's missing row in the same pass."""
+        rows = [HEADER, _row("welland", "0x01", cells={5: "Offline"})]
+        written, ws = _run(
+            _config("welland", "monarto"),
+            [_device("welland", "0x01"), _device("monarto", "0x01")],
+            rows,
+        )
+        assert written == 2
+        assert len(ws.batch_updates) == 1
+        assert ws.batch_updates[0]["values"][0][0] == "welland"
+        assert len(ws.appended) == 1
+        assert ws.appended[0][0] == "monarto"
+
+    def test_update_preserves_col_g_and_existing_type(self):
+        """Hand-maintained column G survives an update, and an
+        unrecognised model falls back to the sheet's existing Type."""
+        row = _row("welland", "0x01", cells={1: "Custom Type", 5: "Offline", 6: "serial-123"})
+        rows = [HEADER, row]
+        device = _device(
+            "welland", "0x01",
+            model="Mystery Gadget 3000", model_id="MG3000",
+        )
+        written, ws = _run(_config("welland"), [device], rows)
+        assert written == 1
+        new_row = ws.batch_updates[0]["values"][0]
+        assert new_row[6] == "serial-123"      # column G preserved
+        assert new_row[1] == "Custom Type"     # Type fallback to sheet value
+        assert new_row[7] == "MG3000"          # model_id written
+
+    def test_connected_via_uses_bridge_info(self):
+        """A real bridge info renders 'coordinator (site)' in column K."""
+        from gdoc2netcfg.supplements.zigbee import ZigbeeBridgeInfo
+
+        bridge = ZigbeeBridgeInfo(
+            site="welland", z2m_version="1.38.0",
+            coordinator_ieee="0x00aa", coordinator_type="ConBee II",
+            channel=15, pan_id="0x1a62",
+        )
+        ws = FakeWorksheet([HEADER])
+        with patch(
+            "gdoc2netcfg.supplements.zigbee_sheet.get_gspread_client",
+            return_value=FakeClient(ws),
+        ):
+            written = update_zigbee_sheet(
+                _config("welland"), [_device("welland", "0x01")],
+                {"welland": bridge}, verbose=False,
+            )
+        assert written == 1
+        assert ws.appended[0][10] == "ConBee II (welland)"
+
 
 class TestWarnings:
     def test_duplicate_in_scope_rows_warns_first_wins(self, capsys):
@@ -214,3 +266,9 @@ class TestErrors:
         )
         assert written == 1
         assert ws.appended == [] and ws.batch_updates == []
+
+    def test_reordered_columns_raise(self):
+        header = list(HEADER)
+        header[0], header[1] = header[1], header[0]  # swap Site and Type
+        with pytest.raises(RuntimeError, match="layout has changed"):
+            _run(_config("welland"), [_device("welland", "0x01")], [header])

@@ -256,9 +256,10 @@ class TestZigbeeUpdateSheet:
             rc = cmd_zigbee_update_sheet(args)
 
         assert rc == 0
-        _, devices, _ = mock_update.call_args.args[:3]
+        _, devices, bridge_infos = mock_update.call_args.args[:3]
         assert [d.ieee_address for d in devices] == ["0x01"]
-        assert "monarto" in capsys.readouterr().err
+        assert "monarto" not in bridge_infos
+        assert "Skipping site 'monarto'" in capsys.readouterr().err
 
     def test_update_sheet_no_sites_configured_errors(self, tmp_path, capsys):
         config = _config(tmp_path)

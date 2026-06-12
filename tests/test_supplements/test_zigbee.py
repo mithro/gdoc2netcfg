@@ -18,7 +18,6 @@ from gdoc2netcfg.supplements.zigbee import (
     ZigbeeBridgeInfo,
     ZigbeeDevice,
     ZigbeeScanError,
-    best_device_view,
     raise_for_zigbee_errors,
     scan_zigbee,
 )
@@ -182,33 +181,6 @@ class TestScanZigbee:
         assert data == {}
         assert len(errors) == 1
 
-
-class TestBestDeviceView:
-    """The one-view-per-IEEE projection used by the sheet update."""
-
-    def test_online_wins(self):
-        offline = asdict(_device("welland", "0x01", availability="offline",
-                                 last_seen=9000))
-        online = asdict(_device("monarto", "0x01", availability="online",
-                                last_seen=100))
-        assert best_device_view([offline, online])["site"] == "monarto"
-        assert best_device_view([online, offline])["site"] == "monarto"
-
-    def test_newest_last_seen_wins_when_both_offline(self):
-        older = asdict(_device("welland", "0x01", availability="offline",
-                               last_seen=100))
-        newer = asdict(_device("monarto", "0x01", availability="offline",
-                               last_seen=9000))
-        assert best_device_view([older, newer])["site"] == "monarto"
-        assert best_device_view([newer, older])["site"] == "monarto"
-
-    def test_single_view(self):
-        view = asdict(_device("welland", "0x01"))
-        assert best_device_view([view]) == view
-
-    def test_no_views_fails_loud(self):
-        with pytest.raises(ValueError, match="no views"):
-            best_device_view([])
 
 
 class TestRaiseForZigbeeErrors:

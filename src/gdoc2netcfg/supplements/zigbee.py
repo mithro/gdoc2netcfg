@@ -296,8 +296,7 @@ def scan_zigbee(
     Baseline entries for sites no longer in the config are dropped
     (the save tombstones them); a device listed by two sites (moved
     between sites without removing the old registry entry) keeps both
-    sites' views — consumers needing one view per device pick via
-    best_device_view.
+    sites' views — each site's sheet run projects its own view.
     """
     if not zigbee_config.sites:
         raise RuntimeError("No zigbee sites configured in gdoc2netcfg.toml")
@@ -330,26 +329,6 @@ def scan_zigbee(
 
     return data, errors
 
-
-def best_device_view(views: list[dict]) -> dict:
-    """Pick the authoritative view of a device listed by several sites.
-
-    The store keeps every site's registry view of a device; consumers
-    that need exactly one (the Google Sheet has one row per IEEE
-    address) prefer the view that is online, then the most recently
-    seen, then the last in *views* order.
-    """
-    if not views:
-        raise ValueError("best_device_view called with no views")
-
-    def preference(entry: dict) -> tuple:
-        return (entry["availability"] == "online", entry["last_seen"] or 0)
-
-    best = views[0]
-    for view in views[1:]:
-        if preference(view) >= preference(best):
-            best = view
-    return best
 
 
 def raise_for_zigbee_errors(errors: list[str]) -> None:

@@ -144,7 +144,7 @@ The topology generator (`topology.py`) produces a Graphviz DOT diagram of the ph
 
 `gdoc2netcfg.toml` (gitignored, site-specific) defines site topology (domain, VLANs, IPv6 prefixes, network subdomains), sheet URLs, cache directory, and generator settings. Loaded by `config.py` into a `PipelineConfig` dataclass containing a `Site` object.
 
-`gdoc2netcfg.toml.example` is the tracked template with Welland defaults. Each site copies it to `gdoc2netcfg.toml` and edits the `[site]`, `[ipv6]`, and `[generators] enabled` sections. This avoids merge conflicts when deploying to Monarto.
+`gdoc2netcfg.toml.example` is the tracked template with Welland defaults. Each site copies it to `gdoc2netcfg.toml` and edits the `[site]`, `[ipv6]`, `[generators] enabled`, and `[[zigbee.sites]]` sections. This avoids merge conflicts when deploying to Monarto.
 
 ### SQLite Storage
 
@@ -265,7 +265,7 @@ If a site doesn't have a local config yet, create one after pulling:
 
 ```bash
 cp gdoc2netcfg.toml.example gdoc2netcfg.toml
-# Edit [site], [ipv6], and [generators] enabled for this site
+# Edit [site], [ipv6], [generators] enabled, and [[zigbee.sites]] for this site
 ```
 
 Note: `uv` on monarto is at `~/.local/bin/uv` (not in PATH for non-interactive shells).

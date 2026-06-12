@@ -100,16 +100,11 @@ url = "http://ha.welland.mithis.com:8123"
 [zigbee]
 sheet_name = "Zigbee Info"
 
+# List ONLY this site's broker — each site scans its own Z2M instance
+# and manages only its own rows in the Zigbee sheet.
 [[zigbee.sites]]
 name = "welland"
 mqtt_host = "ha.welland.mithis.com"
-mqtt_port = 1883
-mqtt_user = ""
-mqtt_password = ""
-
-[[zigbee.sites]]
-name = "monarto"
-mqtt_host = "ha.monarto.mithis.com"
 mqtt_port = 1883
 mqtt_user = ""
 mqtt_password = ""

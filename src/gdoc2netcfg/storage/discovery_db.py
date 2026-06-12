@@ -1351,6 +1351,23 @@ class DiscoveryDB(BaseDatabase):
             return None
         return self._latest_nsdp()
 
+    def nsdp_last_changed(self) -> dict[str, str]:
+        """hostname -> started_at of the scan that last changed its data.
+
+        Delta storage only writes rows for a switch when its data
+        changes, so this is the last *change*, not necessarily the last
+        successful response.
+        """
+        result: dict[str, str] = {}
+        for hostname, scan_id in self._latest_entity_scans(
+            "nsdp_switches", "hostname",
+        ).items():
+            row = self._conn.execute(
+                "SELECT started_at FROM scans WHERE id = ?", (scan_id,),
+            ).fetchone()
+            result[hostname] = row[0]
+        return result
+
     def _latest_nsdp(self) -> dict[str, dict]:
         result = {}
         scalar_cols = ", ".join(col for _k, col, _t in _NSDP_SCALAR_FIELDS)

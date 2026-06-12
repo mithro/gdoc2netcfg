@@ -732,6 +732,40 @@ class TestNSDPShapes:
             db.save_nsdp(s, {"sw1": doc})
 
 
+class TestNSDPLastChanged:
+    def _save(self, db: DiscoveryDB, data: dict) -> int:
+        s = db.begin_scan("nsdp")
+        changed = db.save_nsdp(s, data)
+        db.finish_scan(s, host_count=len(data), changed_count=changed)
+        return s
+
+    def _scan_time(self, db: DiscoveryDB, scan_id: int) -> str:
+        row = db._conn.execute(
+            "SELECT started_at FROM scans WHERE id = ?", (scan_id,),
+        ).fetchone()
+        return row[0]
+
+    def test_empty_db(self, db: DiscoveryDB):
+        assert db.nsdp_last_changed() == {}
+
+    def test_tracks_per_switch_change_scans(self, db: DiscoveryDB):
+        """Each switch maps to the time of the scan that last changed it."""
+        doc1 = {"model": "GS110EMX", "mac": "AA:BB:CC:DD:EE:01"}
+        doc2 = {"model": "GS110EMX", "mac": "AA:BB:CC:DD:EE:02"}
+        s1 = self._save(db, {"sw1": doc1, "sw2": doc2})
+
+        # Second scan: only sw1 changes; sw2's data is identical.
+        s2 = self._save(
+            db,
+            {"sw1": {**doc1, "firmware_version": "2.0"}, "sw2": doc2},
+        )
+
+        assert db.nsdp_last_changed() == {
+            "sw1": self._scan_time(db, s2),
+            "sw2": self._scan_time(db, s1),
+        }
+
+
 class TestTasmotaShapes:
     def test_unknown_keys_preserved(self, db: DiscoveryDB):
         data = {

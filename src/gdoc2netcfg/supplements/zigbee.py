@@ -330,7 +330,6 @@ def scan_zigbee(
     return data, errors
 
 
-
 def raise_for_zigbee_errors(errors: list[str]) -> None:
     """Fail loud if a zigbee scan reported per-site errors.
 

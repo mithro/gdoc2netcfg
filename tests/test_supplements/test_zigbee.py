@@ -182,7 +182,6 @@ class TestScanZigbee:
         assert len(errors) == 1
 
 
-
 class TestRaiseForZigbeeErrors:
     def test_no_errors_is_noop(self):
         raise_for_zigbee_errors([])

@@ -33,6 +33,12 @@ class TestLoadConfig:
         assert "iot" in sheet_names
         assert "vlan_allocations" in sheet_names
 
+        # Reserved settings keys must not leak into the sheet-URL list,
+        # and the example's [sheets] creds must parse into SheetsConfig.
+        assert set(sheet_names) == {"network", "iot", "vlan_allocations", "sites"}
+        assert config.sheets_config.credentials_file == ""
+        assert config.sheets_config.token_cache == ".cache/google_oauth_token.json"
+
         # Generators
         assert "dnsmasq_internal" in config.generators
         assert config.generators["dnsmasq_internal"].output_dir == "internal"

@@ -2157,11 +2157,11 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
     # site's registry view directly (one row per site per device).
     # DB data for a site no longer configured (stale until the next
     # scan tombstones it) is skipped loudly.
-    configured = {site_cfg.name for site_cfg in config.zigbee.sites}
+    configured = {site_cfg.name.strip().lower() for site_cfg in config.zigbee.sites}
     bridge_infos: dict[str, ZigbeeBridgeInfo | None] = {}
     all_devices: list[ZigbeeDevice] = []
     for site_name, doc in sorted(zigbee_data.items()):
-        if site_name not in configured:
+        if site_name.strip().lower() not in configured:
             print(
                 f"Skipping site '{site_name}': in the database but not in "
                 "this run's configured [[zigbee.sites]]",

@@ -16,24 +16,18 @@ Column layout (from live sheet, gid=283200403):
   I: IEEE Address    <- primary key for upserts
   J: Power Source
   K: Connected Via
-
-OAuth2: provide credentials_file (client_secret.json from Google Cloud Console).
-        Token is cached to token_cache and auto-refreshed on expiry.
-Service account: provide service_account_file instead.
 """
 
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 from typing import TYPE_CHECKING
 
+from gdoc2netcfg.utils.gsheets import get_gspread_client
+
 if TYPE_CHECKING:
-    from gdoc2netcfg.config import PipelineConfig, ZigbeeConfig
+    from gdoc2netcfg.config import PipelineConfig
     from gdoc2netcfg.supplements.zigbee import ZigbeeBridgeInfo, ZigbeeDevice
-
-
-_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 # Expected column header for the primary key.  Must exist in the sheet.
 _IEEE_COL = "IEEE Address"
@@ -99,66 +93,6 @@ def _device_to_row(
     ]
 
 
-def get_gspread_client(zigbee_config: ZigbeeConfig) -> object:
-    """Return an authenticated gspread Client.
-
-    Tries service_account_file first (non-interactive), then OAuth2
-    (opens a browser on first use; token is cached for subsequent runs).
-    """
-    try:
-        import gspread
-        from google.auth.transport.requests import Request
-        from google.oauth2.credentials import Credentials
-    except ImportError as exc:
-        raise RuntimeError(
-            "Google Sheets dependencies not installed. "
-            "Install with: uv sync  (gspread and google-auth-oauthlib are in pyproject.toml)"
-        ) from exc
-
-    if zigbee_config.service_account_file:
-        sa_path = Path(zigbee_config.service_account_file).expanduser()
-        if not sa_path.exists():
-            raise RuntimeError(
-                f"Service account file not found: {sa_path}"
-            )
-        from google.oauth2.service_account import Credentials as SACredentials
-        creds = SACredentials.from_service_account_file(str(sa_path), scopes=_SCOPES)
-        return gspread.Client(auth=creds)
-
-    credentials_file = zigbee_config.credentials_file
-    if not credentials_file:
-        raise RuntimeError(
-            "No credentials_file or service_account_file configured in "
-            "[zigbee] section of gdoc2netcfg.toml"
-        )
-
-    creds_path = Path(credentials_file).expanduser()
-    if not creds_path.exists():
-        raise RuntimeError(
-            f"OAuth2 credentials file not found: {creds_path}\n"
-            "Download it from Google Cloud Console → APIs & Services → Credentials"
-        )
-
-    token_path = Path(zigbee_config.token_cache).expanduser()
-
-    creds: Credentials | None = None
-    if token_path.exists():
-        creds = Credentials.from_authorized_user_file(str(token_path), _SCOPES)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            from google_auth_oauthlib.flow import InstalledAppFlow
-            flow = InstalledAppFlow.from_client_secrets_file(str(creds_path), _SCOPES)
-            creds = flow.run_local_server(port=0)
-
-        token_path.parent.mkdir(parents=True, exist_ok=True)
-        token_path.write_text(creds.to_json())
-
-    return gspread.Client(auth=creds)
-
-
 def update_zigbee_sheet(
     config: PipelineConfig,
     devices: list[ZigbeeDevice],
@@ -178,7 +112,7 @@ def update_zigbee_sheet(
             "gdoc2netcfg.toml:\n"
             "  spreadsheet_url = \"https://docs.google.com/spreadsheets/d/{ID}/edit\""
         )
-    client = get_gspread_client(zigbee_config)
+    client = get_gspread_client(config.sheets_config)
     sh = client.open_by_url(config.spreadsheet_url)
     ws = sh.worksheet(zigbee_config.sheet_name)
 

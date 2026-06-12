@@ -18,6 +18,7 @@ from gdoc2netcfg.cli.main import (
 from gdoc2netcfg.config import (
     CacheConfig,
     PipelineConfig,
+    SheetsConfig,
     ZigbeeConfig,
     ZigbeeSiteConfig,
 )
@@ -33,6 +34,7 @@ def _config(tmp_path, *site_names: str) -> PipelineConfig:
         site=Site(name="test", domain="test.example.com"),
         spreadsheet_url="https://docs.google.com/spreadsheets/d/x/edit",
         cache=CacheConfig(directory=cache_dir),
+        sheets_config=SheetsConfig(credentials_file="client_secret.json"),
         zigbee=ZigbeeConfig(
             sites=[
                 ZigbeeSiteConfig(name=name, mqtt_host=f"mqtt.{name}.example")

@@ -2129,9 +2129,12 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
         )
         return 1
 
-    if not config.zigbee.credentials_file and not config.zigbee.service_account_file:
+    if (
+        not config.sheets_config.credentials_file
+        and not config.sheets_config.service_account_file
+    ):
         print(
-            "Error: [zigbee] credentials_file or service_account_file must be "
+            "Error: [sheets] credentials_file or service_account_file must be "
             "configured in gdoc2netcfg.toml",
             file=sys.stderr,
         )

@@ -33,6 +33,11 @@ class CacheConfig:
         """Path to the discovery SQLite database."""
         return self.directory / "discovery.db"
 
+    @property
+    def credentials_db_path(self) -> Path:
+        """Path to the root-only credential SQLite database."""
+        return self.directory / "credentials.db"
+
 
 @dataclass
 class GeneratorConfig:

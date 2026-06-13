@@ -124,3 +124,11 @@ domain = "test.example.com"
         assert "credentials_file" not in names
         assert "token_cache" not in names
         assert "service_account_file" not in names
+
+def test_credentials_db_path():
+    from pathlib import Path
+
+    from gdoc2netcfg.config import CacheConfig
+
+    cfg = CacheConfig(directory=Path("/x/.cache"))
+    assert cfg.credentials_db_path == Path("/x/.cache/credentials.db")

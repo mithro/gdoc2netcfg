@@ -168,7 +168,7 @@ Both inherit `BaseDatabase` (`storage/base.py`): DELETE journal mode, schema ver
 - `VLAN`, `Site` — network topology definitions in `models/network.py`, loaded from config + VLAN Allocations sheet
 - `PortLinkStatus`, `PortTrafficStats`, `SwitchData`, `SwitchDataSource` — unified switch data model in `models/switch_data.py`, populated from SNMP or NSDP sources
 
-**Credential columns**: The spreadsheet may include extra columns such as `Password`, `SNMP Community`, `IPMI Username`, `IPMI Password` which are preserved in `Host.extra` and accessible via the `password` CLI command.
+**Credential columns**: The spreadsheet may include extra columns such as `Password`, `SNMP Community`, `IPMI Username`, `IPMI Password`. These are **stripped from the world-readable cache at fetch time** and stored in the root-only `.cache/credentials.db` (see *SQLite Storage*) — they are NOT present in `Host.extra` from the cache. The `password` CLI command merges them transiently from the store onto the matched host before resolving the requested field (and so must run as root). Non-credential extra columns remain in `Host.extra` as normal.
 
 ### NSDP Protocol Library
 

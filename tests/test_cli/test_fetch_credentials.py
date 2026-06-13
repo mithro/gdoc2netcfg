@@ -85,3 +85,35 @@ def test_fetch_creates_credentials_db_0600(fetch_config, monkeypatch):
 
     mode = stat.S_IMODE(os.stat(cache_dir / "credentials.db").st_mode)
     assert oct(mode) == oct(0o600)
+
+
+def test_failed_credential_sheet_fetch_does_not_wipe_store(
+    fetch_config, monkeypatch,
+):
+    """A transient fetch failure must never tombstone existing credentials."""
+    config, cache_dir = fetch_config
+
+    # 1. Successful fetch populates the credential store.
+    def good_fetch(name, url):
+        return SheetData(name=name, csv_text=_fake_network_csv())
+
+    monkeypatch.setattr(
+        "gdoc2netcfg.sources.sheets.fetch_sheet", good_fetch, raising=True,
+    )
+    assert cli.main(["-c", str(config), "fetch"]) == 0
+    with CredentialsDB(cache_dir / "credentials.db", read_only=True) as db:
+        before = db.load_latest_credentials()
+    assert before and any(v == {"Password": "secret1"} for v in before.values())
+
+    # 2. The (only, credential-bearing) sheet now fails to fetch. The store
+    #    must be left exactly as it was — no tombstones, no wipe.
+    def bad_fetch(name, url):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(
+        "gdoc2netcfg.sources.sheets.fetch_sheet", bad_fetch, raising=True,
+    )
+    assert cli.main(["-c", str(config), "fetch"]) == 1  # reports failure
+    with CredentialsDB(cache_dir / "credentials.db", read_only=True) as db:
+        after = db.load_latest_credentials()
+    assert after == before

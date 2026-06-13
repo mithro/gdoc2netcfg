@@ -1,5 +1,7 @@
 # Site-specific config (copy from gdoc2netcfg.toml.example)
 gdoc2netcfg.toml
+# Site-specific secret: Google Sheets service-account key (never commit)
+service_account.json
 
 out/
 internal/

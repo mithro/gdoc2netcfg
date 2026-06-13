@@ -5,22 +5,33 @@ import textwrap
 import pytest
 
 from gdoc2netcfg.cli.main import main
+from gdoc2netcfg.storage.credentials_db import CredentialsDB
 
 
 @pytest.fixture
 def password_config(tmp_path):
-    """Create a config with cached CSV data including credential columns."""
+    """Config with a credential-free CSV cache + a populated credentials.db."""
     cache_dir = tmp_path / ".cache"
     cache_dir.mkdir()
 
-    # CSV with credential extra columns
+    # Credential-free CSV (Password/SNMP/IPMI columns stripped at fetch).
     (cache_dir / "network.csv").write_text(
-        "Machine,MAC Address,IP,Interface,Password,SNMP Community,"
-        "IPMI Username,IPMI Password\n"
-        "switch1,aa:bb:cc:dd:ee:01,10.1.30.1,,sw1pass,public,,\n"
-        "desktop,aa:bb:cc:dd:ee:02,10.1.10.2,,,,admin,hunter2\n"
-        "server1,aa:bb:cc:dd:ee:03,10.1.10.5,,srv1pass,community1,,\n"
+        "Machine,MAC Address,IP,Interface\n"
+        "switch1,aa:bb:cc:dd:ee:01,10.1.30.1,\n"
+        "desktop,aa:bb:cc:dd:ee:02,10.1.10.2,\n"
+        "server1,aa:bb:cc:dd:ee:03,10.1.10.5,\n"
     )
+
+    # Credentials in the root-only store, keyed by hostname.
+    # Derived hostnames for this minimal config are equal to machine names.
+    with CredentialsDB(cache_dir / "credentials.db") as db:
+        s = db.begin_scan("csv_credentials")
+        db.save_credentials(s, {
+            "switch1": {"Password": "sw1pass", "SNMP Community": "public"},
+            "desktop": {"IPMI Username": "admin", "IPMI Password": "hunter2"},
+            "server1": {"Password": "srv1pass", "SNMP Community": "community1"},
+        })
+        db.finish_scan(s, host_count=3, changed_count=5)
 
     config = tmp_path / "gdoc2netcfg.toml"
     config.write_text(textwrap.dedent(f"""\
@@ -193,3 +204,61 @@ class TestPasswordMutuallyExclusive:
                 "-c", str(password_config), "password",
                 "--type", "snmp", "--field", "Password", "switch1",
             ])
+
+
+class TestPasswordStoreErrors:
+    def test_missing_store_fails_loud(self, tmp_path, capsys):
+        # Credential-free cache but NO credentials.db.
+        cache_dir = tmp_path / ".cache"
+        cache_dir.mkdir()
+        (cache_dir / "network.csv").write_text(
+            "Machine,MAC Address,IP,Interface\n"
+            "switch1,aa:bb:cc:dd:ee:01,10.1.30.1,\n"
+        )
+        config = tmp_path / "gdoc2netcfg.toml"
+        config.write_text(textwrap.dedent(f"""\
+            [site]
+            name = "test"
+            domain = "test.example.com"
+            [sheets]
+            network = "https://example.com/not-used"
+            [cache]
+            directory = "{cache_dir}"
+            [ipv6]
+            prefixes = ["2001:db8:1:"]
+            [generators]
+            enabled = []
+        """))
+        result = main(["-c", str(config), "password", "switch1"])
+        assert result == 1
+        assert "fetch" in capsys.readouterr().err.lower()
+
+    def test_field_for_noncredential_column_does_not_need_store(
+        self, tmp_path, capsys,
+    ):
+        # No credentials.db; a non-credential --field still works sudo-free.
+        cache_dir = tmp_path / ".cache"
+        cache_dir.mkdir()
+        (cache_dir / "network.csv").write_text(
+            "Machine,MAC Address,IP,Interface,Serial Number\n"
+            "switch1,aa:bb:cc:dd:ee:01,10.1.30.1,,SN123\n"
+        )
+        config = tmp_path / "gdoc2netcfg.toml"
+        config.write_text(textwrap.dedent(f"""\
+            [site]
+            name = "test"
+            domain = "test.example.com"
+            [sheets]
+            network = "https://example.com/not-used"
+            [cache]
+            directory = "{cache_dir}"
+            [ipv6]
+            prefixes = ["2001:db8:1:"]
+            [generators]
+            enabled = []
+        """))
+        result = main([
+            "-c", str(config), "password", "--field", "Serial Number", "switch1",
+        ])
+        assert result == 0
+        assert "SN123" in capsys.readouterr().out

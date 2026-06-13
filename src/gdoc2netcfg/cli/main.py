@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import sqlite3
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -2306,6 +2307,42 @@ def cmd_password(args: argparse.Namespace) -> int:
 
     best = results[0]
     host = best.host
+
+    # Credentials live in the root-only credentials.db, not the cache.
+    # Only consult it when a credential field is actually requested, so a
+    # --field for a non-credential column stays sudo-free.
+    from gdoc2netcfg.sources.credentials import credential_field_names
+    from gdoc2netcfg.storage.credentials_db import CredentialsDB
+    from gdoc2netcfg.utils.lookup import CREDENTIAL_TYPES
+
+    credential_names = set(credential_field_names())
+    if args.field_name is not None:
+        requested = {args.field_name}
+    elif args.credential_type is not None:
+        requested = set(CREDENTIAL_TYPES.get(args.credential_type, []))
+    else:
+        requested = set(CREDENTIAL_TYPES["password"])
+
+    if requested & credential_names:
+        cred_path = config.cache.credentials_db_path
+        try:
+            with CredentialsDB(cred_path, read_only=True) as cred_db:
+                stored = cred_db.load_latest_credentials() or {}
+        except FileNotFoundError:
+            print(
+                "Error: no credential store at "
+                f"{cred_path}. Run 'gdoc2netcfg fetch' (as root) first.",
+                file=sys.stderr,
+            )
+            return 1
+        except sqlite3.OperationalError:
+            print(
+                "Error: cannot read the credential store "
+                f"{cred_path} — credentials are root-only. Re-run with sudo.",
+                file=sys.stderr,
+            )
+            return 1
+        host.extra.update(stored.get(host.hostname, {}))
 
     cred = get_credential_fields(
         host, args.credential_type, args.field_name,

@@ -162,6 +162,26 @@ def _enrich_all_sites_from_sheet(config, csv_data: list[tuple[str, str]]) -> Non
         print(f"Warning: {config.site.name} TOML/sheet drift — {d}", file=sys.stderr)
 
 
+def _build_hosts_from_csvs(config, csv_data: list[tuple[str, str]]):
+    """Parse cached CSVs and build hosts — the shared fetch/password path.
+
+    Both ``cmd_fetch`` (to key credentials by hostname) and ``cmd_password``
+    (to match a query) MUST build hosts identically, so the credential
+    store's keys line up with lookups.  Skips the vlan_allocations sheet
+    (not device records).  Callers must run ``_enrich_site_from_sheets``
+    first so hostname derivation has VLAN/site data.
+    """
+    from gdoc2netcfg.derivations.host_builder import build_hosts
+    from gdoc2netcfg.sources.parser import parse_csv
+
+    records = []
+    for name, csv_text in csv_data:
+        if name == "vlan_allocations":
+            continue
+        records.extend(parse_csv(csv_text, name))
+    return build_hosts(records, config.site)
+
+
 def _save_to_discovery_db(
     config: PipelineConfig,
     scan_type: str,
@@ -2216,8 +2236,6 @@ def cmd_password(args: argparse.Namespace) -> int:
     """Look up device credentials by hostname, IP, or MAC."""
     config = _load_config(args)
 
-    from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.utils.lookup import (
         available_credential_fields,
         get_credential_fields,
@@ -2227,14 +2245,7 @@ def cmd_password(args: argparse.Namespace) -> int:
 
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
-
-    hosts = build_hosts(all_records, config.site)
+    hosts = _build_hosts_from_csvs(config, csv_data)
 
     results = lookup_host(args.query, hosts)
 

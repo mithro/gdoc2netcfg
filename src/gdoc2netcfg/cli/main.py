@@ -394,31 +394,73 @@ def _build_pipeline(config):
 # ---------------------------------------------------------------------------
 
 def cmd_fetch(args: argparse.Namespace) -> int:
-    """Download CSVs from Google Sheets to local cache."""
+    """Download CSVs from Google Sheets to local cache.
+
+    Credential columns (CREDENTIAL_TYPES) are stripped out of the
+    world-readable cache and stored in the root-only credentials.db.
+    """
     config = _load_config(args)
 
     from gdoc2netcfg.sources.cache import CSVCache
+    from gdoc2netcfg.sources.credentials import (
+        extract_credentials,
+        strip_credential_columns,
+    )
     from gdoc2netcfg.sources.sheets import fetch_sheet
     from gdoc2netcfg.storage.config_db import ConfigDB
+    from gdoc2netcfg.storage.credentials_db import CredentialsDB
 
-    cache = CSVCache(config.cache.directory)
+    # 1. Fetch every sheet into memory (raw, with credentials).
+    raw_csvs: list[tuple[str, str]] = []
     ok = 0
     fail = 0
-    fetched_csvs: list[tuple[str, str]] = []
-
     for sheet in config.sheets:
         try:
             data = fetch_sheet(sheet.name, sheet.url)
-            cache.write(sheet.name, data.csv_text)
-            fetched_csvs.append((sheet.name, data.csv_text))
+            raw_csvs.append((sheet.name, data.csv_text))
             print(f"  {sheet.name}: fetched ({len(data.csv_text)} bytes)")
             ok += 1
         except Exception as e:
             print(f"  {sheet.name}: FAILED ({e})", file=sys.stderr)
             fail += 1
 
-    # Save to ConfigDB only if at least one sheet was fetched.
-    # begin_scan is deferred to avoid orphaned scan rows on total failure.
+    # 2. Strip credential columns from each fetched sheet.
+    stripped: list[tuple[str, str, list[str]]] = []
+    for name, text in raw_csvs:
+        clean, present = strip_credential_columns(text)
+        stripped.append((name, clean, present))
+
+    has_credential_columns = any(present for _, _, present in stripped)
+
+    # 3. If a credential-bearing sheet was fetched, store credentials FIRST
+    #    (before touching the cache) so a failure leaves old state intact.
+    #    Skip entirely when no credential columns were seen this run — never
+    #    tombstone credentials on a transient fetch failure of that sheet.
+    if has_credential_columns:
+        _enrich_site_from_sheets(config, raw_csvs)
+        hosts = _build_hosts_from_csvs(config, raw_csvs)
+        creds = extract_credentials(hosts)
+        with CredentialsDB(config.cache.credentials_db_path) as cred_db:
+            scan_id = cred_db.begin_scan("csv_credentials")
+            try:
+                changed = cred_db.save_credentials(scan_id, creds)
+                cred_db.finish_scan(
+                    scan_id, host_count=len(hosts), changed_count=changed,
+                )
+            except Exception:
+                cred_db.connection.execute(
+                    "DELETE FROM scans WHERE id = ?", (scan_id,),
+                )
+                raise
+
+    # 4. Write the credential-free CSVs to the flat cache.
+    cache = CSVCache(config.cache.directory)
+    fetched_csvs: list[tuple[str, str]] = []
+    for name, clean, _present in stripped:
+        cache.write(name, clean)
+        fetched_csvs.append((name, clean))
+
+    # 5. Save the credential-free CSVs to ConfigDB.
     if fetched_csvs:
         with ConfigDB(config.cache.config_db_path) as config_db:
             scan_id = config_db.begin_scan("csv_fetch")
@@ -431,8 +473,6 @@ def cmd_fetch(args: argparse.Namespace) -> int:
                     changed_count=len(fetched_csvs),
                 )
             except Exception:
-                # Clean up the orphaned scan row immediately rather
-                # than waiting for the 1-hour cleanup_incomplete_scans.
                 config_db.connection.execute(
                     "DELETE FROM scans WHERE id = ?", (scan_id,),
                 )

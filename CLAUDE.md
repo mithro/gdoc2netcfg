@@ -152,6 +152,7 @@ Supplement and spreadsheet data are stored in two SQLite databases under the cac
 
 - `.cache/config.db` (`ConfigDB`) — spreadsheet data: CSV snapshots, device records, VLAN definitions (scan_type `csv_fetch`).
 - `.cache/discovery.db` (`DiscoveryDB`) — supplement scan results: reachability, SSH host keys, SSL certs, BMC firmware, SNMP, bridge, NSDP, Tasmota, Zigbee (one scan_type each).
+- `.cache/credentials.db` (`CredentialsDB`) — **root-only (`0600`)** store of the device credential columns (`Password`, `SNMP Community`, `IPMI Username`, `IPMI Password`), stripped out of the world-readable cache at fetch time. Written only by `fetch`; read only by the `password` command. EAV `(hostname, field, value)`, delta-stored with NULL tombstones (scan_type `csv_credentials`).
 
 Both inherit `BaseDatabase` (`storage/base.py`): DELETE journal mode, schema versioning (upgrade steps may be DDL strings or Python callables for data migrations), and a shared `scans` audit table (one row per scan/fetch). All supplement data lives in **typed, structured tables** (no JSON blobs) — deeply nested documents are exploded into per-field tables driven by shared specs (`_BRIDGE_DOC_FIELDS` etc.) so DDL, validation, insertion, and reconstruction cannot drift. Storage is **delta-based at the finest stable key** (host, switch, device, zigbee device/site-bridge) — rows are INSERTed only for an entity whose values actually changed, so history accrues with bounded growth; reads reconstruct the latest state via `load_latest_*`. Saves validate document shapes strictly and fail loud on drift.
 
@@ -356,13 +357,13 @@ On either site, look up credentials from the cached spreadsheet data:
 
 ```bash
 cd /opt/gdoc2netcfg
-uv run gdoc2netcfg password switch1              # Password for switch1
-uv run gdoc2netcfg password --quiet 10.1.10.1    # Password only (pipe to clipboard etc.)
-uv run gdoc2netcfg password --type snmp switch1   # SNMP community string
-uv run gdoc2netcfg password --type ipmi bmc.server1  # IPMI username + password
+sudo .venv/bin/gdoc2netcfg password switch1              # Password for switch1
+sudo .venv/bin/gdoc2netcfg password --quiet 10.1.10.1    # Password only (pipe to clipboard etc.)
+sudo .venv/bin/gdoc2netcfg password --type snmp switch1   # SNMP community string
+sudo .venv/bin/gdoc2netcfg password --type ipmi bmc.server1  # IPMI username + password
 ```
 
-The command reads from the local CSV cache (`gdoc2netcfg fetch` must have been run at least once). It does not contact the Google Sheet directly.
+Credentials are stored root-only in `.cache/credentials.db`, so the `password` command must run as **root** on prod (`sudo .venv/bin/gdoc2netcfg password <query>`, not `uv run`). It reads the host inventory from the credential-free CSV cache and the secret from `credentials.db` (`gdoc2netcfg fetch` must have been run at least once); it does not contact the Google Sheet directly. `generate`, `db`, `validate`, and the show commands stay sudo-free — the rest of the cache is credential-free. A `password --field <non-credential-column>` lookup also stays sudo-free (it never opens the credential store).
 
 ### Other
 

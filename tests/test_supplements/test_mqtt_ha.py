@@ -25,7 +25,6 @@ from gdoc2netcfg.supplements.mqtt_ha import (
     _iface_entities,
     _iface_entity_state_topic,
     _iface_slug,
-    _node_id,
     build_host_state,
     build_interface_state,
     discovery_payload,
@@ -37,6 +36,7 @@ from gdoc2netcfg.supplements.reachability import (
     InterfaceReachability,
     PingResult,
 )
+from gdoc2netcfg.utils.mqtt import node_id
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -120,23 +120,6 @@ def _make_reachability(
 # ---------------------------------------------------------------------------
 # node_id and slug helpers
 # ---------------------------------------------------------------------------
-
-class TestNodeId:
-    def test_simple_hostname(self):
-        assert _node_id("big-storage") == "big_storage"
-
-    def test_bmc_hostname(self):
-        assert _node_id("bmc.big-storage") == "bmc_big_storage"
-
-    def test_already_underscored(self):
-        assert _node_id("my_host") == "my_host"
-
-    def test_uppercase_lowered(self):
-        assert _node_id("MyHost") == "myhost"
-
-    def test_dots_and_hyphens(self):
-        assert _node_id("sw.rack-1.unit-2") == "sw_rack_1_unit_2"
-
 
 class TestIfaceSlug:
     def test_named_interface(self):
@@ -297,7 +280,7 @@ class TestDiscoveryPayload:
         host = _make_host()
         dev = _device_dict(host)
         avail, mode = _availability_list(host)
-        nid = _node_id(host.hostname)
+        nid = node_id(host.hostname)
         state_topic = f"{STATE_PREFIX}/{nid}/connectivity/state"
 
         payload = discovery_payload(
@@ -322,7 +305,7 @@ class TestDiscoveryPayload:
         host = _make_host()
         dev = _device_dict(host)
         avail, mode = _availability_list(host)
-        nid = _node_id(host.hostname)
+        nid = node_id(host.hostname)
 
         payload = discovery_payload(
             HOST_TRACKER, nid, dev, avail, mode,
@@ -343,7 +326,7 @@ class TestDiscoveryPayload:
         host = _make_host()
         dev = _device_dict(host)
         avail, mode = _availability_list(host)
-        nid = _node_id(host.hostname)
+        nid = node_id(host.hostname)
 
         payload = discovery_payload(
             HOST_STACK_MODE, nid, dev, avail, mode,
@@ -363,7 +346,7 @@ class TestDiscoveryPayload:
         host = _make_host()
         dev = _device_dict(host)
         avail, mode = _availability_list(host)
-        nid = _node_id(host.hostname)
+        nid = node_id(host.hostname)
 
         payload = discovery_payload(
             rtt, nid, dev, avail, mode,
@@ -393,7 +376,7 @@ class TestDiscoveryPayload:
             {"topic": "some/other/topic", "payload_available": "ON",
              "payload_not_available": "OFF"},
         ]
-        nid = _node_id(host.hostname)
+        nid = node_id(host.hostname)
 
         payload = discovery_payload(
             HOST_CONNECTIVITY, nid, dev, avail, "all",
@@ -409,7 +392,7 @@ class TestDiscoveryPayload:
 
 class TestDiscoveryTopic:
     def test_binary_sensor_topic(self):
-        nid = _node_id("big-storage")
+        nid = node_id("big-storage")
         topic = discovery_topic(HOST_CONNECTIVITY, nid)
         expected = (
             f"{DISCOVERY_PREFIX}/binary_sensor/gdoc2netcfg_big_storage/"
@@ -418,13 +401,13 @@ class TestDiscoveryTopic:
         assert topic == expected
 
     def test_device_tracker_topic(self):
-        nid = _node_id("big-storage")
+        nid = node_id("big-storage")
         topic = discovery_topic(HOST_TRACKER, nid)
         assert "/device_tracker/" in topic
         assert topic.endswith("/config")
 
     def test_sensor_topic(self):
-        nid = _node_id("big-storage")
+        nid = node_id("big-storage")
         topic = discovery_topic(HOST_STACK_MODE, nid)
         assert "/sensor/" in topic
 
@@ -439,7 +422,7 @@ class TestBuildHostState:
         hr = _make_reachability()
         states = build_host_state(host, hr)
 
-        nid = _node_id(host.hostname)
+        nid = node_id(host.hostname)
         assert states[f"{STATE_PREFIX}/{nid}/connectivity/state"] == "ON"
         assert states[f"{STATE_PREFIX}/{nid}/tracker/state"] == "home"
         assert states[f"{STATE_PREFIX}/{nid}/stack_mode/state"] == "dual-stack"
@@ -449,7 +432,7 @@ class TestBuildHostState:
         hr = _make_reachability(received_v4=0, received_v6=0, rtt_v4=None, rtt_v6=None)
         states = build_host_state(host, hr)
 
-        nid = _node_id(host.hostname)
+        nid = node_id(host.hostname)
         assert states[f"{STATE_PREFIX}/{nid}/connectivity/state"] == "OFF"
         assert states[f"{STATE_PREFIX}/{nid}/tracker/state"] == "not_home"
         assert states[f"{STATE_PREFIX}/{nid}/stack_mode/state"] == "unreachable"
@@ -459,7 +442,7 @@ class TestBuildHostState:
         hr = _make_reachability(received_v6=0, rtt_v6=None)
         states = build_host_state(host, hr)
 
-        nid = _node_id(host.hostname)
+        nid = node_id(host.hostname)
         assert states[f"{STATE_PREFIX}/{nid}/stack_mode/state"] == "ipv4-only"
 
     def test_tracker_attributes_json(self):
@@ -467,7 +450,7 @@ class TestBuildHostState:
         hr = _make_reachability()
         states = build_host_state(host, hr)
 
-        nid = _node_id(host.hostname)
+        nid = node_id(host.hostname)
         attrs_json = states[f"{STATE_PREFIX}/{nid}/tracker/attributes"]
         attrs = json.loads(attrs_json)
         assert attrs["host_name"] == "big-storage"
@@ -486,7 +469,7 @@ class TestBuildInterfaceState:
 
         states = build_interface_state(host, vi, ir)
 
-        nid = _node_id(host.hostname)
+        nid = node_id(host.hostname)
         assert states[f"{STATE_PREFIX}/{nid}/eth0/connectivity/state"] == "ON"
         assert states[f"{STATE_PREFIX}/{nid}/eth0/stack_mode/state"] == "dual-stack"
         assert states[f"{STATE_PREFIX}/{nid}/eth0/ipv4/state"] == "10.1.5.10"
@@ -504,7 +487,7 @@ class TestBuildInterfaceState:
 
         states = build_interface_state(host, vi, ir)
 
-        nid = _node_id(host.hostname)
+        nid = node_id(host.hostname)
         assert states[f"{STATE_PREFIX}/{nid}/eth0/connectivity/state"] == "OFF"
         assert states[f"{STATE_PREFIX}/{nid}/eth0/rtt/state"] == ""
 
@@ -517,7 +500,7 @@ class TestBuildInterfaceState:
 
         states = build_interface_state(host, vi, ir)
 
-        nid = _node_id(host.hostname)
+        nid = node_id(host.hostname)
         attrs = json.loads(states[f"{STATE_PREFIX}/{nid}/eth0/rtt/attributes"])
         assert "10.1.5.10" in attrs
         assert attrs["10.1.5.10"]["transmitted"] == 10
@@ -893,7 +876,7 @@ class TestIpv6InterfaceEntity:
             ("2404:e80:a137:105::10", PingResult(10, 10, 2.0)),
         ))
         states = build_interface_state(host, vi, ir)
-        nid = _node_id(host.hostname)
+        nid = node_id(host.hostname)
         assert states[f"{STATE_PREFIX}/{nid}/eth0/ipv6/state"] == "2404:e80:a137:105::10"
 
     def test_ipv6_empty_when_no_ipv6(self):
@@ -914,7 +897,7 @@ class TestIpv6InterfaceEntity:
             ("10.1.5.10", PingResult(10, 10, 1.5)),
         ))
         states = build_interface_state(host, vi, ir)
-        nid = _node_id(host.hostname)
+        nid = node_id(host.hostname)
         assert states[f"{STATE_PREFIX}/{nid}/eth0/ipv6/state"] == ""
 
 

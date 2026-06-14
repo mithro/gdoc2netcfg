@@ -84,27 +84,30 @@ show_unknown_macs = "false"
 [generators.known_hosts]
 output = "known_hosts"
 
+# ── Home Assistant: the API + the one MQTT broker everything uses ─
+[homeassistant]
+url = "https://ha.welland.mithis.com/"  # REST + WebSocket API
+# token = ""  # Long-lived access token from HA profile page
+ssh_host = "ha.welland.mithis.com"      # SSH target for broker login registration
+
+# The HA Mosquitto add-on — the single broker connection. The reachability
+# publisher and the zigbee scanner connect here (as user/password); Tasmota
+# devices are pointed at host/port.
+[homeassistant.mqtt]
+host = "ha.welland.mithis.com"
+port = 1883
+user = ""
+password = ""
+
 # ── Optional: Tasmota IoT device management ──────────────────
+# Broker host/port come from [homeassistant.mqtt]; this is only the device
+# login pushed to the plugs.
 [tasmota]
-mqtt_host = "ha.welland.mithis.com"
-mqtt_port = 1883
 mqtt_user = ""
 mqtt_password = ""
-
-# ── Optional: Home Assistant integration check ───────────────
-[homeassistant]
-url = "http://ha.welland.mithis.com:8123"
-# token = ""  # Long-lived access token from HA profile page
 
 # ── Optional: Zigbee2MQTT device scanning and sheet updates ──
+# One Z2M instance per site: the broker is [homeassistant.mqtt] and the site
+# name is [site].name. Presence of this section enables the hourly scan.
 [zigbee]
 sheet_name = "Zigbee Info"
-
-# List ONLY this site's broker — each site scans its own Z2M instance
-# and manages only its own rows in the Zigbee sheet.
-[[zigbee.sites]]
-name = "welland"
-mqtt_host = "ha.welland.mithis.com"
-mqtt_port = 1883
-mqtt_user = ""
-mqtt_password = ""

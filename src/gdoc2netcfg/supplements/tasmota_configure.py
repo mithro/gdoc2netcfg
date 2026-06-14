@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from gdoc2netcfg.config import TasmotaConfig
+    from gdoc2netcfg.config import MqttBrokerConfig, TasmotaConfig
     from gdoc2netcfg.models.host import Host
 
 
@@ -41,12 +41,17 @@ class ConfigDrift:
     warning: str = ""
 
 
-def compute_desired_config(host: Host, tasmota_config: TasmotaConfig) -> dict[str, str]:
+def compute_desired_config(
+    host: Host,
+    mqtt_config: MqttBrokerConfig,
+    tasmota_config: TasmotaConfig,
+) -> dict[str, str]:
     """Derive the desired Tasmota configuration for a host.
 
     Args:
         host: Host object with tasmota_data and extra columns.
-        tasmota_config: MQTT broker settings from pipeline config.
+        mqtt_config: HA Mosquitto broker connection (MqttHost/MqttPort).
+        tasmota_config: Tasmota device MQTT login (MqttUser/MqttPassword).
 
     Returns:
         Mapping of Tasmota command name to desired value.
@@ -62,8 +67,8 @@ def compute_desired_config(host: Host, tasmota_config: TasmotaConfig) -> dict[st
     desired.update({
         "Hostname": host.machine_name,
         "Topic": host.machine_name,
-        "MqttHost": tasmota_config.mqtt_host,
-        "MqttPort": str(tasmota_config.mqtt_port),
+        "MqttHost": mqtt_config.host,
+        "MqttPort": str(mqtt_config.port),
         "MqttUser": tasmota_config.mqtt_user,
         "MqttPassword": tasmota_config.mqtt_password,
     })
@@ -92,12 +97,17 @@ def _get_current_value(field: str, tasmota_data) -> str:
     return str(getattr(tasmota_data, attr, ""))
 
 
-def compute_drift(host: Host, tasmota_config: TasmotaConfig) -> list[ConfigDrift]:
+def compute_drift(
+    host: Host,
+    mqtt_config: MqttBrokerConfig,
+    tasmota_config: TasmotaConfig,
+) -> list[ConfigDrift]:
     """Compare actual device state against desired configuration.
 
     Args:
         host: Host with tasmota_data attached.
-        tasmota_config: Desired MQTT settings.
+        mqtt_config: HA Mosquitto broker connection (MqttHost/MqttPort).
+        tasmota_config: Tasmota device MQTT login (MqttUser/MqttPassword).
 
     Returns:
         List of ConfigDrift entries for fields that need updating.
@@ -105,7 +115,7 @@ def compute_drift(host: Host, tasmota_config: TasmotaConfig) -> list[ConfigDrift
     if host.tasmota_data is None:
         raise ValueError(f"Host {host.hostname} has no tasmota_data")
 
-    desired = compute_desired_config(host, tasmota_config)
+    desired = compute_desired_config(host, mqtt_config, tasmota_config)
     drifts: list[ConfigDrift] = []
 
     for field, desired_value in desired.items():
@@ -170,6 +180,7 @@ def _send_tasmota_command(
 
 def configure_tasmota_device(
     host: Host,
+    mqtt_config: MqttBrokerConfig,
     tasmota_config: TasmotaConfig,
     dry_run: bool = False,
     verbose: bool = False,
@@ -181,7 +192,8 @@ def configure_tasmota_device(
 
     Args:
         host: Host with tasmota_data attached.
-        tasmota_config: Desired MQTT settings.
+        mqtt_config: HA Mosquitto broker connection (MqttHost/MqttPort).
+        tasmota_config: Tasmota device MQTT login (MqttUser/MqttPassword).
         dry_run: If True, show changes without applying.
         verbose: Print progress to stderr.
         force: If True, apply changes that would break HA integration
@@ -201,7 +213,7 @@ def configure_tasmota_device(
             print(f"  {host.hostname}: no IP in Tasmota data", file=sys.stderr)
         return False
 
-    drifts = compute_drift(host, tasmota_config)
+    drifts = compute_drift(host, mqtt_config, tasmota_config)
 
     # MqttCount == 0 means the device has never connected to the MQTT
     # broker since boot.  This is a diagnostic signal — likely the
@@ -264,7 +276,7 @@ def configure_tasmota_device(
     # device that looks correctly configured but can't connect to the
     # broker, and MqttPassword can't be read back to detect drift.
     all_ok = True
-    desired = compute_desired_config(host, tasmota_config)
+    desired = compute_desired_config(host, mqtt_config, tasmota_config)
     fields_to_push = {d.field: d.desired for d in drifts_to_apply}
     if mqtt_disconnected:
         fields_to_push["MqttUser"] = desired["MqttUser"]
@@ -290,6 +302,7 @@ def configure_tasmota_device(
 
 def configure_all_tasmota_devices(
     hosts: list[Host],
+    mqtt_config: MqttBrokerConfig,
     tasmota_config: TasmotaConfig,
     dry_run: bool = False,
     verbose: bool = False,
@@ -299,7 +312,8 @@ def configure_all_tasmota_devices(
 
     Args:
         hosts: Hosts with tasmota_data attached.
-        tasmota_config: Desired MQTT settings.
+        mqtt_config: HA Mosquitto broker connection (MqttHost/MqttPort).
+        tasmota_config: Tasmota device MQTT login (MqttUser/MqttPassword).
         dry_run: If True, show changes without applying.
         verbose: Print progress to stderr.
         force: If True, apply HA-breaking changes (e.g. Topic rename).
@@ -311,7 +325,7 @@ def configure_all_tasmota_devices(
     fail = 0
     for host in hosts:
         ok = configure_tasmota_device(
-            host, tasmota_config, dry_run=dry_run, verbose=verbose,
+            host, mqtt_config, tasmota_config, dry_run=dry_run, verbose=verbose,
             force=force,
         )
         if ok:

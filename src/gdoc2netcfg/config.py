@@ -57,15 +57,13 @@ class GeneratorConfig:
 
 @dataclass
 class TasmotaConfig:
-    """Configuration for Tasmota device management.
+    """Tasmota device MQTT login pushed to the devices.
 
-    Defines the desired MQTT broker settings that Tasmota devices
-    should be configured to use. Used by the configure command to
-    compute drift and push correct settings.
+    The broker host/port the devices connect to come from
+    [homeassistant.mqtt]; this holds only the device login (MqttUser /
+    MqttPassword). Per-device credentials are a future change (#28).
     """
 
-    mqtt_host: str = ""
-    mqtt_port: int = 1883
     mqtt_user: str = ""
     mqtt_password: str = ""
 
@@ -245,8 +243,6 @@ def _build_tasmota(data: dict) -> TasmotaConfig:
     if not section:
         return TasmotaConfig()
     return TasmotaConfig(
-        mqtt_host=section.get("mqtt_host", ""),
-        mqtt_port=section.get("mqtt_port", 1883),
         mqtt_user=section.get("mqtt_user", ""),
         mqtt_password=section.get("mqtt_password", ""),
     )

@@ -1934,9 +1934,9 @@ def cmd_tasmota_configure(args: argparse.Namespace) -> int:
         print("Error: specify a hostname or use --all", file=sys.stderr)
         return 1
 
-    if not config.tasmota.mqtt_host:
+    if not config.homeassistant.mqtt.host:
         print(
-            "Error: [tasmota] mqtt_host not configured in gdoc2netcfg.toml",
+            "Error: [homeassistant.mqtt] host not configured in gdoc2netcfg.toml",
             file=sys.stderr,
         )
         return 1
@@ -1976,8 +1976,8 @@ def cmd_tasmota_configure(args: argparse.Namespace) -> int:
             ),
         )
         success, fail = configure_all_tasmota_devices(
-            tasmota_hosts, config.tasmota, dry_run=dry_run, verbose=True,
-            force=force,
+            tasmota_hosts, config.homeassistant.mqtt, config.tasmota,
+            dry_run=dry_run, verbose=True, force=force,
         )
         print(f"\n{success} succeeded, {fail} failed.")
         return 1 if fail > 0 else 0
@@ -1998,8 +1998,8 @@ def cmd_tasmota_configure(args: argparse.Namespace) -> int:
             )
             return 1
         ok = configure_tasmota_device(
-            target, config.tasmota, dry_run=dry_run, verbose=True,
-            force=force,
+            target, config.homeassistant.mqtt, config.tasmota,
+            dry_run=dry_run, verbose=True, force=force,
         )
         return 0 if ok else 1
 

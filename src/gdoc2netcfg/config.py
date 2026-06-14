@@ -107,15 +107,34 @@ class SheetsConfig:
 
 
 @dataclass
-class HomeAssistantConfig:
-    """Configuration for Home Assistant integration checks.
+class MqttBrokerConfig:
+    """Connection to the Home Assistant Mosquitto broker.
 
-    Used by the ha-status command to verify Tasmota devices are
-    properly registered and reporting in Home Assistant.
+    The single MQTT broker connection shared by every gdoc2netcfg MQTT
+    client (the reachability publisher and the zigbee scanner), and the
+    host/port that Tasmota devices are pointed at. Lives under
+    [homeassistant.mqtt] because the broker is the HA Mosquitto add-on.
+    """
+
+    host: str = ""
+    port: int = 1883
+    user: str = ""
+    password: str = ""
+
+
+@dataclass
+class HomeAssistantConfig:
+    """Configuration for the Home Assistant integration.
+
+    Covers everything that connects to our Home Assistant: the REST /
+    WebSocket API (url + token), its Mosquitto broker
+    ([homeassistant.mqtt]), and SSH to its host (ssh_host).
     """
 
     url: str = ""
     token: str = ""
+    ssh_host: str = ""
+    mqtt: MqttBrokerConfig = field(default_factory=MqttBrokerConfig)
 
 
 @dataclass
@@ -259,9 +278,17 @@ def _build_homeassistant(data: dict) -> HomeAssistantConfig:
     section = data.get("homeassistant", {})
     if not section:
         return HomeAssistantConfig()
+    mqtt_section = section.get("mqtt", {})
     return HomeAssistantConfig(
         url=section.get("url", ""),
         token=section.get("token", ""),
+        ssh_host=section.get("ssh_host", ""),
+        mqtt=MqttBrokerConfig(
+            host=mqtt_section.get("host", ""),
+            port=mqtt_section.get("port", 1883),
+            user=mqtt_section.get("user", ""),
+            password=mqtt_section.get("password", ""),
+        ),
     )
 
 

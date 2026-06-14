@@ -539,11 +539,11 @@ class TestPublishAllHosts:
         host = _make_host()
         hr = _make_reachability()
 
-        from gdoc2netcfg.config import TasmotaConfig
+        from gdoc2netcfg.config import MqttBrokerConfig
 
-        mqtt_config = TasmotaConfig(
-            mqtt_host="broker", mqtt_port=1883,
-            mqtt_user="user", mqtt_password="pass",
+        mqtt_config = MqttBrokerConfig(
+            host="broker", port=1883,
+            user="user", password="pass",
         )
 
         publish_all_hosts([host], {"big-storage": hr}, mqtt_config)
@@ -573,11 +573,11 @@ class TestPublishAllHosts:
         host = _make_host()
         hr = _make_reachability()
 
-        from gdoc2netcfg.config import TasmotaConfig
+        from gdoc2netcfg.config import MqttBrokerConfig
 
-        mqtt_config = TasmotaConfig(
-            mqtt_host="broker", mqtt_port=1883,
-            mqtt_user="user", mqtt_password="pass",
+        mqtt_config = MqttBrokerConfig(
+            host="broker", port=1883,
+            user="user", password="pass",
         )
 
         publish_all_hosts([host], {"big-storage": hr}, mqtt_config)
@@ -611,11 +611,11 @@ class TestPublishAllHosts:
         host = _make_host()
         hr = _make_reachability()
 
-        from gdoc2netcfg.config import TasmotaConfig
+        from gdoc2netcfg.config import MqttBrokerConfig
 
-        mqtt_config = TasmotaConfig(
-            mqtt_host="broker", mqtt_port=1883,
-            mqtt_user="user", mqtt_password="pass",
+        mqtt_config = MqttBrokerConfig(
+            host="broker", port=1883,
+            user="user", password="pass",
         )
 
         publish_all_hosts([host], {"big-storage": hr}, mqtt_config)
@@ -637,11 +637,11 @@ class TestPublishAllHosts:
         host = _make_host()
         hr = _make_reachability()
 
-        from gdoc2netcfg.config import TasmotaConfig
+        from gdoc2netcfg.config import MqttBrokerConfig
 
-        mqtt_config = TasmotaConfig(
-            mqtt_host="broker", mqtt_port=1883,
-            mqtt_user="user", mqtt_password="pass",
+        mqtt_config = MqttBrokerConfig(
+            host="broker", port=1883,
+            user="user", password="pass",
         )
 
         publish_all_hosts([host], {"big-storage": hr}, mqtt_config)
@@ -672,11 +672,11 @@ class TestPublishAllHosts:
         host = _make_host()
         hr = _make_reachability()
 
-        from gdoc2netcfg.config import TasmotaConfig
+        from gdoc2netcfg.config import MqttBrokerConfig
 
-        mqtt_config = TasmotaConfig(
-            mqtt_host="broker", mqtt_port=1883,
-            mqtt_user="user", mqtt_password="pass",
+        mqtt_config = MqttBrokerConfig(
+            host="broker", port=1883,
+            user="user", password="pass",
         )
 
         count = publish_all_hosts([host], {"big-storage": hr}, mqtt_config)
@@ -691,11 +691,11 @@ class TestPublishAllHosts:
         host = _make_host()
         hr = _make_reachability()
 
-        from gdoc2netcfg.config import TasmotaConfig
+        from gdoc2netcfg.config import MqttBrokerConfig
 
-        mqtt_config = TasmotaConfig(
-            mqtt_host="broker", mqtt_port=1883,
-            mqtt_user="user", mqtt_password="pass",
+        mqtt_config = MqttBrokerConfig(
+            host="broker", port=1883,
+            user="user", password="pass",
         )
 
         publish_all_hosts([host], {"big-storage": hr}, mqtt_config)
@@ -739,11 +739,11 @@ class TestPublishAllHosts:
             interfaces=(ir1, ir2),
         )
 
-        from gdoc2netcfg.config import TasmotaConfig
+        from gdoc2netcfg.config import MqttBrokerConfig
 
-        mqtt_config = TasmotaConfig(
-            mqtt_host="broker", mqtt_port=1883,
-            mqtt_user="user", mqtt_password="pass",
+        mqtt_config = MqttBrokerConfig(
+            host="broker", port=1883,
+            user="user", password="pass",
         )
 
         publish_all_hosts([host], {"dual-nic": hr}, mqtt_config)
@@ -773,11 +773,11 @@ class TestPublishAllHosts:
         host = _make_host()
         hr = _make_reachability()
 
-        from gdoc2netcfg.config import TasmotaConfig
+        from gdoc2netcfg.config import MqttBrokerConfig
 
-        mqtt_config = TasmotaConfig(
-            mqtt_host="broker", mqtt_port=1883,
-            mqtt_user="user", mqtt_password="pass",
+        mqtt_config = MqttBrokerConfig(
+            host="broker", port=1883,
+            user="user", password="pass",
         )
 
         publish_all_hosts([host], {"big-storage": hr}, mqtt_config)
@@ -793,11 +793,11 @@ class TestPublishAllHosts:
 
         host = _make_host()
 
-        from gdoc2netcfg.config import TasmotaConfig
+        from gdoc2netcfg.config import MqttBrokerConfig
 
-        mqtt_config = TasmotaConfig(
-            mqtt_host="broker", mqtt_port=1883,
-            mqtt_user="user", mqtt_password="pass",
+        mqtt_config = MqttBrokerConfig(
+            host="broker", port=1883,
+            user="user", password="pass",
         )
 
         # Empty reachability dict — host is missing
@@ -821,11 +821,11 @@ class TestPublishAllHosts:
             interfaces=(ir1,),  # Only 1, host has 2
         )
 
-        from gdoc2netcfg.config import TasmotaConfig
+        from gdoc2netcfg.config import MqttBrokerConfig
 
-        mqtt_config = TasmotaConfig(
-            mqtt_host="broker", mqtt_port=1883,
-            mqtt_user="user", mqtt_password="pass",
+        mqtt_config = MqttBrokerConfig(
+            host="broker", port=1883,
+            user="user", password="pass",
         )
 
         with pytest.raises(ValueError, match="data consistency bug"):
@@ -1017,11 +1017,11 @@ class TestHostDirectoryPublishing:
         host = _make_host()
         hr = _make_reachability()
 
-        from gdoc2netcfg.config import TasmotaConfig
+        from gdoc2netcfg.config import MqttBrokerConfig
 
-        mqtt_config = TasmotaConfig(
-            mqtt_host="broker", mqtt_port=1883,
-            mqtt_user="user", mqtt_password="pass",
+        mqtt_config = MqttBrokerConfig(
+            host="broker", port=1883,
+            user="user", password="pass",
         )
 
         publish_all_hosts([host], {"big-storage": hr}, mqtt_config)
@@ -1049,11 +1049,11 @@ class TestHostDirectoryPublishing:
         host = _make_host()
         hr = _make_reachability()
 
-        from gdoc2netcfg.config import TasmotaConfig
+        from gdoc2netcfg.config import MqttBrokerConfig
 
-        mqtt_config = TasmotaConfig(
-            mqtt_host="broker", mqtt_port=1883,
-            mqtt_user="user", mqtt_password="pass",
+        mqtt_config = MqttBrokerConfig(
+            host="broker", port=1883,
+            user="user", password="pass",
         )
 
         publish_all_hosts([host], {"big-storage": hr}, mqtt_config)
@@ -1085,11 +1085,11 @@ class TestHostDirectoryPublishing:
         host = _make_host()
         hr = _make_reachability()
 
-        from gdoc2netcfg.config import TasmotaConfig
+        from gdoc2netcfg.config import MqttBrokerConfig
 
-        mqtt_config = TasmotaConfig(
-            mqtt_host="broker", mqtt_port=1883,
-            mqtt_user="user", mqtt_password="pass",
+        mqtt_config = MqttBrokerConfig(
+            host="broker", port=1883,
+            user="user", password="pass",
         )
 
         publish_all_hosts([host], {"big-storage": hr}, mqtt_config)

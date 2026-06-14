@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gdoc2netcfg.cli.main import main
-from gdoc2netcfg.config import HomeAssistantConfig, TasmotaConfig
+from gdoc2netcfg.config import HomeAssistantConfig, MqttBrokerConfig, TasmotaConfig
 from gdoc2netcfg.models.addressing import IPv4Address, MACAddress
 from gdoc2netcfg.models.host import Host, NetworkInterface, TasmotaData
 from gdoc2netcfg.supplements.tasmota import (
@@ -82,13 +82,16 @@ def _make_tasmota_data(**overrides):
 
 def _make_tasmota_config(**overrides):
     defaults = {
-        "mqtt_host": "ha.welland.mithis.com",
-        "mqtt_port": 1883,
         "mqtt_user": "tasmota",
         "mqtt_password": "secret123",
     }
     defaults.update(overrides)
     return TasmotaConfig(**defaults)
+
+
+# Broker host/port now come from [homeassistant.mqtt]; these values match the
+# old TasmotaConfig defaults so the drift expectations below are unchanged.
+_MQTT = MqttBrokerConfig(host="ha.welland.mithis.com", port=1883)
 
 
 # A realistic Tasmota Status 0 JSON response
@@ -819,7 +822,7 @@ class TestComputeDesiredConfig:
     def test_basic(self):
         host = _make_host(hostname="au-plug-10")
         config = _make_tasmota_config()
-        desired = compute_desired_config(host, config)
+        desired = compute_desired_config(host, _MQTT, config)
 
         # Both DeviceName and FriendlyName = machine name.
         # When fn[0] == dn, HA uses just the device name as entity ID:
@@ -837,7 +840,7 @@ class TestComputeDesiredConfig:
         """Both names are machine_name regardless of Controls column."""
         host = _make_host(hostname="au-plug-10", extra={"Controls": "desktop"})
         config = _make_tasmota_config()
-        desired = compute_desired_config(host, config)
+        desired = compute_desired_config(host, _MQTT, config)
         assert desired["DeviceName"] == "au-plug-10"
         assert desired["FriendlyName1"] == "au-plug-10"
 
@@ -845,7 +848,7 @@ class TestComputeDesiredConfig:
         """All devices get DeviceName and FriendlyName set."""
         host = _make_host(hostname="ir-ac-remote")
         config = _make_tasmota_config()
-        desired = compute_desired_config(host, config)
+        desired = compute_desired_config(host, _MQTT, config)
         assert desired["DeviceName"] == "ir-ac-remote"
         assert desired["FriendlyName1"] == "ir-ac-remote"
         assert desired["Hostname"] == "ir-ac-remote"
@@ -904,7 +907,7 @@ class TestComputeDrift:
             mqtt_port=1883,
         )
         config = _make_tasmota_config()
-        drifts = compute_drift(host, config)
+        drifts = compute_drift(host, _MQTT, config)
         assert drifts == []
 
     def test_device_name_drift(self):
@@ -918,7 +921,7 @@ class TestComputeDrift:
             mqtt_port=1883,
         )
         config = _make_tasmota_config()
-        drifts = compute_drift(host, config)
+        drifts = compute_drift(host, _MQTT, config)
         assert len(drifts) == 1
         assert drifts[0].field == "DeviceName"
         assert drifts[0].current == "wrong-name"
@@ -935,7 +938,7 @@ class TestComputeDrift:
             mqtt_port=1883,
         )
         config = _make_tasmota_config()
-        drifts = compute_drift(host, config)
+        drifts = compute_drift(host, _MQTT, config)
         fields = {d.field for d in drifts}
         assert "MqttHost" in fields
 
@@ -951,7 +954,7 @@ class TestComputeDrift:
             mqtt_user="wrong",
         )
         config = _make_tasmota_config()
-        drifts = compute_drift(host, config)
+        drifts = compute_drift(host, _MQTT, config)
         # Should detect drift in DeviceName, FriendlyName1, Hostname, Topic,
         # MqttHost, MqttPort, MqttUser (but NOT MqttPassword — can't read back)
         assert len(drifts) == 7
@@ -963,7 +966,7 @@ class TestComputeDrift:
         host = _make_host()
         config = _make_tasmota_config()
         with pytest.raises(ValueError, match="no tasmota_data"):
-            compute_drift(host, config)
+            compute_drift(host, _MQTT, config)
 
     def test_topic_drift_no_mqtt_host_is_safe(self):
         """Topic change when mqtt_host is empty = initial setup, no warning."""
@@ -977,7 +980,7 @@ class TestComputeDrift:
             mqtt_port=1883,
         )
         config = _make_tasmota_config()
-        drifts = compute_drift(host, config)
+        drifts = compute_drift(host, _MQTT, config)
         topic_drifts = [d for d in drifts if d.field == "Topic"]
         assert len(topic_drifts) == 1
         assert topic_drifts[0].warning == ""
@@ -994,7 +997,7 @@ class TestComputeDrift:
             mqtt_port=1883,
         )
         config = _make_tasmota_config()
-        drifts = compute_drift(host, config)
+        drifts = compute_drift(host, _MQTT, config)
         topic_drifts = [d for d in drifts if d.field == "Topic"]
         assert len(topic_drifts) == 1
         assert topic_drifts[0].warning != ""
@@ -1014,7 +1017,7 @@ class TestComputeDrift:
             mqtt_port=1883,
         )
         config = _make_tasmota_config()
-        drifts = compute_drift(host, config)
+        drifts = compute_drift(host, _MQTT, config)
         for d in drifts:
             assert d.warning == "", f"Unexpected warning on {d.field}"
 
@@ -1071,14 +1074,14 @@ class TestConfigureTasmotaDevice:
     def test_no_tasmota_data(self):
         host = _make_host()
         config = _make_tasmota_config()
-        result = configure_tasmota_device(host, config)
+        result = configure_tasmota_device(host, _MQTT, config)
         assert result is False
 
     def test_no_ip_in_tasmota_data(self):
         host = _make_host()
         host.tasmota_data = _make_tasmota_data(ip="")
         config = _make_tasmota_config()
-        result = configure_tasmota_device(host, config)
+        result = configure_tasmota_device(host, _MQTT, config)
         assert result is False
 
     def test_no_drift_returns_true(self):
@@ -1092,7 +1095,7 @@ class TestConfigureTasmotaDevice:
             mqtt_port=1883,
         )
         config = _make_tasmota_config()
-        result = configure_tasmota_device(host, config)
+        result = configure_tasmota_device(host, _MQTT, config)
         assert result is True
 
     def test_dry_run_does_not_send(self):
@@ -1101,7 +1104,7 @@ class TestConfigureTasmotaDevice:
         config = _make_tasmota_config()
 
         with patch("gdoc2netcfg.supplements.tasmota_configure._send_tasmota_command") as mock_send:
-            result = configure_tasmota_device(host, config, dry_run=True)
+            result = configure_tasmota_device(host, _MQTT, config, dry_run=True)
             assert result is True
             mock_send.assert_not_called()
 
@@ -1122,7 +1125,7 @@ class TestConfigureTasmotaDevice:
         config = _make_tasmota_config()
         mock_send.return_value = {"DeviceName": "au-plug-10"}
 
-        result = configure_tasmota_device(host, config)
+        result = configure_tasmota_device(host, _MQTT, config)
         assert result is True
 
         # Should send only DeviceName (the drifted field)
@@ -1152,7 +1155,7 @@ class TestConfigureTasmotaDevice:
         config = _make_tasmota_config()
         mock_send.return_value = {}
 
-        result = configure_tasmota_device(host, config)
+        result = configure_tasmota_device(host, _MQTT, config)
         assert result is True
 
         sent_fields = [call.args[1].split(" ")[0] for call in mock_send.call_args_list]
@@ -1167,7 +1170,7 @@ class TestConfigureTasmotaDevice:
         config = _make_tasmota_config()
         mock_send.return_value = None  # All commands fail
 
-        result = configure_tasmota_device(host, config)
+        result = configure_tasmota_device(host, _MQTT, config)
         assert result is False
 
     @patch("gdoc2netcfg.supplements.tasmota_configure._send_tasmota_command")
@@ -1185,7 +1188,7 @@ class TestConfigureTasmotaDevice:
         config = _make_tasmota_config()
         mock_send.return_value = {"Topic": "au-plug-10"}
 
-        result = configure_tasmota_device(host, config)
+        result = configure_tasmota_device(host, _MQTT, config)
         assert result is True
 
         # Topic should NOT have been sent
@@ -1207,7 +1210,7 @@ class TestConfigureTasmotaDevice:
         config = _make_tasmota_config()
         mock_send.return_value = {"Topic": "au-plug-10"}
 
-        result = configure_tasmota_device(host, config, force=True)
+        result = configure_tasmota_device(host, _MQTT, config, force=True)
         assert result is True
 
         sent_fields = [call.args[1].split(" ")[0] for call in mock_send.call_args_list]
@@ -1228,7 +1231,7 @@ class TestConfigureTasmotaDevice:
         config = _make_tasmota_config()
         mock_send.return_value = {"Topic": "au-plug-10"}
 
-        result = configure_tasmota_device(host, config)
+        result = configure_tasmota_device(host, _MQTT, config)
         assert result is True
 
         sent_fields = [call.args[1].split(" ")[0] for call in mock_send.call_args_list]
@@ -1258,7 +1261,7 @@ class TestConfigureMqttCountDiagnostic:
 
         with patch("gdoc2netcfg.supplements.tasmota_configure._send_tasmota_command") as mock_send:
             mock_send.return_value = {}
-            result = configure_tasmota_device(host, config)
+            result = configure_tasmota_device(host, _MQTT, config)
             assert result is True
 
             sent_fields = [call.args[1].split(" ")[0] for call in mock_send.call_args_list]
@@ -1278,7 +1281,7 @@ class TestConfigureMqttCountDiagnostic:
             mqtt_count=0,
         )
         config = _make_tasmota_config()
-        result = configure_tasmota_device(host, config, dry_run=True, verbose=True)
+        result = configure_tasmota_device(host, _MQTT, config, dry_run=True, verbose=True)
         assert result is True
         captured = capsys.readouterr()
         assert "MqttCount=0" in captured.err
@@ -1299,7 +1302,7 @@ class TestConfigureMqttCountDiagnostic:
 
         with patch("gdoc2netcfg.supplements.tasmota_configure._send_tasmota_command") as mock_send:
             mock_send.return_value = {}
-            result = configure_tasmota_device(host, config)
+            result = configure_tasmota_device(host, _MQTT, config)
             assert result is True
 
             sent_fields = [call.args[1].split(" ")[0] for call in mock_send.call_args_list]
@@ -1320,7 +1323,7 @@ class TestConfigureMqttCountDiagnostic:
             mqtt_count=5,
         )
         config = _make_tasmota_config()
-        result = configure_tasmota_device(host, config)
+        result = configure_tasmota_device(host, _MQTT, config)
         assert result is True
 
     @patch("gdoc2netcfg.supplements.tasmota_configure._send_tasmota_command")
@@ -1339,7 +1342,7 @@ class TestConfigureMqttCountDiagnostic:
         config = _make_tasmota_config()
         mock_send.return_value = {}
 
-        result = configure_tasmota_device(host, config)
+        result = configure_tasmota_device(host, _MQTT, config)
         assert result is True
 
         sent_fields = [call.args[1].split(" ")[0] for call in mock_send.call_args_list]
@@ -1362,7 +1365,7 @@ class TestConfigureMqttCountDiagnostic:
             mqtt_count=0,
         )
         config = _make_tasmota_config()
-        configure_tasmota_device(host, config, dry_run=True, verbose=True)
+        configure_tasmota_device(host, _MQTT, config, dry_run=True, verbose=True)
         captured = capsys.readouterr()
         assert "MqttCount=0" in captured.err
         assert "never connected" in captured.err.lower()
@@ -1388,7 +1391,7 @@ class TestConfigureAllTasmotaDevices:
         # h2 has no tasmota_data -> will fail
         config = _make_tasmota_config()
 
-        success, fail = configure_all_tasmota_devices([h1, h2], config)
+        success, fail = configure_all_tasmota_devices([h1, h2], _MQTT, config)
         assert success == 1
         assert fail == 1
 

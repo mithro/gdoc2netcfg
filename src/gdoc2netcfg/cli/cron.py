@@ -78,9 +78,9 @@ def generate_cron_entries(*, zigbee: bool = False) -> list[CronEntry]:
     intentionally NOT here — it is handled by the ``gdoc2netcfg-reachability``
     systemd daemon (every 5 minutes), which also publishes to MQTT.
 
-    *zigbee* adds the hourly zigbee scan — config-gated on
-    ``[[zigbee.sites]]``; each site lists only its own broker and scans
-    it locally.
+    *zigbee* adds the hourly zigbee scan — config-gated on the
+    ``[zigbee]`` section; the broker comes from ``[homeassistant.mqtt]``
+    and the scan runs against this site's local Z2M instance.
 
     Under the production "everything root" model the databases are root-owned,
     so install this as root (``sudo gdoc2netcfg cron install``) — the scans
@@ -155,11 +155,11 @@ def generate_cron_entries(*, zigbee: bool = False) -> list[CronEntry]:
 
 
 def zigbee_configured(project_root: Path) -> bool:
-    """True if the project's gdoc2netcfg.toml has [[zigbee.sites]] entries."""
+    """True if the project's gdoc2netcfg.toml has a [zigbee] section."""
     from gdoc2netcfg.config import load_config
 
     config = load_config(project_root / "gdoc2netcfg.toml")
-    return bool(config.zigbee.sites)
+    return config.zigbee.enabled
 
 
 _BEGIN_MARKER = "# BEGIN gdoc2netcfg managed entries - DO NOT EDIT THIS BLOCK"

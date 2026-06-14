@@ -816,9 +816,9 @@ def cmd_reachability_publish(args: argparse.Namespace) -> int:
     """Publish reachability data to Home Assistant via MQTT."""
     config = _load_config(args)
 
-    if not config.tasmota.mqtt_host:
+    if not config.homeassistant.mqtt.host:
         print(
-            "Error: [tasmota] mqtt_host not configured in gdoc2netcfg.toml",
+            "Error: [homeassistant.mqtt] host not configured in gdoc2netcfg.toml",
             file=sys.stderr,
         )
         return 1
@@ -854,7 +854,7 @@ def cmd_reachability_publish(args: argparse.Namespace) -> int:
     )
 
     publish_all_hosts(
-        hosts, reachability, config.tasmota, verbose=True,
+        hosts, reachability, config.homeassistant.mqtt, verbose=True,
     )
 
     return 0
@@ -1934,9 +1934,9 @@ def cmd_tasmota_configure(args: argparse.Namespace) -> int:
         print("Error: specify a hostname or use --all", file=sys.stderr)
         return 1
 
-    if not config.tasmota.mqtt_host:
+    if not config.homeassistant.mqtt.host:
         print(
-            "Error: [tasmota] mqtt_host not configured in gdoc2netcfg.toml",
+            "Error: [homeassistant.mqtt] host not configured in gdoc2netcfg.toml",
             file=sys.stderr,
         )
         return 1
@@ -1976,8 +1976,8 @@ def cmd_tasmota_configure(args: argparse.Namespace) -> int:
             ),
         )
         success, fail = configure_all_tasmota_devices(
-            tasmota_hosts, config.tasmota, dry_run=dry_run, verbose=True,
-            force=force,
+            tasmota_hosts, config.homeassistant.mqtt, config.tasmota,
+            dry_run=dry_run, verbose=True, force=force,
         )
         print(f"\n{success} succeeded, {fail} failed.")
         return 1 if fail > 0 else 0
@@ -1998,8 +1998,8 @@ def cmd_tasmota_configure(args: argparse.Namespace) -> int:
             )
             return 1
         ok = configure_tasmota_device(
-            target, config.tasmota, dry_run=dry_run, verbose=True,
-            force=force,
+            target, config.homeassistant.mqtt, config.tasmota,
+            dry_run=dry_run, verbose=True, force=force,
         )
         return 0 if ok else 1
 
@@ -2086,10 +2086,9 @@ def cmd_zigbee_scan(args: argparse.Namespace) -> int:
     """Scan Zigbee2MQTT on all configured sites and persist to the DB."""
     config = _load_config(args)
 
-    if not config.zigbee.sites:
+    if not config.zigbee.enabled:
         print(
-            "Error: No zigbee sites configured. Add [[zigbee.sites]] entries "
-            "to gdoc2netcfg.toml",
+            "Error: No [zigbee] section configured in gdoc2netcfg.toml",
             file=sys.stderr,
         )
         return 1
@@ -2107,7 +2106,8 @@ def cmd_zigbee_scan(args: argparse.Namespace) -> int:
     else:
         try:
             zigbee_data, errors = scan_zigbee(
-                config.zigbee,
+                config.site.name,
+                config.homeassistant.mqtt,
                 _load_latest_from_db(config, "load_latest_zigbee"),
                 verbose=True,
             )
@@ -2180,10 +2180,9 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
     """Write cached Zigbee data to the Google Sheet."""
     config = _load_config(args)
 
-    if not config.zigbee.sites:
+    if not config.zigbee.enabled:
         print(
-            "Error: No zigbee sites configured in gdoc2netcfg.toml "
-            "([[zigbee.sites]])",
+            "Error: No [zigbee] section configured in gdoc2netcfg.toml",
             file=sys.stderr,
         )
         return 1
@@ -2218,14 +2217,15 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
     # site's registry view directly (one row per site per device).
     # DB data for a site no longer configured (stale until the next
     # scan tombstones it) is skipped loudly.
-    configured = {site_cfg.name.strip().lower() for site_cfg in config.zigbee.sites}
+    this_site = config.site.name
+    configured = {this_site.strip().lower()}
     bridge_infos: dict[str, ZigbeeBridgeInfo | None] = {}
     all_devices: list[ZigbeeDevice] = []
     for site_name, doc in sorted(zigbee_data.items()):
         if site_name.strip().lower() not in configured:
             print(
-                f"Skipping site '{site_name}': in the database but not in "
-                "this run's configured [[zigbee.sites]]",
+                f"Skipping site '{site_name}': in the database but not "
+                "this site ([zigbee])",
                 file=sys.stderr,
             )
             continue
@@ -2237,14 +2237,13 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
             for _ieee, device in sorted(doc["devices"].items())
         )
 
-    for site_cfg in config.zigbee.sites:
-        if site_cfg.name not in zigbee_data:
-            print(
-                f"Warning: no data for site '{site_cfg.name}'. "
-                "Run 'gdoc2netcfg zigbee scan' first.",
-                file=sys.stderr,
-            )
-        bridge_infos.setdefault(site_cfg.name, None)
+    if this_site not in zigbee_data:
+        print(
+            f"Warning: no data for site '{this_site}'. "
+            "Run 'gdoc2netcfg zigbee scan' first.",
+            file=sys.stderr,
+        )
+    bridge_infos.setdefault(this_site, None)
 
     if not all_devices:
         print("No Zigbee data to write. Run 'gdoc2netcfg zigbee scan' first.")

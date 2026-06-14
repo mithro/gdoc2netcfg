@@ -125,6 +125,56 @@ domain = "test.example.com"
         assert "token_cache" not in names
         assert "service_account_file" not in names
 
+
+class TestHomeAssistantConfig:
+    def _write(self, tmp_path: Path, body: str) -> Path:
+        p = tmp_path / "gdoc2netcfg.toml"
+        p.write_text(body)
+        return p
+
+    def test_mqtt_nested_section_parsed(self, tmp_path: Path):
+        """[homeassistant.mqtt] + ssh_host parse onto HomeAssistantConfig."""
+        config = load_config(self._write(tmp_path, """
+[site]
+name = "test"
+domain = "test.example.com"
+
+[homeassistant]
+url = "https://ha.example/"
+token = "tok"
+ssh_host = "ha.example"
+
+[homeassistant.mqtt]
+host = "ha.example"
+port = 8883
+user = "gdoc2netcfg"
+password = "pw"
+"""))
+        assert config.homeassistant.url == "https://ha.example/"
+        assert config.homeassistant.token == "tok"
+        assert config.homeassistant.ssh_host == "ha.example"
+        assert config.homeassistant.mqtt.host == "ha.example"
+        assert config.homeassistant.mqtt.port == 8883
+        assert config.homeassistant.mqtt.user == "gdoc2netcfg"
+        assert config.homeassistant.mqtt.password == "pw"
+
+    def test_mqtt_defaults(self, tmp_path: Path):
+        """Missing [homeassistant.mqtt] / ssh_host fall back to defaults."""
+        config = load_config(self._write(tmp_path, """
+[site]
+name = "test"
+domain = "test.example.com"
+
+[homeassistant]
+url = "https://ha.example/"
+"""))
+        assert config.homeassistant.ssh_host == ""
+        assert config.homeassistant.mqtt.host == ""
+        assert config.homeassistant.mqtt.port == 1883
+        assert config.homeassistant.mqtt.user == ""
+        assert config.homeassistant.mqtt.password == ""
+
+
 def test_credentials_db_path():
     from pathlib import Path
 

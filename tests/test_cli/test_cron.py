@@ -244,7 +244,7 @@ class TestGenerateCronEntries:
         assert bmc[0].schedule == "0 4 * * 0"
 
     def test_no_zigbee_entry_by_default(self):
-        """Machines without [[zigbee.sites]] must not schedule zigbee scans."""
+        """Machines without a [zigbee] section must not schedule zigbee scans."""
         from gdoc2netcfg.cli.cron import generate_cron_entries
 
         entries = generate_cron_entries()
@@ -261,7 +261,7 @@ class TestGenerateCronEntries:
         assert zigbee[0].command == "gdoc2netcfg zigbee scan"
 
     def test_zigbee_configured_reads_toml(self, tmp_path):
-        """zigbee_configured() reflects the [[zigbee.sites]] entries."""
+        """zigbee_configured() reflects the presence of a [zigbee] section."""
         from gdoc2netcfg.cli.cron import zigbee_configured
 
         toml = tmp_path / "gdoc2netcfg.toml"
@@ -272,7 +272,7 @@ class TestGenerateCronEntries:
 
         toml.write_text(
             '[site]\nname = "welland"\ndomain = "example.com"\n\n'
-            '[[zigbee.sites]]\nname = "welland"\nmqtt_host = "mqtt.example"\n'
+            '[zigbee]\nsheet_name = "Zigbee Info"\n'
         )
         assert zigbee_configured(tmp_path) is True
 

@@ -57,26 +57,13 @@ class GeneratorConfig:
 
 @dataclass
 class TasmotaConfig:
-    """Configuration for Tasmota device management.
+    """Tasmota device MQTT login pushed to the devices.
 
-    Defines the desired MQTT broker settings that Tasmota devices
-    should be configured to use. Used by the configure command to
-    compute drift and push correct settings.
+    The broker host/port the devices connect to come from
+    [homeassistant.mqtt]; this holds only the device login (MqttUser /
+    MqttPassword). Per-device credentials are a future change (#28).
     """
 
-    mqtt_host: str = ""
-    mqtt_port: int = 1883
-    mqtt_user: str = ""
-    mqtt_password: str = ""
-
-
-@dataclass
-class ZigbeeSiteConfig:
-    """Configuration for a single Zigbee2MQTT site."""
-
-    name: str
-    mqtt_host: str = ""
-    mqtt_port: int = 1883
     mqtt_user: str = ""
     mqtt_password: str = ""
 
@@ -85,11 +72,13 @@ class ZigbeeSiteConfig:
 class ZigbeeConfig:
     """Configuration for Zigbee2MQTT device scanning and sheet updates.
 
-    Supports multiple sites (each with its own MQTT broker).  Sheet
-    credentials live in SheetsConfig ([sheets] section).
+    One Zigbee2MQTT instance per site. The broker connection comes from
+    [homeassistant.mqtt]; the site name comes from [site]. Presence of the
+    [zigbee] section enables the scan (`enabled`). Sheet credentials live
+    in SheetsConfig ([sheets]).
     """
 
-    sites: list[ZigbeeSiteConfig] = field(default_factory=list)
+    enabled: bool = False
     sheet_name: str = "Zigbee Info"
 
 
@@ -107,15 +96,34 @@ class SheetsConfig:
 
 
 @dataclass
-class HomeAssistantConfig:
-    """Configuration for Home Assistant integration checks.
+class MqttBrokerConfig:
+    """Connection to the Home Assistant Mosquitto broker.
 
-    Used by the ha-status command to verify Tasmota devices are
-    properly registered and reporting in Home Assistant.
+    The single MQTT broker connection shared by every gdoc2netcfg MQTT
+    client (the reachability publisher and the zigbee scanner), and the
+    host/port that Tasmota devices are pointed at. Lives under
+    [homeassistant.mqtt] because the broker is the HA Mosquitto add-on.
+    """
+
+    host: str = ""
+    port: int = 1883
+    user: str = ""
+    password: str = ""
+
+
+@dataclass
+class HomeAssistantConfig:
+    """Configuration for the Home Assistant integration.
+
+    Covers everything that connects to our Home Assistant: the REST /
+    WebSocket API (url + token), its Mosquitto broker
+    ([homeassistant.mqtt]), and SSH to its host (ssh_host).
     """
 
     url: str = ""
     token: str = ""
+    ssh_host: str = ""
+    mqtt: MqttBrokerConfig = field(default_factory=MqttBrokerConfig)
 
 
 @dataclass
@@ -226,30 +234,22 @@ def _build_tasmota(data: dict) -> TasmotaConfig:
     if not section:
         return TasmotaConfig()
     return TasmotaConfig(
-        mqtt_host=section.get("mqtt_host", ""),
-        mqtt_port=section.get("mqtt_port", 1883),
         mqtt_user=section.get("mqtt_user", ""),
         mqtt_password=section.get("mqtt_password", ""),
     )
 
 
 def _build_zigbee(data: dict) -> ZigbeeConfig:
-    """Build Zigbee config from parsed TOML data."""
+    """Build Zigbee config from parsed TOML data.
+
+    Presence of the [zigbee] section enables the scan for this site; the
+    broker comes from [homeassistant.mqtt] and the site name from [site].
+    """
     section = data.get("zigbee", {})
     if not section:
         return ZigbeeConfig()
-    sites = [
-        ZigbeeSiteConfig(
-            name=s["name"],
-            mqtt_host=s.get("mqtt_host", ""),
-            mqtt_port=s.get("mqtt_port", 1883),
-            mqtt_user=s.get("mqtt_user", ""),
-            mqtt_password=s.get("mqtt_password", ""),
-        )
-        for s in section.get("sites", [])
-    ]
     return ZigbeeConfig(
-        sites=sites,
+        enabled=True,
         sheet_name=section.get("sheet_name", "Zigbee Info"),
     )
 
@@ -259,9 +259,17 @@ def _build_homeassistant(data: dict) -> HomeAssistantConfig:
     section = data.get("homeassistant", {})
     if not section:
         return HomeAssistantConfig()
+    mqtt_section = section.get("mqtt", {})
     return HomeAssistantConfig(
         url=section.get("url", ""),
         token=section.get("token", ""),
+        ssh_host=section.get("ssh_host", ""),
+        mqtt=MqttBrokerConfig(
+            host=mqtt_section.get("host", ""),
+            port=mqtt_section.get("port", 1883),
+            user=mqtt_section.get("user", ""),
+            password=mqtt_section.get("password", ""),
+        ),
     )
 
 

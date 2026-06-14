@@ -9,7 +9,6 @@ from gdoc2netcfg.config import (
     PipelineConfig,
     SheetsConfig,
     ZigbeeConfig,
-    ZigbeeSiteConfig,
 )
 from gdoc2netcfg.models.network import Site
 from gdoc2netcfg.supplements.zigbee import ZigbeeDevice
@@ -48,18 +47,13 @@ class FakeClient:
         return self._ws
 
 
-def _config(*site_names: str) -> PipelineConfig:
+def _config(site_name: str = "welland") -> PipelineConfig:
     return PipelineConfig(
-        site=Site(name="test", domain="test.example.com"),
+        site=Site(name=site_name, domain="test.example.com"),
         spreadsheet_url="https://docs.google.com/spreadsheets/d/x/edit",
         cache=CacheConfig(),
         sheets_config=SheetsConfig(credentials_file="client_secret.json"),
-        zigbee=ZigbeeConfig(
-            sites=[
-                ZigbeeSiteConfig(name=n, mqtt_host=f"mqtt.{n}.example")
-                for n in site_names
-            ],
-        ),
+        zigbee=ZigbeeConfig(enabled=True),
     )
 
 
@@ -92,7 +86,7 @@ def _run(config, devices, rows, dry_run=False):
         return_value=FakeClient(ws),
     ):
         written = update_zigbee_sheet(
-            config, devices, {s.name: None for s in config.zigbee.sites},
+            config, devices, {config.site.name: None},
             dry_run=dry_run, verbose=True,
         )
     return written, ws
@@ -166,21 +160,6 @@ class TestPerSiteKeying:
         assert ws.batch_updates == []
         assert ws.appended == []
 
-    def test_multi_site_run_mixes_update_and_append(self):
-        """A run configured with both sites updates one site's stale row
-        and appends the other's missing row in the same pass."""
-        rows = [HEADER, _row("welland", "0x01", cells={5: "Offline"})]
-        written, ws = _run(
-            _config("welland", "monarto"),
-            [_device("welland", "0x01"), _device("monarto", "0x01")],
-            rows,
-        )
-        assert written == 2
-        assert len(ws.batch_updates) == 1
-        assert ws.batch_updates[0]["values"][0][0] == "welland"
-        assert len(ws.appended) == 1
-        assert ws.appended[0][0] == "monarto"
-
     def test_update_preserves_col_g_and_existing_type(self):
         """Hand-maintained column G survives an update, and an
         unrecognised model falls back to the sheet's existing Type."""
@@ -245,9 +224,11 @@ class TestWarnings:
 
 
 class TestErrors:
-    def test_no_sites_configured_raises(self):
-        with pytest.raises(RuntimeError, match="No zigbee sites configured"):
-            _run(_config(), [], [HEADER])
+    def test_no_zigbee_section_raises(self):
+        config = _config()
+        config.zigbee.enabled = False
+        with pytest.raises(RuntimeError, match=r"No \[zigbee\] section"):
+            _run(config, [], [HEADER])
 
     def test_device_outside_scope_raises(self):
         with pytest.raises(RuntimeError, match="not in this run's configured"):

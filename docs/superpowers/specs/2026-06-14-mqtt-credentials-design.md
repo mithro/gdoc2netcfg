@@ -257,7 +257,7 @@ refactor (#30); this spec's only additions on top are the two `mqtt_secret`s.
 
 ```toml
 [homeassistant]
-url = "https://ha.welland.mithis.com/"   # HA API (REST + WebSocket); Bearer / access_token
+url = "http://ha.welland.mithis.com:8123" # HA API (REST + WebSocket); Bearer / access_token
 token = "..."                            # long-lived access token
 ssh_host = "ha.welland.mithis.com"       # SSH target for Supervisor-API broker registration
 

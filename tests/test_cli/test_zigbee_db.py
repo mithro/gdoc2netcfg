@@ -17,30 +17,29 @@ from gdoc2netcfg.cli.main import (
 )
 from gdoc2netcfg.config import (
     CacheConfig,
+    HomeAssistantConfig,
+    MqttBrokerConfig,
     PipelineConfig,
     SheetsConfig,
     ZigbeeConfig,
-    ZigbeeSiteConfig,
 )
 from gdoc2netcfg.models.network import Site
 from gdoc2netcfg.storage import open_databases
 from gdoc2netcfg.supplements.zigbee import ZigbeeScanError
 
 
-def _config(tmp_path, *site_names: str) -> PipelineConfig:
+def _config(tmp_path, site_name: str = "welland") -> PipelineConfig:
     cache_dir = tmp_path / ".cache"
     cache_dir.mkdir()
     return PipelineConfig(
-        site=Site(name="test", domain="test.example.com"),
+        site=Site(name=site_name, domain="test.example.com"),
         spreadsheet_url="https://docs.google.com/spreadsheets/d/x/edit",
         cache=CacheConfig(directory=cache_dir),
         sheets_config=SheetsConfig(credentials_file="client_secret.json"),
-        zigbee=ZigbeeConfig(
-            sites=[
-                ZigbeeSiteConfig(name=name, mqtt_host=f"mqtt.{name}.example")
-                for name in (site_names or ("welland",))
-            ],
+        homeassistant=HomeAssistantConfig(
+            mqtt=MqttBrokerConfig(host="mqtt.example"),
         ),
+        zigbee=ZigbeeConfig(enabled=True),
     )
 
 
@@ -148,16 +147,16 @@ class TestZigbeeScan:
         # The successful site's data was saved before the raise.
         assert _load_db(config) == data
 
-    def test_no_sites_configured_errors(self, tmp_path, capsys):
+    def test_no_zigbee_section_errors(self, tmp_path, capsys):
         config = _config(tmp_path)
-        config.zigbee.sites = []
+        config.zigbee.enabled = False
         args = argparse.Namespace(config=None, force=False)
 
         with patch("gdoc2netcfg.cli.main._load_config", return_value=config):
             rc = cmd_zigbee_scan(args)
 
         assert rc == 1
-        assert "No zigbee sites configured" in capsys.readouterr().err
+        assert "No [zigbee] section configured" in capsys.readouterr().err
 
 
 class TestZigbeeShow:
@@ -209,35 +208,6 @@ class TestZigbeeUpdateSheet:
         assert [d.ieee_address for d in devices] == ["0x01"]
         assert bridge_infos["welland"].coordinator_type == "ConBee II"
 
-    def test_update_sheet_one_row_per_site(self, tmp_path):
-        """A device in both configured sites' registries becomes one
-        sheet row PER SITE — no cross-site projection."""
-        config = _config(tmp_path, "welland", "monarto")
-        _seed_db(config, {
-            "welland": _site_doc(
-                "welland",
-                _device("welland", "0x01", availability="offline"),
-            ),
-            "monarto": _site_doc(
-                "monarto",
-                _device("monarto", "0x01", availability="online"),
-            ),
-        })
-        args = argparse.Namespace(config=None, dry_run=True)
-
-        with patch("gdoc2netcfg.cli.main._load_config", return_value=config), \
-             patch(
-                 "gdoc2netcfg.supplements.zigbee_sheet.update_zigbee_sheet",
-                 return_value=2,
-             ) as mock_update:
-            rc = cmd_zigbee_update_sheet(args)
-
-        assert rc == 0
-        _, devices, _bridge_infos = mock_update.call_args.args[:3]
-        assert sorted((d.site, d.ieee_address) for d in devices) == [
-            ("monarto", "0x01"), ("welland", "0x01"),
-        ]
-
     def test_update_sheet_skips_unconfigured_site(self, tmp_path, capsys):
         """DB data for a site no longer in config (stale, pre-tombstone)
         contributes no rows."""
@@ -261,16 +231,16 @@ class TestZigbeeUpdateSheet:
         assert "monarto" not in bridge_infos
         assert "Skipping site 'monarto'" in capsys.readouterr().err
 
-    def test_update_sheet_no_sites_configured_errors(self, tmp_path, capsys):
+    def test_update_sheet_no_zigbee_section_errors(self, tmp_path, capsys):
         config = _config(tmp_path)
-        config.zigbee.sites = []
+        config.zigbee.enabled = False
         args = argparse.Namespace(config=None, dry_run=True)
 
         with patch("gdoc2netcfg.cli.main._load_config", return_value=config):
             rc = cmd_zigbee_update_sheet(args)
 
         assert rc == 1
-        assert "No zigbee sites configured" in capsys.readouterr().err
+        assert "No [zigbee] section configured" in capsys.readouterr().err
 
     def test_update_sheet_without_data_errors(self, tmp_path, capsys):
         config = _config(tmp_path)

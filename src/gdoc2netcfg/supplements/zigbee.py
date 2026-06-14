@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from gdoc2netcfg.config import ZigbeeConfig, ZigbeeSiteConfig
+    from gdoc2netcfg.config import MqttBrokerConfig
 
 
 class ZigbeeScanError(Exception):
@@ -134,7 +134,7 @@ def _parse_bridge_info(site: str, info: dict) -> ZigbeeBridgeInfo:
 
 def scan_zigbee_site(
     site_name: str,
-    mqtt_config: ZigbeeSiteConfig,
+    mqtt_config: MqttBrokerConfig,
     timeout: float = 15.0,
     availability_collect_s: float = 2.0,
     verbose: bool = False,
@@ -176,7 +176,7 @@ def scan_zigbee_site(
         client.subscribe("zigbee2mqtt/+/availability")
         if verbose:
             print(
-                f"  [{site_name}] Connected to {mqtt_config.mqtt_host}:{mqtt_config.mqtt_port}",
+                f"  [{site_name}] Connected to {mqtt_config.host}:{mqtt_config.port}",
                 file=sys.stderr,
             )
 
@@ -210,16 +210,16 @@ def scan_zigbee_site(
     client.on_connect = on_connect
     client.on_message = on_message
 
-    if mqtt_config.mqtt_user:
-        client.username_pw_set(mqtt_config.mqtt_user, mqtt_config.mqtt_password)
+    if mqtt_config.user:
+        client.username_pw_set(mqtt_config.user, mqtt_config.password)
 
     if verbose:
         print(
-            f"  [{site_name}] Connecting to {mqtt_config.mqtt_host}:{mqtt_config.mqtt_port}...",
+            f"  [{site_name}] Connecting to {mqtt_config.host}:{mqtt_config.port}...",
             file=sys.stderr,
         )
 
-    client.connect(mqtt_config.mqtt_host, mqtt_config.mqtt_port, keepalive=30)
+    client.connect(mqtt_config.host, mqtt_config.port, keepalive=30)
     client.loop_start()
 
     try:
@@ -275,57 +275,45 @@ def scan_zigbee_site(
 
 
 def scan_zigbee(
-    zigbee_config: ZigbeeConfig,
+    site_name: str,
+    mqtt_config: MqttBrokerConfig,
     baseline: dict[str, dict] | None,
     *,
     verbose: bool = False,
 ) -> tuple[dict[str, dict], list[str]]:
-    """Scan all configured Zigbee2MQTT sites via MQTT.
+    """Scan this site's Zigbee2MQTT instance via MQTT.
 
-    Returns ``(data, errors)``.  *data* maps site name -> ``{"bridge":
-    bridge-info | None, "devices": {ieee: device}}`` — one document per
-    site, like the per-site cache files this replaced.  A successfully
-    scanned site's document is REPLACED WHOLESALE — the retained MQTT
-    topics are the authoritative full device list, so a device absent
-    from them has been removed from that Z2M instance.  A failed site
-    keeps its baseline document and adds an error string instead.  The
-    caller persists *data* first, then fails loud via
-    raise_for_zigbee_errors — so one unreachable broker can't discard
-    the other site's results.
-
-    Baseline entries for sites no longer in the config are dropped
-    (the save tombstones them); a device listed by two sites (moved
-    between sites without removing the old registry entry) keeps both
-    sites' views — each site's sheet run projects its own view.
+    Returns ``(data, errors)``.  *data* maps the site name -> ``{"bridge":
+    bridge-info | None, "devices": {ieee: device}}`` — a single-entry
+    document keyed by site so DB storage stays per-site.  A successful
+    scan REPLACES the document WHOLESALE — the retained MQTT topics are
+    the authoritative full device list, so a device absent from them has
+    been removed from the Z2M instance.  A failed scan keeps the baseline
+    document and returns an error string instead, so a transient broker
+    outage doesn't discard the last-known device list.  Any other site's
+    stale baseline document is dropped (the save then tombstones it).
     """
-    if not zigbee_config.sites:
-        raise RuntimeError("No zigbee sites configured in gdoc2netcfg.toml")
+    if not mqtt_config.host:
+        raise RuntimeError(
+            "No [homeassistant.mqtt] host configured for the zigbee scan"
+        )
 
-    configured = {site_cfg.name for site_cfg in zigbee_config.sites}
     data = {
         site: doc for site, doc in (baseline or {}).items()
-        if site in configured
+        if site == site_name
     }
     errors: list[str] = []
 
-    for site_cfg in zigbee_config.sites:
-        if not site_cfg.mqtt_host:
-            raise RuntimeError(
-                f"No mqtt_host configured for zigbee site '{site_cfg.name}'"
-            )
+    try:
+        devices, bridge = scan_zigbee_site(site_name, mqtt_config, verbose=verbose)
+    except (RuntimeError, OSError) as e:
+        errors.append(f"{site_name}: {e}")
+        return data, errors
 
-        try:
-            devices, bridge = scan_zigbee_site(
-                site_cfg.name, site_cfg, verbose=verbose,
-            )
-        except (RuntimeError, OSError) as e:
-            errors.append(f"{site_cfg.name}: {e}")
-            continue
-
-        data[site_cfg.name] = {
-            "bridge": asdict(bridge) if bridge is not None else None,
-            "devices": {d.ieee_address: asdict(d) for d in devices},
-        }
+    data[site_name] = {
+        "bridge": asdict(bridge) if bridge is not None else None,
+        "devices": {d.ieee_address: asdict(d) for d in devices},
+    }
 
     return data, errors
 

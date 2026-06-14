@@ -69,25 +69,16 @@ class TasmotaConfig:
 
 
 @dataclass
-class ZigbeeSiteConfig:
-    """Configuration for a single Zigbee2MQTT site."""
-
-    name: str
-    mqtt_host: str = ""
-    mqtt_port: int = 1883
-    mqtt_user: str = ""
-    mqtt_password: str = ""
-
-
-@dataclass
 class ZigbeeConfig:
     """Configuration for Zigbee2MQTT device scanning and sheet updates.
 
-    Supports multiple sites (each with its own MQTT broker).  Sheet
-    credentials live in SheetsConfig ([sheets] section).
+    One Zigbee2MQTT instance per site. The broker connection comes from
+    [homeassistant.mqtt]; the site name comes from [site]. Presence of the
+    [zigbee] section enables the scan (`enabled`). Sheet credentials live
+    in SheetsConfig ([sheets]).
     """
 
-    sites: list[ZigbeeSiteConfig] = field(default_factory=list)
+    enabled: bool = False
     sheet_name: str = "Zigbee Info"
 
 
@@ -249,22 +240,16 @@ def _build_tasmota(data: dict) -> TasmotaConfig:
 
 
 def _build_zigbee(data: dict) -> ZigbeeConfig:
-    """Build Zigbee config from parsed TOML data."""
+    """Build Zigbee config from parsed TOML data.
+
+    Presence of the [zigbee] section enables the scan for this site; the
+    broker comes from [homeassistant.mqtt] and the site name from [site].
+    """
     section = data.get("zigbee", {})
     if not section:
         return ZigbeeConfig()
-    sites = [
-        ZigbeeSiteConfig(
-            name=s["name"],
-            mqtt_host=s.get("mqtt_host", ""),
-            mqtt_port=s.get("mqtt_port", 1883),
-            mqtt_user=s.get("mqtt_user", ""),
-            mqtt_password=s.get("mqtt_password", ""),
-        )
-        for s in section.get("sites", [])
-    ]
     return ZigbeeConfig(
-        sites=sites,
+        enabled=True,
         sheet_name=section.get("sheet_name", "Zigbee Info"),
     )
 

@@ -121,9 +121,9 @@ def update_zigbee_sheet(
     rows already showing the current values are left alone.
     Returns the number of rows written (or that would be in dry-run).
     """
-    if not config.zigbee.sites:
-        raise RuntimeError("No zigbee sites configured in gdoc2netcfg.toml")
-    site_scope = {s.name.strip().lower() for s in config.zigbee.sites}
+    if not config.zigbee.enabled:
+        raise RuntimeError("No [zigbee] section configured in gdoc2netcfg.toml")
+    site_scope = {config.site.name.strip().lower()}
 
     if not config.spreadsheet_url:
         raise RuntimeError(

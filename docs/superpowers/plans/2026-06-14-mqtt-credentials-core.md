@@ -98,6 +98,8 @@ Outcome to carry into Task 4: (1) the working `GET_INFO`/POST/restart commands, 
 
 > If the live broker is unreachable at execution time, STOP and surface it — Task 4 cannot be validated without this.
 
+**Spike outcome (read-only, 2026-06-14):** Transport confirmed — `ssh ha.welland.mithis.com 'curl -sS -H "Authorization: Bearer $(cat /run/s6/container_environment/SUPERVISOR_TOKEN)" http://supervisor/addons/core_mosquitto/info'` returns `{result, data:{options:{logins:[…]}}}`; the bare `$SUPERVISOR_TOKEN` env var gives `401` in a non-interactive ssh, the s6 file works. **This is exactly Task 4's default transport — use it as-is.** Current logins (preserved by the prefix-merge): `gdoc2netcfg`, `tweed-bridge`, `DVES_USER` (all plaintext). The live `$7$` POST+restart format-validation is **deferred to Plan 2's first real `register`** (which restarts the broker anyway) to avoid two standalone prod restarts now.
+
 ---
 
 ## Task 2: Promote `node_id` to `utils/mqtt.py`

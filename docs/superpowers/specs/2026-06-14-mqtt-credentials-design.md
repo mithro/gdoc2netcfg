@@ -13,8 +13,10 @@ logins — **pre-hashed** — on the Home Assistant Mosquitto broker. Two consum
 ride on the core:
 
 - **sensors2mqtt** — the ~30 welland RPi collectors + ten64 + polled
-  servers/switches. Delivery: per-host `0600` systemd `EnvironmentFile`s (and
-  Ansible recomputes them independently).
+  servers/switches. **Ansible owns the client-side config**: it recomputes each
+  host's credential from the shared secret (§12) and installs the env file.
+  gdoc2netcfg only derives the credential, registers the broker login, and
+  verifies — it generates **no** client-side config.
 - **Tasmota** — the IoT smart plugs. Delivery: per-device `MqttUser`/
   `MqttPassword` pushed over the existing HTTP `configure` path, replacing
   today's single shared credential.
@@ -31,8 +33,9 @@ The collectors connect with **empty credentials** and are being locked out as
 grandfathered TCP sessions drop (≥11 RPis already offline). No sensors2mqtt code
 change is needed — sensors2mqtt's own `MqttConfig.from_env()` (a class in the
 sensors2mqtt repo, distinct from the gdoc2netcfg `MqttConfig` dataclass below)
-already reads `MQTT_USER`/`MQTT_PASSWORD`; the missing piece is *issuing and
-delivering credentials*.
+already reads `MQTT_USER`/`MQTT_PASSWORD`; the missing piece is *issuing
+credentials and registering them on the broker* (delivery to the collectors is
+Ansible's).
 
 **Tasmota (blast-radius).** Every Tasmota device currently shares one
 `MqttUser`/`MqttPassword` (`tasmota_configure.compute_desired_config`). Tasmota's
@@ -62,11 +65,11 @@ thin adapters.
    password. `host.hostname` is always unique (a BMC and its parent share
    `machine_name` but not `hostname`). `node_id` makes it MQTT-safe.
 5. **Username prefixes:** `s2m-<id>` and `tas-<id>` — distinct broker accounts;
-   the prefix also scopes each consumer's broker merge (§4.6).
+   the prefix also scopes each consumer's broker merge (§4.5).
 6. **High-entropy secret is a hard requirement.** Both secrets MUST be
-   high-entropy random (`openssl rand -hex 32` → 256-bit); `env`/`register`/
-   `configure` fail loud on an empty or trivially-short secret. This is the
-   actual linchpin of the scheme's security (§7).
+   high-entropy random (`openssl rand -hex 32` → 256-bit); `register`/`configure`
+   fail loud on an empty or trivially-short secret. This is the actual linchpin
+   of the scheme's security (§7).
 7. **Broker pre-hashing:** logins stored `password_pre_hashed: true` —
    mosquitto-go-auth PBKDF2-SHA512 (16-byte salt, 100k iters). Plaintext never
    lands in the add-on options/backups.
@@ -78,7 +81,11 @@ thin adapters.
     removed only after 100% of devices have migrated (offline devices block it)
     — never auto-pruned mid-migration.
 11. **SDR Pis (`rpi-sdr-*`):** excluded (blank) — left on their own broker.
-12. **Future (#29):** per-user source-IP restrictions on the broker; per-user
+12. **sensors2mqtt client-side config is Ansible's:** gdoc2netcfg derives,
+    registers the broker login, and verifies — it does **not** generate env files
+    or any other client-side config. Ansible installs the credential by
+    recomputing it from the shared secret (§12).
+13. **Future (#29):** per-user source-IP restrictions on the broker; per-user
     topic ACLs (requirements §11.5). Out of scope here.
 
 ## 4. Architecture
@@ -97,10 +104,10 @@ thin adapters.
   sensors2mqtt `status`.
 
 **sensors2mqtt adapter:**
-- **`derivations/sensors2mqtt.py`** — host selection (sheet column), env-file
-  rendering, `build_logins(secret, hosts)`.
-- **`cli/main.py`** — `cmd_sensors2mqtt` (`list`/`env`/`register`/`status`) +
-  argparse.
+- **`derivations/sensors2mqtt.py`** — host selection (sheet column) and
+  `build_logins(secret, hosts)` (the `{s2m-<id>: password}` map for `register`).
+  No client-side config generation.
+- **`cli/main.py`** — `cmd_sensors2mqtt` (`list`/`register`/`status`) + argparse.
 
 **Tasmota adapter:**
 - **`supplements/tasmota_configure.py`** — `compute_desired_config` derives
@@ -142,22 +149,23 @@ def password(secret: str, host) -> str:
   trivially-short secret (hard floor of 32 characters; recommend
   `openssl rand -hex 32` = 64 chars / 256-bit). Called by every command that
   derives a password.
-- The secret is never logged; passwords are emitted only inside `0600` env-file
-  content (and `env --stdout`, an explicit operator action) and the Tasmota push
-  (masked in logs, as today).
+- The secret is never logged; the derived password leaves gdoc2netcfg only over
+  the SSH stdin channel during `register` (pre-hashed on the HA side, §4.5) and
+  in the Tasmota HTTP push (masked in logs, as today). gdoc2netcfg never writes a
+  password to a file.
 
 ### 4.3 sensors2mqtt selection — sheet column `sensors2mqtt`
 
-| Value | Meaning | Credential? | HA check? |
+| Value | Meaning | Broker login? | HA check? |
 |---|---|---|---|
-| `local` | sensors2mqtt **runs on** this host | yes — username/password + env file + broker login | yes |
+| `local` | sensors2mqtt **runs on** this host | yes — username/password registered on the broker | yes |
 | `remote` | a collector **elsewhere** polls this host (SNMP/IPMI) | no | yes |
 | blank | not involved | no | no |
 
 - Read from `host.extra["sensors2mqtt"]` (case-insensitive, stripped). An
   unrecognized non-blank value → hard error (never silently skipped).
-- Issuance (`env`, `register`) acts on `local` hosts; `status` on all non-blank
-  hosts.
+- `register` issues broker logins for `local` hosts; `status` checks all
+  non-blank hosts; `list` shows the classification (no secrets).
 - Initial population is a one-off assisted operator step (compute the in-scope
   set from current inventory and write the column via the service-account sheet
   path, or hand the operator a paste-ready list).
@@ -172,26 +180,7 @@ will authenticate when it returns. This mirrors the existing `configure`
 selection (`host.tasmota_data is not None`); a brand-new never-scanned device is
 picked up after the next `tasmota scan`.
 
-### 4.5 sensors2mqtt `env` — per-host EnvironmentFile
-
-For each `local` host:
-
-```ini
-MQTT_HOST=ha.welland.mithis.com
-MQTT_PORT=1883
-MQTT_USER=s2m-<id>
-MQTT_PASSWORD=<sha256(secret+<id>) hex>
-```
-
-`MQTT_HOST`/`MQTT_PORT` come from the shared `[mqtt]` (`MqttConfig`).
-`--stdout` prints for review; otherwise files are written `0600` to a secure dir
-(default `<cache.directory>/sensors2mqtt/` — never the world-readable generated
-tree). `--host <name>` renders one host. The RPis' files are produced for parity;
-Ansible recomputes identical content from the vault secret and installs
-`/etc/sensors2mqtt/env` (`0600 root`). ten64's own file can be installed
-directly.
-
-### 4.6 `register_logins` — shared broker core
+### 4.5 `register_logins` — shared broker core
 
 Reaches the HA Mosquitto add-on over the **existing HA SSH path**
 (`ssh <ha_ssh_host> …`, as the dashboard deployer does); inside, the Supervisor
@@ -217,7 +206,7 @@ API (`http://supervisor/…`) is reachable with `SUPERVISOR_TOKEN`.
 - Both `sensors2mqtt register` (prefix `s2m-`) and `tasmota register-broker`
   (prefix `tas-`) call this; each only ever touches its own prefix.
 
-### 4.7 sensors2mqtt `status` — HA sensor presence + freshness
+### 4.6 sensors2mqtt `status` — HA sensor presence + freshness
 
 For each non-blank host, query HA REST (`GET /api/states`, `[homeassistant]
 url` + `token`, the same integration `tasmota ha-status` uses) and report
@@ -230,7 +219,7 @@ hosts. Host↔entity correlation matches a host's `<id>`/`hostname` in the entit
 independent of it. (Tasmota has its own `tasmota ha-status`; no new status path
 is added for it.)
 
-### 4.8 Tasmota `configure` + `register-broker`
+### 4.7 Tasmota `configure` + `register-broker`
 
 - `compute_desired_config(host, mqtt_config, tasmota_config)` now sets
   `MqttHost`/`MqttPort` from the shared `MqttConfig`, and
@@ -244,7 +233,7 @@ is added for it.)
   `{tas-<id>: password(...)}` for all known Tasmota devices and calls
   `register_logins(..., "tas-", …)`.
 
-### 4.9 Configuration
+### 4.8 Configuration
 
 Broker connection details (host, port, SSH target) are shared in one `[mqtt]`
 section; the per-consumer sections hold only what is consumer-specific.
@@ -279,10 +268,6 @@ connects a client or registers a login reads the broker params from `MqttConfig`
 derive (pure, per consumer):
   <secret> + host.hostname ──node_id──► <id> ──► (<prefix>-<id>, sha256(secret+<id>))
 
-sensors2mqtt env:
-  local hosts ──► EnvironmentFile ──► 0600 files / stdout
-                                      └─ Ansible recomputes + installs on RPis
-
 register (HA SSH, shared core, per prefix):
   {<prefix>-<id>: plaintext} ──stdin──► HA: pre-hash (PBKDF2) ──► merge (preserve others)
                                         ──► POST options ──► restart add-on
@@ -292,6 +277,9 @@ tasmota configure (HTTP, per device):
 
 sensors2mqtt status (HA REST):
   non-blank hosts ──► /api/states ──► fresh / stale / missing
+
+sensors2mqtt client config (external): Ansible recomputes the credential from
+  the shared secret and installs it on each collector (§12) — gdoc2netcfg emits none
 ```
 
 ## 6. Error handling (fail loud)
@@ -329,10 +317,10 @@ sensors2mqtt status (HA REST):
 - Secrets only in `0600 gdoc2netcfg.toml` (+ Ansible vault for sensors2mqtt);
   never written to hosts (only the derived per-host password is); never logged.
 - Separate secrets partition the IoT-device domain from the collector domain.
-- sensors2mqtt env files `0600`, outside the cron `generate` tree. The Tasmota
-  plaintext push is cleartext HTTP on the segregated IoT VLAN (unchanged from
-  today; per-device creds strictly improve on the shared credential) and is
-  masked in logs.
+- gdoc2netcfg writes **no** sensors2mqtt client-side files (Ansible owns them).
+  The Tasmota plaintext push is cleartext HTTP on the segregated IoT VLAN
+  (unchanged from today; per-device creds strictly improve on the shared
+  credential) and is masked in logs.
 - Broker merge preserves HA core MQTT, `gdoc2netcfg`, `tweed-bridge`,
   `DVES_USER`, and the other consumer's logins.
 - **Future (#29):** restrict each login to its host's source IP so an extracted
@@ -343,9 +331,9 @@ sensors2mqtt status (HA REST):
 **Both consumers: register-first** (the broker restart drops grandfathered
 sessions, so the new logins must exist before consumers reconnect).
 
-**sensors2mqtt:** generate + distribute env to **all** local hosts (collectors
-not yet restarted) → `register` → restart **ten64 + one canary Pi**, confirm via
-`status` → restart the rest → reconcile with `status`.
+**sensors2mqtt:** Ansible installs the recomputed credential on **all** local
+hosts (collectors not yet restarted) → `register` → restart **ten64 + one canary
+Pi**, confirm via `status` → restart the rest → reconcile with `status`.
 
 **Tasmota:** `register-broker` (old shared login left intact) → `configure --all`
 (devices restart onto `tas-<id>`; `MqttUser` drift drives the migration) →
@@ -361,11 +349,9 @@ managed).
   username format per prefix; BMC vs parent produce distinct values; collision
   raises; strong-secret guard rejects empty/short.
 - **sensors2mqtt selection:** `local`/`remote`/blank → correct inclusion across
-  env/register/status; unrecognized raises; case/whitespace normalization.
+  register/status; unrecognized raises; case/whitespace normalization.
 - **Tasmota selection:** hosts with last-known `tasmota_data` are included
   (including an offline/last-known fixture); non-Tasmota hosts excluded.
-- **Env rendering:** exact bytes incl. config-driven host/port; single-host
-  `--host`; output mode `0600`.
 - **`register_logins` (mocked SSH/transport):** preserves core + other-prefix
   logins; upserts own prefix; idempotent (no dupes/drops); `--prune` drops only
   stale own-prefix logins; `--dry-run` performs zero side effects and prints no
@@ -378,15 +364,16 @@ managed).
 
 ## 10. Out of scope / non-goals
 
-- Host-side env distribution to the RPis (Ansible owns it) and sensors2mqtt's
-  systemd `EnvironmentFile` wiring.
+- **All sensors2mqtt client-side config** — env-file generation, distribution,
+  and the systemd `EnvironmentFile` wiring — is Ansible's (§12); gdoc2netcfg
+  produces none of it.
 - The actual on-broker removal of the old Tasmota shared login (manual operator
   step, §8).
 - SDR Pis / their separate broker.
 - **Per-user source-IP restrictions (#29)** and per-user topic ACLs
   (requirements §11.5) — future.
 - Secret rotation tooling (rotation = change the secret + (for sensors2mqtt) the
-  Ansible vault, re-run `env`/`register` or `register-broker`+`configure`, then
+  Ansible vault, re-run `register` or `register-broker`+`configure`, then
   redeploy; documented, not automated).
 
 ## 11. Open implementation risks (early-task spikes)
@@ -399,14 +386,15 @@ managed).
    replicate the mosquitto-go-auth PBKDF2-SHA512 format in Python. The spike
    decides which.
 2. **HA entity naming** (sensors2mqtt `status`). Confirm how sensors2mqtt names
-   its HA discovery entities so a host matches its sensors (§4.7). Contract:
+   its HA discovery entities so a host matches its sensors (§4.6). Contract:
    `status` classifies presence/freshness from `/api/states` `last_updated`; only
    the host↔entity match pattern depends on the spike.
 
 ## 12. Ansible interop contract (sensors2mqtt)
 
-For each `local` host the Ansible deployment must compute the **identical**
-strings from the shared `sensors2mqtt_mqtt_secret`:
+Ansible is the **sole** producer of each collector's client-side config —
+gdoc2netcfg generates none. For each `local` host the Ansible deployment must
+compute the **identical** strings from the shared `sensors2mqtt_mqtt_secret`:
 
 - `inventory_hostname` (the value hashed/embedded) **must equal `<id>` =
   `node_id(host.hostname)`** — the lowercased, non-alphanumeric→`_` form of

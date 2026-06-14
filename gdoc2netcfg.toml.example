@@ -86,7 +86,7 @@ output = "known_hosts"
 
 # ── Home Assistant: the API + the one MQTT broker everything uses ─
 [homeassistant]
-url = "https://ha.welland.mithis.com/"  # REST + WebSocket API
+url = "http://ha.welland.mithis.com:8123"  # REST + WebSocket API
 # token = ""  # Long-lived access token from HA profile page
 ssh_host = "ha.welland.mithis.com"      # SSH target for broker login registration
 

@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 import paho.mqtt.client as mqtt
 
 if TYPE_CHECKING:
-    from gdoc2netcfg.config import PipelineConfig, TasmotaConfig
+    from gdoc2netcfg.config import MqttBrokerConfig, PipelineConfig
     from gdoc2netcfg.models.host import Host, VirtualInterface
     from gdoc2netcfg.supplements.reachability import (
         HostReachability,
@@ -713,7 +713,7 @@ def _publish_hosts_to_client(
 def publish_all_hosts(
     hosts: list[Host],
     reachability: dict[str, HostReachability],
-    mqtt_config: TasmotaConfig,
+    mqtt_config: MqttBrokerConfig,
     verbose: bool = False,
 ) -> int:
     """One-shot publish: discovery + state for all hosts.
@@ -728,7 +728,7 @@ def publish_all_hosts(
         mqtt.CallbackAPIVersion.VERSION2,
         client_id="gdoc2netcfg-reachability",
     )
-    client.username_pw_set(mqtt_config.mqtt_user, mqtt_config.mqtt_password)
+    client.username_pw_set(mqtt_config.user, mqtt_config.password)
 
     # Set LWT before connecting — broker publishes this if we disconnect
     # unexpectedly
@@ -738,7 +738,7 @@ def publish_all_hosts(
         print("Connecting to MQTT broker...", file=sys.stderr)
 
     client.connect(
-        mqtt_config.mqtt_host, mqtt_config.mqtt_port, keepalive=120,
+        mqtt_config.host, mqtt_config.port, keepalive=120,
     )
     client.loop_start()
 
@@ -828,25 +828,25 @@ def run_daemon(
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
 
-    mqtt_config = config.tasmota
+    mqtt_config = config.homeassistant.mqtt
 
     # Set up persistent MQTT connection with LWT
     client = mqtt.Client(
         mqtt.CallbackAPIVersion.VERSION2,
         client_id="gdoc2netcfg-reachability-daemon",
     )
-    client.username_pw_set(mqtt_config.mqtt_user, mqtt_config.mqtt_password)
+    client.username_pw_set(mqtt_config.user, mqtt_config.password)
     client.will_set(BRIDGE_AVAIL_TOPIC, "offline", retain=True)
 
     if verbose:
         print(
             f"Connecting to MQTT "
-            f"{mqtt_config.mqtt_host}:{mqtt_config.mqtt_port}...",
+            f"{mqtt_config.host}:{mqtt_config.port}...",
             file=sys.stderr,
         )
 
     client.connect(
-        mqtt_config.mqtt_host, mqtt_config.mqtt_port, keepalive=120,
+        mqtt_config.host, mqtt_config.port, keepalive=120,
     )
     client.loop_start()
 

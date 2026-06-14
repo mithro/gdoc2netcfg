@@ -816,9 +816,9 @@ def cmd_reachability_publish(args: argparse.Namespace) -> int:
     """Publish reachability data to Home Assistant via MQTT."""
     config = _load_config(args)
 
-    if not config.tasmota.mqtt_host:
+    if not config.homeassistant.mqtt.host:
         print(
-            "Error: [tasmota] mqtt_host not configured in gdoc2netcfg.toml",
+            "Error: [homeassistant.mqtt] host not configured in gdoc2netcfg.toml",
             file=sys.stderr,
         )
         return 1
@@ -854,7 +854,7 @@ def cmd_reachability_publish(args: argparse.Namespace) -> int:
     )
 
     publish_all_hosts(
-        hosts, reachability, config.tasmota, verbose=True,
+        hosts, reachability, config.homeassistant.mqtt, verbose=True,
     )
 
     return 0

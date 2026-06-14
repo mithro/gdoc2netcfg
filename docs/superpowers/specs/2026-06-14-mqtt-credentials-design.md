@@ -181,11 +181,10 @@ MQTT_HOST=ha.welland.mithis.com
 MQTT_PORT=1883
 MQTT_USER=s2m-<id>
 MQTT_PASSWORD=<sha256(secret+<id>) hex>
-POLL_INTERVAL=30
 ```
 
-`MQTT_HOST`/`MQTT_PORT` come from the shared `[mqtt]` (`MqttConfig`);
-`POLL_INTERVAL` from `Sensors2mqttConfig`. `--stdout` prints for review; otherwise files are written `0600` to a secure dir
+`MQTT_HOST`/`MQTT_PORT` come from the shared `[mqtt]` (`MqttConfig`).
+`--stdout` prints for review; otherwise files are written `0600` to a secure dir
 (default `<cache.directory>/sensors2mqtt/` — never the world-readable generated
 tree). `--host <name>` renders one host. The RPis' files are produced for parity;
 Ansible recomputes identical content from the vault secret and installs
@@ -259,7 +258,6 @@ ha_ssh_host = "ha.welland.mithis.com"  # SSH target for pre-hashed login registr
 
 [sensors2mqtt]
 mqtt_secret = "..."                    # high-entropy (openssl rand -hex 32); 0600 toml + Ansible vault
-poll_interval = 30
 freshness_seconds = 900
 
 [tasmota]
@@ -366,7 +364,7 @@ managed).
   env/register/status; unrecognized raises; case/whitespace normalization.
 - **Tasmota selection:** hosts with last-known `tasmota_data` are included
   (including an offline/last-known fixture); non-Tasmota hosts excluded.
-- **Env rendering:** exact bytes incl. config-driven host/port/poll; single-host
+- **Env rendering:** exact bytes incl. config-driven host/port; single-host
   `--host`; output mode `0600`.
 - **`register_logins` (mocked SSH/transport):** preserves core + other-prefix
   logins; upserts own prefix; idempotent (no dupes/drops); `--prune` drops only

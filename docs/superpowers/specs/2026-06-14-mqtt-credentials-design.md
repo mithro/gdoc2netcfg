@@ -32,10 +32,9 @@ mosquitto 2.1.2 + mosquitto-go-auth 3.0.0) now rejects anonymous connections.
 The collectors connect with **empty credentials** and are being locked out as
 grandfathered TCP sessions drop (≥11 RPis already offline). No sensors2mqtt code
 change is needed — sensors2mqtt's own `MqttConfig.from_env()` (a class in the
-sensors2mqtt repo, distinct from the gdoc2netcfg `MqttConfig` dataclass below)
-already reads `MQTT_USER`/`MQTT_PASSWORD`; the missing piece is *issuing
-credentials and registering them on the broker* (delivery to the collectors is
-Ansible's).
+sensors2mqtt repo) already reads `MQTT_USER`/`MQTT_PASSWORD`; the missing piece
+is *issuing credentials and registering them on the broker* (delivery to the
+collectors is Ansible's).
 
 **Tasmota (blast-radius).** Every Tasmota device currently shares one
 `MqttUser`/`MqttPassword` (`tasmota_configure.compute_desired_config`). Tasmota's
@@ -85,7 +84,13 @@ thin adapters.
     registers the broker login, and verifies — it does **not** generate env files
     or any other client-side config. Ansible installs the credential by
     recomputing it from the shared secret (§12).
-13. **Future (#29):** per-user source-IP restrictions on the broker; per-user
+13. **HA-connection settings live under `[homeassistant]`:** the HA Mosquitto
+    broker (`mqtt_host`/`mqtt_port`), gdoc2netcfg's own broker-client login
+    (`mqtt_user`/`mqtt_password`), and `ssh_host` join the existing `url`/`token`
+    — there is **no** separate `[mqtt]` section. The Zigbee per-site brokers
+    (`[[zigbee.sites]]`) stay separate (independent Z2M instances, not our HA's
+    broker).
+14. **Future (#29):** per-user source-IP restrictions on the broker; per-user
     topic ACLs (requirements §11.5). Out of scope here.
 
 ## 4. Architecture
@@ -116,9 +121,18 @@ thin adapters.
   configure` passes the secret.
 
 **Config:**
-- **`config.py`** — new shared `MqttConfig` (`[mqtt]`: host/port/ha_ssh_host) +
-  `Sensors2mqttConfig`; `TasmotaConfig` reduces to `mqtt_secret` (host/port move
-  to the shared `[mqtt]` section; user/password dropped).
+- **`config.py`** — `HomeAssistantConfig` absorbs the HA Mosquitto broker
+  connection (`mqtt_host`/`mqtt_port`), gdoc2netcfg's own broker-client login
+  (`mqtt_user`/`mqtt_password`), and `ssh_host`, alongside the existing
+  `url`/`token`; new `Sensors2mqttConfig`; `TasmotaConfig` reduces to
+  `mqtt_secret`. No separate `[mqtt]` section — everything that connects to our
+  HA lives under `[homeassistant]` (§4.8).
+
+**Existing module touched:**
+- **`supplements/mqtt_ha.py`** — the reachability publisher reads its broker auth
+  from `config.homeassistant` (the `gdoc2netcfg` login) instead of
+  `config.tasmota`, closing the gap left by dropping `[tasmota]`'s
+  `mqtt_user`/`mqtt_password`.
 
 ### 4.2 Credential derivation (pure core)
 
@@ -183,10 +197,11 @@ picked up after the next `tasmota scan`.
 ### 4.5 `register_logins` — shared broker core
 
 Reaches the HA Mosquitto add-on over the **existing HA SSH path**
-(`ssh <ha_ssh_host> …`, as the dashboard deployer does); inside, the Supervisor
-API (`http://supervisor/…`) is reachable with `SUPERVISOR_TOKEN`.
+(`ssh <ssh_host> …`, as the dashboard deployer does, where `ssh_host` =
+`[homeassistant] ssh_host`); inside, the Supervisor API (`http://supervisor/…`)
+is reachable with `SUPERVISOR_TOKEN`.
 
-`register_logins(ha_ssh_host, prefix, logins: dict[str, str], dry_run: bool, prune: bool = False)`:
+`register_logins(ssh_host, prefix, logins: dict[str, str], dry_run: bool, prune: bool = False)`:
 
 1. `GET /addons/core_mosquitto/info` → current `options.logins`.
 2. Pre-hash each supplied plaintext (`password_pre_hashed: true`) via the
@@ -221,9 +236,9 @@ is added for it.)
 
 ### 4.7 Tasmota `configure` + `register-broker`
 
-- `compute_desired_config(host, mqtt_config, tasmota_config)` now sets
-  `MqttHost`/`MqttPort` from the shared `MqttConfig`, and
-  `MqttUser = username("tas-", host)` /
+- `compute_desired_config(host, ha_config, tasmota_config)` now sets
+  `MqttHost`/`MqttPort` from `[homeassistant]` (`ha_config.mqtt_host`/`mqtt_port`),
+  and `MqttUser = username("tas-", host)` /
   `MqttPassword = password(tasmota_config.mqtt_secret, host)` instead of the
   removed shared credential keys. Everything else (drift detection, the
   write-only-`MqttPassword` handling, the `MqttCount==0` re-push) is unchanged —
@@ -235,32 +250,51 @@ is added for it.)
 
 ### 4.8 Configuration
 
-Broker connection details (host, port, SSH target) are shared in one `[mqtt]`
-section; the per-consumer sections hold only what is consumer-specific.
+Everything that connects to **our** Home Assistant — its API, its Mosquitto
+broker, and SSH to its host — lives under `[homeassistant]`. The per-consumer
+sections hold only the derivation secret (plus `status` tuning). There is **no**
+separate `[mqtt]` section; the Zigbee per-site brokers stay in `[[zigbee.sites]]`.
 
 ```toml
-[mqtt]
-host = "ha.welland.mithis.com"         # broker host for client connections (MQTT_HOST / MqttHost)
-port = 1883                            # broker port (MQTT_PORT / MqttPort)
-ha_ssh_host = "ha.welland.mithis.com"  # SSH target for pre-hashed login registration
+[homeassistant]
+url = "https://ha.welland.mithis.com/"  # HA API (REST + WebSocket); Bearer / access_token
+token = "..."                           # long-lived access token
+mqtt_host = "ha.welland.mithis.com"     # HA Mosquitto add-on (broker) — client connections
+mqtt_port = 1883                        # broker port (MQTT_PORT / MqttPort)
+mqtt_user = "gdoc2netcfg"               # gdoc2netcfg's OWN broker-client login (reachability daemon)
+mqtt_password = "..."                   # static account password — NOT a derived per-host cred
+ssh_host = "ha.welland.mithis.com"      # SSH target for Supervisor-API broker registration
 # add-on slug (core_mosquitto) is a constant in mqtt_broker.py
 
 [sensors2mqtt]
-mqtt_secret = "..."                    # high-entropy (openssl rand -hex 32); 0600 toml + Ansible vault
+mqtt_secret = "..."                     # high-entropy (openssl rand -hex 32); 0600 toml + Ansible vault
 freshness_seconds = 900
 
 [tasmota]
-mqtt_secret = "..."                    # high-entropy; host/port now come from [mqtt]
+mqtt_secret = "..."                     # high-entropy
+
+# Zigbee2MQTT brokers are deliberately NOT folded in — each is an independent
+# per-site Z2M instance to scan, not our HA's broker:
+[[zigbee.sites]]
+name = "welland"
+mqtt_host = "ha.welland.mithis.com"
+mqtt_port = 1883
+mqtt_user = ""
+mqtt_password = ""
 ```
 
-A shared `MqttConfig` (`[mqtt]`: `host` / `port` / `ha_ssh_host`) plus
-`Sensors2mqttConfig` follow the existing dataclass pattern (`TasmotaConfig`,
-`HomeAssistantConfig`): dataclass defaults are the single source of truth, only
-present keys override. `TasmotaConfig` reduces to `mqtt_secret` — its former
-`mqtt_host`/`mqtt_port` move to the shared `[mqtt]` section and
-`mqtt_user`/`mqtt_password` are dropped (dead-code removal per project policy).
-The shared *broker* login is retired separately (§8). Every command that
-connects a client or registers a login reads the broker params from `MqttConfig`.
+`HomeAssistantConfig` absorbs the broker connection (`mqtt_host`/`mqtt_port`),
+gdoc2netcfg's own static broker-client login (`mqtt_user`/`mqtt_password` — the
+`gdoc2netcfg` account that both the reachability daemon and `register`'s
+preserved-login list reference), and `ssh_host`, alongside the existing
+`url`/`token`. It follows the existing dataclass pattern (defaults are the single
+source of truth; only present keys override). `TasmotaConfig` reduces to
+`mqtt_secret` — its former `mqtt_host`/`mqtt_port` move to `[homeassistant]` and
+`mqtt_user`/`mqtt_password` are dropped (dead-code removal per project policy; the
+shared *broker* login is retired separately, §8). `mqtt_ha.py` reads its broker
+auth from `config.homeassistant` (was `config.tasmota`). The Zigbee per-site
+brokers (`[[zigbee.sites]]`) are unchanged — they address independent Z2M
+instances, not our HA's broker, so they stay separate.
 
 ## 5. Data flow
 
@@ -314,8 +348,10 @@ sensors2mqtt client config (external): Ansible recomputes the credential from
 
 **Other:**
 
-- Secrets only in `0600 gdoc2netcfg.toml` (+ Ansible vault for sensors2mqtt);
-  never written to hosts (only the derived per-host password is); never logged.
+- Secrets (the two `mqtt_secret`s + gdoc2netcfg's own `[homeassistant]
+  mqtt_password`) only in `0600 gdoc2netcfg.toml` (+ Ansible vault for the
+  sensors2mqtt secret); never written to other hosts (only the derived per-host
+  password is); never logged.
 - Separate secrets partition the IoT-device domain from the collector domain.
 - gdoc2netcfg writes **no** sensors2mqtt client-side files (Ansible owns them).
   The Tasmota plaintext push is cleartext HTTP on the segregated IoT VLAN
@@ -369,7 +405,8 @@ managed).
   produces none of it.
 - The actual on-broker removal of the old Tasmota shared login (manual operator
   step, §8).
-- SDR Pis / their separate broker.
+- Migrating the Zigbee per-site brokers to derived credentials — they stay on
+  their existing `[[zigbee.sites]]` logins (separate Z2M instances).
 - **Per-user source-IP restrictions (#29)** and per-user topic ACLs
   (requirements §11.5) — future.
 - Secret rotation tooling (rotation = change the secret + (for sensors2mqtt) the

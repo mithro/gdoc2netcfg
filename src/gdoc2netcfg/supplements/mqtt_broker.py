@@ -48,23 +48,47 @@ def _ssh(ssh_host: str, remote_cmd: str, *, stdin: str | None = None) -> str:
     return result.stdout
 
 
-def _supervisor_get_logins(ssh_host: str) -> dict:
-    out = _ssh(ssh_host, f"curl -sS {_AUTH} http://supervisor/addons/{_ADDON}/info")
-    return json.loads(out)["data"]
+def _supervisor(ssh_host: str, path: str, *, post: bool = False, body: str | None = None) -> dict:
+    """Call the Supervisor API over SSH and FAIL LOUD on a non-ok result.
 
-
-def _supervisor_post_logins(ssh_host: str, logins: list[dict]) -> None:
-    body = json.dumps({"logins": logins})
-    _ssh(
+    ``curl -sS`` does not fail on an HTTP 4xx/5xx, so we parse the Supervisor's
+    JSON envelope (``{"result": "ok"|"error", "message", "data"}``) and raise on
+    ``result != "ok"``. Without this a rejected options POST silently no-ops and
+    only surfaces later as a confusing auth failure. Returns the ``data`` object."""
+    method = "-X POST " if post else ""
+    data_flag = '-H "Content-Type: application/json" --data @- ' if body is not None else ""
+    out = _ssh(
         ssh_host,
-        f'curl -sS -X POST {_AUTH} -H "Content-Type: application/json" '
-        f"--data @- http://supervisor/addons/{_ADDON}/options",
+        f"curl -sS {method}{_AUTH} {data_flag}http://supervisor{path}",
         stdin=body,
+    )
+    try:
+        resp = json.loads(out)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"supervisor {path}: non-JSON response: {out.strip()[:300]!r}") from exc
+    if resp.get("result") != "ok":
+        raise RuntimeError(f"supervisor {path}: {resp.get('message') or out.strip()[:300]}")
+    return resp.get("data") or {}
+
+
+def _get_addon_options(ssh_host: str) -> dict:
+    """The add-on's full current options (logins + customize + anonymous + …)."""
+    return _supervisor(ssh_host, f"/addons/{_ADDON}/info").get("options", {})
+
+
+def _set_addon_options(ssh_host: str, options: dict) -> None:
+    """Replace the add-on options. The endpoint REPLACES (not merges) and
+    validates against the full schema, so the complete options object must be
+    sent, wrapped in ``options`` (missing required keys like ``customize`` would
+    be rejected)."""
+    _supervisor(
+        ssh_host, f"/addons/{_ADDON}/options",
+        post=True, body=json.dumps({"options": options}),
     )
 
 
 def _restart_addon(ssh_host: str) -> None:
-    _ssh(ssh_host, f"curl -sS -X POST {_AUTH} http://supervisor/addons/{_ADDON}/restart")
+    _supervisor(ssh_host, f"/addons/{_ADDON}/restart", post=True)
 
 
 def _on_connect(res: dict):
@@ -118,8 +142,8 @@ def register_logins(
     `prefix`. Preserves every login not starting with `prefix`; with `prune`,
     drops `prefix`-logins absent from `logins`. `verify=(host, port)` connect-
     tests one login after the restart."""
-    info = _supervisor_get_logins(ssh_host)
-    current = info.get("options", {}).get("logins", [])
+    options = _get_addon_options(ssh_host)
+    current = options.get("logins", [])
 
     kept = [x for x in current if not x["username"].startswith(prefix)]
     if not prune:
@@ -145,7 +169,8 @@ def register_logins(
         print("  (dry-run: no POST / no restart)", file=sys.stderr)
         return
 
-    _supervisor_post_logins(ssh_host, merged)
+    options["logins"] = merged
+    _set_addon_options(ssh_host, options)
     _restart_addon(ssh_host)
 
     if verify and logins:

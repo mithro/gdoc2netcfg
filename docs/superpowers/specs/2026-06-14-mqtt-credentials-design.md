@@ -72,7 +72,7 @@ thin adapters.
 7. **Broker pre-hashing:** logins stored `password_pre_hashed: true` —
    mosquitto-go-auth PBKDF2-SHA512 (16-byte salt, 100k iters). Plaintext never
    lands in the add-on options/backups.
-8. **sensors2mqtt selection:** spreadsheet column `sensors2mqtt` =
+8. **sensors2mqtt selection:** Network sheet column `Sensors` =
    `local` / `remote` / blank (§4.3).
 9. **Tasmota selection:** no new column — Tasmota-ness is derivable from
    last-known scan data, which persists for offline devices (§4.4).
@@ -165,7 +165,7 @@ def password(secret: str, host) -> str:
   in the Tasmota HTTP push (masked in logs, as today). gdoc2netcfg never writes a
   password to a file.
 
-### 4.3 sensors2mqtt selection — sheet column `sensors2mqtt`
+### 4.3 sensors2mqtt selection — Network sheet column `Sensors`
 
 | Value | Meaning | Broker login? | HA check? |
 |---|---|---|---|
@@ -173,13 +173,33 @@ def password(secret: str, host) -> str:
 | `remote` | a collector **elsewhere** polls this host (SNMP/IPMI) | no | yes |
 | blank | not involved | no | no |
 
-- Read from `host.extra["sensors2mqtt"]` (case-insensitive, stripped). An
-  unrecognized non-blank value → hard error (never silently skipped).
+- Read from `host.extra["Sensors"]` (the Network sheet's `Sensors` column,
+  case-insensitive, stripped). An unrecognized non-blank value → hard error
+  (never silently skipped).
+- **The column is the source of truth** — hand-overridable per host. `classify()`
+  only reads it; it does not re-derive from hardware.
 - `register` issues broker logins for `local` hosts; `status` checks all
   non-blank hosts; `list` shows the classification (no secrets).
-- Initial population is a one-off assisted operator step (compute the in-scope
-  set from current inventory and write the column via the service-account sheet
-  path, or hand the operator a paste-ready list).
+
+**Initial population (operator-confirmed hardware rules).** A `propose` helper
+derives initial values from hardware type and writes them to the `Sensors`
+column **without overwriting any non-blank cell** (so manual overrides survive
+re-runs). The derivation rules, confirmed against the live Welland inventory
+(61 `local` / 35 `remote` / 120 blank as of 2026-06-15):
+
+| Hardware | Value | Detection signal |
+|---|---|---|
+| Raspberry Pi (incl. `pi*.fpgas` farm, SDR Pis, `inkycal`/`moboco`/`reterm2`) | `local` | RPi MAC OUI (`b8:27:eb`, `dc:a6:32`, `e4:5f:01`, `2c:cf:67`, …) or `rpi*`/`pi\d+.fpgas` hostname |
+| "big server" with a BMC | `local` | a non-switch host whose `machine_name` also belongs to a `bmc.*` host |
+| big switch | `remote` | `hardware_type` ∈ {netgear-switch(-plus), cisco-switch} or `sw-*`/`ten12` hostname |
+| BMC | `remote` | hostname first label is `bmc`/`bmc1`/`bmc-alt` (NB: `Host.is_bmc()` is unreliable post-build — interface name becomes `None`) |
+| everything else | blank | — |
+
+BMC-less "big servers" cannot be derived (no BMC marker); they are **manual
+overrides** in the sheet. The operator-confirmed seed override set is:
+`ten64`, `hifive-unmatched-1`, `hifive-unmatched-2`, `hls-fpga-node-2`,
+`minnow-turbot-1` → `local`. The write runs on a host with the service-account
+key (prod); the dev clone has no key, so it never writes the shared sheet.
 
 ### 4.4 Tasmota selection — last-known scan data (no column)
 

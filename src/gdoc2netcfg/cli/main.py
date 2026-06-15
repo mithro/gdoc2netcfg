@@ -2146,6 +2146,42 @@ def cmd_sensors2mqtt_register(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sensors2mqtt_status(args: argparse.Namespace) -> int:
+    """Show sensors2mqtt entity freshness for all non-blank hosts."""
+    from datetime import datetime, timezone
+
+    from gdoc2netcfg.supplements.sensors2mqtt_status import query_status
+
+    config = _load_config(args)
+
+    if not config.homeassistant.url or not config.homeassistant.token:
+        print(
+            "Error: [homeassistant] url and token must be configured in gdoc2netcfg.toml",
+            file=sys.stderr,
+        )
+        return 1
+
+    hosts = _sensors2mqtt_hosts(config)
+    status = query_status(
+        config.homeassistant,
+        hosts,
+        config.sensors2mqtt.freshness_seconds,
+        datetime.now(timezone.utc),
+    )
+
+    if not status:
+        print("No sensors2mqtt hosts found (no 'local' or 'remote' Sensors column entries).")
+        return 0
+
+    print(f"{'hostname':<40}  {'sel':<8}  {'class':<8}  last_updated")
+    print("-" * 80)
+    for hostname in sorted(status):
+        rec = status[hostname]
+        lu = rec["last_updated"].isoformat() if rec["last_updated"] else "-"
+        print(f"{hostname:<40}  {rec['selection']:<8}  {rec['class']:<8}  {lu}")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Subcommands: zigbee scan / show / update-sheet
 # ---------------------------------------------------------------------------
@@ -2775,6 +2811,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     s2m_subparsers = s2m_parser.add_subparsers(dest="s2m_command")
     s2m_subparsers.add_parser("list", help="Show sensors2mqtt host classification")
+    s2m_subparsers.add_parser(
+        "status", help="Check Home Assistant entity freshness for sensors2mqtt hosts",
+    )
     reg = s2m_subparsers.add_parser(
         "register", help="Register sensors2mqtt broker logins on HA Mosquitto",
     )
@@ -2925,6 +2964,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_sensors2mqtt_list(args)
         elif args.s2m_command == "register":
             return cmd_sensors2mqtt_register(args)
+        elif args.s2m_command == "status":
+            return cmd_sensors2mqtt_status(args)
         else:
             s2m_parser.print_help()
             return 0

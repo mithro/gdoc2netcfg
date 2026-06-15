@@ -2112,6 +2112,40 @@ def cmd_sensors2mqtt_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sensors2mqtt_register(args: argparse.Namespace) -> int:
+    """Register sensors2mqtt broker logins on the HA Mosquitto add-on."""
+    from gdoc2netcfg.derivations.sensors2mqtt import PREFIX, build_logins
+    from gdoc2netcfg.supplements.mqtt_broker import register_logins
+
+    config = _load_config(args)
+    hosts = _sensors2mqtt_hosts(config)
+
+    if not config.homeassistant.ssh_host:
+        print("Error: [homeassistant] ssh_host not configured", file=sys.stderr)
+        return 1
+
+    try:
+        logins = build_logins(config.sensors2mqtt.mqtt_secret, hosts)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    verify = (
+        (config.homeassistant.mqtt.host, config.homeassistant.mqtt.port)
+        if not args.dry_run
+        else None
+    )
+    register_logins(
+        config.homeassistant.ssh_host,
+        PREFIX,
+        logins,
+        dry_run=args.dry_run,
+        prune=args.prune,
+        verify=verify,
+    )
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Subcommands: zigbee scan / show / update-sheet
 # ---------------------------------------------------------------------------
@@ -2741,6 +2775,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     s2m_subparsers = s2m_parser.add_subparsers(dest="s2m_command")
     s2m_subparsers.add_parser("list", help="Show sensors2mqtt host classification")
+    reg = s2m_subparsers.add_parser(
+        "register", help="Register sensors2mqtt broker logins on HA Mosquitto",
+    )
+    reg.add_argument("--dry-run", action="store_true", help="Show changes without applying")
+    reg.add_argument("--prune", action="store_true", help="Remove logins not in current host list")
 
     # zigbee (with subcommands)
     zigbee_parser = subparsers.add_parser(
@@ -2884,6 +2923,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sensors2mqtt":
         if args.s2m_command == "list":
             return cmd_sensors2mqtt_list(args)
+        elif args.s2m_command == "register":
+            return cmd_sensors2mqtt_register(args)
         else:
             s2m_parser.print_help()
             return 0

@@ -2,7 +2,7 @@
 import argparse
 from unittest.mock import patch
 
-from gdoc2netcfg.cli.main import cmd_tasmota_register_broker
+from gdoc2netcfg.cli.main import cmd_tasmota_configure, cmd_tasmota_register_broker
 from gdoc2netcfg.config import (
     CacheConfig,
     HomeAssistantConfig,
@@ -81,4 +81,17 @@ def test_register_broker_empty_secret_errors(capsys):
     with patch("gdoc2netcfg.cli.main._load_config", return_value=config), \
          patch("gdoc2netcfg.cli.main._tasmota_hosts", return_value=hosts):
         rc = cmd_tasmota_register_broker(args)
+    assert rc == 1 and "secret" in capsys.readouterr().err.lower()
+
+
+def test_configure_empty_secret_errors(capsys):
+    """`tasmota configure` must fail loud on an empty mqtt_secret rather than
+    pushing a password derived from the empty secret (spec §6)."""
+    config, _hosts = _cfg_and_hosts()
+    config.tasmota.mqtt_secret = ""
+    args = argparse.Namespace(
+        config=None, host=None, configure_all=True, dry_run=True, force=False,
+    )
+    with patch("gdoc2netcfg.cli.main._load_config", return_value=config):
+        rc = cmd_tasmota_configure(args)
     assert rc == 1 and "secret" in capsys.readouterr().err.lower()

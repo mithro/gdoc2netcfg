@@ -1952,6 +1952,16 @@ def cmd_tasmota_configure(args: argparse.Namespace) -> int:
         )
         return 1
 
+    # Fail loud before deriving: an empty/weak secret would otherwise push a
+    # password(secret="", host) credential the broker never accepts, breaking
+    # the device's MQTT connection (spec §6, strong-secret guard per consumer).
+    from gdoc2netcfg.derivations.mqtt_credentials import require_strong_secret
+    try:
+        require_strong_secret(config.tasmota.mqtt_secret)
+    except ValueError as exc:
+        print(f"Error: [tasmota] {exc}", file=sys.stderr)
+        return 1
+
     from gdoc2netcfg.supplements.tasmota_configure import (
         configure_all_tasmota_devices,
         configure_tasmota_device,

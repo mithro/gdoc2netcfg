@@ -99,12 +99,14 @@ port = 1883
 user = ""
 password = ""
 
-# ── Optional: Tasmota IoT device management ──────────────────
-# Broker host/port come from [homeassistant.mqtt]; this is only the device
-# login pushed to the plugs.
+# ── Optional: Tasmota IoT device per-device MQTT credentials ──
+# Broker host/port come from [homeassistant.mqtt]. mqtt_secret derives each
+# device's MqttUser (tas-<id>) + MqttPassword; keep the toml 0600 (and mirror
+# into any vault that re-derives). `gdoc2netcfg tasmota register-broker`
+# registers the pre-hashed logins on the broker; `gdoc2netcfg tasmota configure`
+# pushes the per-device login to the plugs.
 [tasmota]
-mqtt_user = ""
-mqtt_password = ""
+mqtt_secret = ""
 
 # ── Optional: sensors2mqtt per-host MQTT credentials ─────────
 # Issues a per-host broker login for each `local` host in the Network sheet's

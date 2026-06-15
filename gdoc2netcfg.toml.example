@@ -106,6 +106,16 @@ password = ""
 mqtt_user = ""
 mqtt_password = ""
 
+# ── Optional: sensors2mqtt per-host MQTT credentials ─────────
+# Issues a per-host broker login for each `local` host in the Network sheet's
+# `Sensors` column (see `gdoc2netcfg sensors2mqtt`). Broker host/port come from
+# [homeassistant.mqtt]; ssh_host (under [homeassistant]) is the cutover transport.
+# mqtt_secret: high-entropy (openssl rand -hex 32); keep the toml 0600 and mirror
+# the same value into the Ansible vault so Ansible recomputes identical passwords.
+[sensors2mqtt]
+mqtt_secret = ""
+freshness_seconds = 900
+
 # ── Optional: Zigbee2MQTT device scanning and sheet updates ──
 # One Z2M instance per site: the broker is [homeassistant.mqtt] and the site
 # name is [site].name. Presence of this section enables the hourly scan.

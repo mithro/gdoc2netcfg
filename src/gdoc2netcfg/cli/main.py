@@ -1926,6 +1926,17 @@ def cmd_tasmota_show(args: argparse.Namespace) -> int:
 # Subcommand: tasmota configure
 # ---------------------------------------------------------------------------
 
+def _tasmota_hosts(config):
+    """Enriched host list with tasmota_data attached (same path as configure)."""
+    from gdoc2netcfg.supplements.tasmota import enrich_hosts_with_tasmota
+
+    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    _enrich_site_from_sheets(config, csv_data)
+    hosts = _build_hosts_from_csvs(config, csv_data)
+    enrich_hosts_with_tasmota(hosts, _load_latest_from_db(config, "load_latest_tasmota"))
+    return hosts
+
+
 def cmd_tasmota_configure(args: argparse.Namespace) -> int:
     """Push configuration to Tasmota devices."""
     config = _load_config(args)
@@ -1941,29 +1952,12 @@ def cmd_tasmota_configure(args: argparse.Namespace) -> int:
         )
         return 1
 
-    from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
-    from gdoc2netcfg.supplements.tasmota import enrich_hosts_with_tasmota
     from gdoc2netcfg.supplements.tasmota_configure import (
         configure_all_tasmota_devices,
         configure_tasmota_device,
     )
 
-    # Minimal pipeline to get hosts
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
-    _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
-
-    hosts = build_hosts(all_records, config.site)
-
-    enrich_hosts_with_tasmota(
-        hosts, _load_latest_from_db(config, "load_latest_tasmota"),
-    )
+    hosts = _tasmota_hosts(config)
 
     dry_run = args.dry_run
     force = args.force
@@ -2002,6 +1996,45 @@ def cmd_tasmota_configure(args: argparse.Namespace) -> int:
             dry_run=dry_run, verbose=True, force=force,
         )
         return 0 if ok else 1
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: tasmota register-broker
+# ---------------------------------------------------------------------------
+
+
+def cmd_tasmota_register_broker(args: argparse.Namespace) -> int:
+    """Register Tasmota broker logins on the HA Mosquitto add-on."""
+    from gdoc2netcfg.derivations.tasmota_credentials import PREFIX, build_logins
+    from gdoc2netcfg.supplements.mqtt_broker import register_logins
+
+    config = _load_config(args)
+    hosts = _tasmota_hosts(config)
+
+    if not config.homeassistant.ssh_host:
+        print("Error: [homeassistant] ssh_host not configured", file=sys.stderr)
+        return 1
+
+    try:
+        logins = build_logins(config.tasmota.mqtt_secret, hosts)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    verify = (
+        (config.homeassistant.mqtt.host, config.homeassistant.mqtt.port)
+        if not args.dry_run
+        else None
+    )
+    register_logins(
+        config.homeassistant.ssh_host,
+        PREFIX,
+        logins,
+        dry_run=args.dry_run,
+        prune=args.prune,
+        verify=verify,
+    )
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -2800,6 +2833,12 @@ def main(argv: list[str] | None = None) -> int:
     tasmota_ha_sync_parser = tasmota_subparsers.add_parser(
         "ha-sync", help="Sync device metadata (names) to Home Assistant",
     )
+
+    rb = tasmota_subparsers.add_parser(
+        "register-broker", help="Register Tasmota broker logins on HA Mosquitto",
+    )
+    rb.add_argument("--dry-run", action="store_true", help="Show changes without applying")
+    rb.add_argument("--prune", action="store_true", help="Remove logins not in current device list")
     tasmota_ha_sync_parser.add_argument(
         "--dry-run", action="store_true",
         help="Show what would be changed without applying",
@@ -2954,6 +2993,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_tasmota_ha_status(args)
         elif args.tasmota_command == "ha-sync":
             return cmd_tasmota_ha_sync(args)
+        elif args.tasmota_command == "register-broker":
+            return cmd_tasmota_register_broker(args)
         else:
             tasmota_parser.print_help()
             return 0

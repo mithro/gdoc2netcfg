@@ -68,6 +68,7 @@ def query_status(
 
     for host in non_blank:
         nid = node_id(host.hostname)
+        selection = classify(host)
 
         # Build the exact candidate entity_id set for this host.
         candidate_ids = {f"sensor.{nid}_{m}" for m in SENSORS2MQTT_METRICS}
@@ -79,7 +80,7 @@ def query_status(
             result[host.hostname] = {
                 "class": "missing",
                 "last_updated": None,
-                "selection": classify(host),
+                "selection": selection,
             }
             continue
 
@@ -96,7 +97,7 @@ def query_status(
             result[host.hostname] = {
                 "class": "missing",
                 "last_updated": None,
-                "selection": classify(host),
+                "selection": selection,
             }
             continue
 

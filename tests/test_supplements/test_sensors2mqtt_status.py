@@ -141,7 +141,7 @@ class TestQueryStatus:
 
     @patch("gdoc2netcfg.supplements.sensors2mqtt_status._fetch_all_states")
     def test_no_non_blank_hosts(self, mock_fetch):
-        """When all hosts are blank, result is empty and fetch is still called."""
+        """When all hosts are blank, result is empty and HA is not queried."""
         mock_fetch.return_value = []
 
         from gdoc2netcfg.supplements.sensors2mqtt_status import query_status
@@ -151,6 +151,8 @@ class TestQueryStatus:
         result = query_status(ha_config, hosts, freshness_seconds=900, now=_NOW)
 
         assert result == {}
+        # Short-circuits before the HTTP call when there is nothing to check.
+        mock_fetch.assert_not_called()
 
     @patch("gdoc2netcfg.supplements.sensors2mqtt_status._fetch_all_states")
     def test_freshness_boundary(self, mock_fetch):

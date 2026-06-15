@@ -4,14 +4,14 @@
 
 **Goal:** Add `gdoc2netcfg sensors2mqtt` (`list` / `register` / `status`) — issue per-host MQTT broker logins for the `local` sensors2mqtt collectors (derive → register pre-hashed via the Plan 1 core) and verify their HA sensors are fresh. gdoc2netcfg generates **no** client-side config (Ansible recomputes + installs the env, §12 of the spec).
 
-**Architecture:** A thin adapter on the merged Plan 1 core. `derivations/sensors2mqtt.py` (pure): classify hosts by the `sensors2mqtt` sheet column (`local`/`remote`/blank) and `build_logins(secret, hosts)` = `{username("s2m-", h): password(secret, h)}` for `local` hosts. `supplements/mqtt_broker.py::register_logins(..., "s2m-", …)` does the broker side (already built). `status` queries HA `/api/states` (mirroring `tasmota_ha._fetch_all_states`) and classifies fresh/stale/missing. New `Sensors2mqttConfig` (`mqtt_secret`, `freshness_seconds`).
+**Architecture:** A thin adapter on the merged Plan 1 core. `derivations/sensors2mqtt.py` (pure): classify hosts by the Network sheet `Sensors` column (`local`/`remote`/blank) and `build_logins(secret, hosts)` = `{username("s2m-", h): password(secret, h)}` for `local` hosts. `supplements/mqtt_broker.py::register_logins(..., "s2m-", …)` does the broker side (already built). `status` queries HA `/api/states` (mirroring `tasmota_ha._fetch_all_states`) and classifies fresh/stale/missing. New `Sensors2mqttConfig` (`mqtt_secret`, `freshness_seconds`).
 
 **Tech Stack:** Python 3.11+, pytest, `urllib` (HA REST), `uv run`. Builds on `gdoc2netcfg.derivations.mqtt_credentials` + `gdoc2netcfg.supplements.mqtt_broker` (merged in Plan 1).
 
 **Spec:** `docs/superpowers/specs/2026-06-14-mqtt-credentials-design.md` §4.1, §4.3, §4.6, §4.8, §6, §11.2, §12.
 
 ## Prerequisites & deferrals (read before executing)
-- **Sheet column not yet present.** The `sensors2mqtt` column (`local`/`remote`/blank per host) is a one-off **operator step** (the user owns the sheet + knows which hosts run the collector). Code + unit tests here use synthetic `host.extra`; the **live** `register`/`status` runs only after the column is populated. Task 7 produces a paste-ready proposal for that population.
+- **Sheet column present but unpopulated.** The operator added a `Sensors` column to the **Network** sheet (`local`/`remote`/blank per host); it is currently all-blank. Populating it is a one-off bootstrap from the operator-confirmed hardware rules in spec §4.3 (RPi/BMC-parent-server → local; switch/bmc → remote; else blank) + the 5 manual `local` overrides (`ten64`, `hifive-unmatched-1/2`, `hls-fpga-node-2`, `minnow-turbot-1`). Code + unit tests here use synthetic `host.extra["Sensors"]`; the **live** `register`/`status` runs only after the column is populated. The write needs the service-account key (prod only — dev clone has none); Task 7 covers the bootstrap (dry-run from cache → write on prod, never overwriting a non-blank cell, both sites).
 - **§11.2 spike (Task 1)** confirms how sensors2mqtt names its HA discovery entities (drives `status` matching) AND folds in the **live PBKDF2 format-validation deferred from Plan 1** (register one throwaway `s2m-` login against the real broker, confirm a paho client authenticates, prune it). This is the one live-broker touchpoint — run by the controller, not a subagent.
 - **Cutover** (after this plan merges + the column is populated): `register` (broker restart) → Ansible installs/recomputes env on collectors → restart collectors (ten64 + canary first) → `status` to confirm. Per spec §8.
 
@@ -57,6 +57,24 @@ register_logins("ha.welland.mithis.com", "s2m-", {}, prune=True)  # remove the c
 Expect `register_logins` to return without raising (the `verify` connect proves the `PBKDF2$sha512$…` hash is accepted). This causes 2 broker restarts — acceptable for the one-time confirmation. Confirm `s2m-canary` is gone afterward (`_supervisor_get_logins`).
 
 - [ ] **Step 3: Record outcomes** in this plan (amend Task 6 with the confirmed entity-match rule). No code commit. If the verify fails, STOP — the format is wrong and must be fixed in `mqtt_broker._prehash` before continuing.
+
+> **SPIKE OUTCOME (2026-06-15, Step 1 done — read-only):** sensors2mqtt publishes
+> HA entities named **`sensor.<node_id(host.hostname)>_<metric>`** (node_id =
+> `gdoc2netcfg.utils.mqtt.node_id`). Observed metrics: `cpu_temperature`,
+> `load_1m`/`load_5m`/`load_15m`, `memory_used`/`memory_total`/`memory_available`,
+> `uptime`, `rp1_temperature`, `rp1_voltage_1..4`, `throttled`, `under_voltage`,
+> `frequency_capped`, `soft_temp_limit`, `supply_undervoltage`, `throttle_state`.
+> (friendly_names are HA-customized to the switch port — ignore; match on
+> entity_id.) **Match rule for Task 6:** match EXACT entity_ids
+> `sensor.{node_id}_{metric}` over a canonical metric set — NOT a `sensor.{node_id}_`
+> prefix (bare host `rpi5` vs `rpi5-netv2`/node_id `rpi5_netv2` would overlap).
+> Freshness = newest `last_updated` among the host's matched entities; no match → missing.
+> Currently only some Pis publish (e.g. `rpi5-*`); `ten64`/`rpi3`/`rpi4-ups` have none
+> yet → expected "missing" until Ansible deploys the collector at cutover.
+> **Step 2 (live PBKDF2 validation) DEFERRED to cutover** — it restarts the prod broker
+> twice; bundle with the real first `register` (also a restart) instead of a standalone
+> disruption. Plan 1's `PBKDF2$sha512$…` format was already validated against the
+> authoritative mosquitto-go-auth README in the Plan 1 opus review.
 
 ---
 
@@ -136,7 +154,7 @@ from gdoc2netcfg.models.host import Host, NetworkInterface
 
 
 def _host(hostname, s2m=None):
-    extra = {} if s2m is None else {"sensors2mqtt": s2m}
+    extra = {} if s2m is None else {"Sensors": s2m}
     return Host(machine_name=hostname.split(".")[0], hostname=hostname,
                 sheet_type="Network", interfaces=[NetworkInterface(
                     name=None, mac=MACAddress.parse("aa:bb:cc:dd:ee:ff"),
@@ -155,7 +173,7 @@ class TestClassify:
         assert classify(_host("a", " Local ")) == "local"
 
     def test_unrecognized_raises(self):
-        with pytest.raises(ValueError, match="sensors2mqtt"):
+        with pytest.raises(ValueError, match="Sensors"):
             classify(_host("a", "maybe"))
 
 
@@ -191,10 +209,11 @@ class TestBuildLogins:
 
 - [ ] **Step 3: Implement `src/gdoc2netcfg/derivations/sensors2mqtt.py`:**
 ```python
-"""sensors2mqtt host selection (sheet column) + broker login building.
+"""sensors2mqtt host selection (Network sheet `Sensors` column) + broker login
+building.
 
-Pure. Reads the `sensors2mqtt` column from `host.extra` (local/remote/blank)
-and builds the `{s2m-<id>: password}` map for `register`, reusing the shared
+Pure. Reads the `Sensors` column from `host.extra` (local/remote/blank) and
+builds the `{s2m-<id>: password}` map for `register`, reusing the shared
 credential core.
 """
 
@@ -210,18 +229,18 @@ if TYPE_CHECKING:
     from gdoc2netcfg.models.host import Host
 
 PREFIX = "s2m-"
-_COLUMN = "sensors2mqtt"
+_COLUMN = "Sensors"
 _VALID = {"local", "remote", ""}
 
 
 def classify(host: Host) -> str:
-    """Return 'local' / 'remote' / 'blank' for a host's sensors2mqtt column.
+    """Return 'local' / 'remote' / 'blank' for a host's `Sensors` column value.
 
     Fails loud on an unrecognized non-blank value (never silently skipped)."""
     value = host.extra.get(_COLUMN, "").strip().lower()
     if value not in _VALID:
         raise ValueError(
-            f"host {host.hostname}: unrecognized sensors2mqtt value "
+            f"host {host.hostname}: unrecognized Sensors value "
             f"{value!r} (expected 'local', 'remote', or blank)"
         )
     return "blank" if value == "" else value
@@ -374,7 +393,7 @@ from gdoc2netcfg.supplements.sensors2mqtt_status import query_status
 
 ---
 
-## Task 7: Example config + operator population proposal
+## Task 7: Example config + operator population bootstrap
 
 **Files:** Modify `gdoc2netcfg.toml.example`.
 
@@ -388,7 +407,7 @@ freshness_seconds = 900
 ```
 - [ ] **Step 2:** Confirm `uv run pytest tests/test_sources/test_config.py::TestLoadConfig::test_load_project_config -q` still passes (example loads).
 - [ ] **Step 3:** Commit (`config example: [sensors2mqtt] section (#28)`).
-- [ ] **Step 4 (controller, non-code):** Produce a paste-ready `local`/`remote`/blank value per current host for the operator to fill the new `sensors2mqtt` sheet column. (The collector fleet is the ~30 welland RPis + ten64 = `local`; polled servers/switches = `remote`; everything else blank; SDR Pis blank.) This is delivered to the user, not committed.
+- [ ] **Step 4 (controller, non-code): bootstrap the `Sensors` column** from the operator-confirmed rules in spec §4.3. The classification is settled (Welland inventory: 61 `local` / 35 `remote` / 120 blank): RPi hardware (MAC OUI `b8:27:eb`/`dc:a6:32`/`e4:5f:01`/`2c:cf:67`/… or `rpi*`/`pi\d+.fpgas` hostname) → `local`; non-switch host whose `machine_name` also belongs to a `bmc.*` host → `local`; switch (`hardware_type` netgear/cisco or `sw-*`/`ten12`) → `remote`; `bmc*` hostname → `remote`; else blank; plus the 5 manual `local` overrides (`ten64`, `hifive-unmatched-1/2`, `hls-fpga-node-2`, `minnow-turbot-1`). Write it via `utils.gsheets.get_gspread_client` + the `[sheets] spreadsheet_url`: per Network row set `Sensors` (col F) from `machine`(col B)+`interface`(col C) — `bmc*` interface rows → `remote`, else the machine's class — **never overwriting a non-blank cell**. Dry-run from the cached CSV first (no key needed) and show the diff; then run the real write **on prod** (welland has the service-account key) with the user's OK. Run on **both** sites' inventories (the sheet is shared) so monarto-only machines are covered too. Delivered/applied with the user, not committed.
 
 ---
 

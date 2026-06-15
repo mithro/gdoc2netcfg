@@ -6,6 +6,8 @@ import pytest
 
 from gdoc2netcfg.cli.main import main
 from gdoc2netcfg.config import HomeAssistantConfig, MqttBrokerConfig, TasmotaConfig
+from gdoc2netcfg.derivations.mqtt_credentials import password, username
+from gdoc2netcfg.derivations.tasmota_credentials import PREFIX
 from gdoc2netcfg.models.addressing import IPv4Address, MACAddress
 from gdoc2netcfg.models.host import Host, NetworkInterface, TasmotaData
 from gdoc2netcfg.supplements.tasmota import (
@@ -80,10 +82,12 @@ def _make_tasmota_data(**overrides):
     return TasmotaData(**defaults)
 
 
+_TASMOTA_SECRET = "0123456789abcdef0123456789abcdef"
+
+
 def _make_tasmota_config(**overrides):
     defaults = {
-        "mqtt_user": "tasmota",
-        "mqtt_password": "secret123",
+        "mqtt_secret": _TASMOTA_SECRET,
     }
     defaults.update(overrides)
     return TasmotaConfig(**defaults)
@@ -833,8 +837,8 @@ class TestComputeDesiredConfig:
         assert desired["Topic"] == "au-plug-10"
         assert desired["MqttHost"] == "ha.welland.mithis.com"
         assert desired["MqttPort"] == "1883"
-        assert desired["MqttUser"] == "tasmota"
-        assert desired["MqttPassword"] == "secret123"
+        assert desired["MqttUser"] == username(PREFIX, host)
+        assert desired["MqttPassword"] == password(_TASMOTA_SECRET, host)
 
     def test_names_always_machine_name(self):
         """Both names are machine_name regardless of Controls column."""
@@ -905,6 +909,7 @@ class TestComputeDrift:
             mqtt_topic="au-plug-10",
             mqtt_host="ha.welland.mithis.com",
             mqtt_port=1883,
+            mqtt_user=username(PREFIX, host),  # derived per-device username
         )
         config = _make_tasmota_config()
         drifts = compute_drift(host, _MQTT, config)
@@ -919,6 +924,7 @@ class TestComputeDrift:
             mqtt_topic="au-plug-10",
             mqtt_host="ha.welland.mithis.com",
             mqtt_port=1883,
+            mqtt_user=username(PREFIX, host),  # derived, so no MqttUser drift
         )
         config = _make_tasmota_config()
         drifts = compute_drift(host, _MQTT, config)
@@ -1093,6 +1099,7 @@ class TestConfigureTasmotaDevice:
             mqtt_topic="au-plug-10",
             mqtt_host="ha.welland.mithis.com",
             mqtt_port=1883,
+            mqtt_user=username(PREFIX, host),  # derived, so no MqttUser drift
         )
         config = _make_tasmota_config()
         result = configure_tasmota_device(host, _MQTT, config)
@@ -1119,7 +1126,7 @@ class TestConfigureTasmotaDevice:
             mqtt_topic="au-plug-10",
             mqtt_host="ha.welland.mithis.com",
             mqtt_port=1883,
-            mqtt_user="tasmota",
+            mqtt_user=username(PREFIX, host),  # derived, so no MqttUser drift
             mqtt_count=3,
         )
         config = _make_tasmota_config()
@@ -1255,6 +1262,7 @@ class TestConfigureMqttCountDiagnostic:
             mqtt_topic="au-plug-10",
             mqtt_host="ha.welland.mithis.com",
             mqtt_port=1883,
+            mqtt_user=username(PREFIX, host),  # derived, so no MqttUser drift
             mqtt_count=0,
         )
         config = _make_tasmota_config()
@@ -1278,6 +1286,7 @@ class TestConfigureMqttCountDiagnostic:
             mqtt_topic="au-plug-10",
             mqtt_host="ha.welland.mithis.com",
             mqtt_port=1883,
+            mqtt_user=username(PREFIX, host),  # derived, so no MqttUser drift
             mqtt_count=0,
         )
         config = _make_tasmota_config()
@@ -1320,6 +1329,7 @@ class TestConfigureMqttCountDiagnostic:
             mqtt_topic="au-plug-10",
             mqtt_host="ha.welland.mithis.com",
             mqtt_port=1883,
+            mqtt_user=username(PREFIX, host),  # derived, so no MqttUser drift
             mqtt_count=5,
         )
         config = _make_tasmota_config()
@@ -1337,6 +1347,7 @@ class TestConfigureMqttCountDiagnostic:
             mqtt_topic="old-topic",
             mqtt_host="ha.welland.mithis.com",
             mqtt_port=1883,
+            mqtt_user=username(PREFIX, host),  # derived, so no MqttUser drift
             mqtt_count=0,
         )
         config = _make_tasmota_config()
@@ -1362,6 +1373,7 @@ class TestConfigureMqttCountDiagnostic:
             mqtt_topic="au-plug-10",
             mqtt_host="ha.welland.mithis.com",
             mqtt_port=1883,
+            mqtt_user=username(PREFIX, host),  # derived, so no MqttUser drift
             mqtt_count=0,
         )
         config = _make_tasmota_config()
@@ -1385,6 +1397,7 @@ class TestConfigureAllTasmotaDevices:
             mqtt_topic="plug-1",
             mqtt_host="ha.welland.mithis.com",
             mqtt_port=1883,
+            mqtt_user=username(PREFIX, h1),  # derived, so no MqttUser drift
             ip="10.1.90.1",
         )
         h2 = _make_host(hostname="plug-2", ip="10.1.90.2", mac="aa:bb:cc:dd:ee:02")

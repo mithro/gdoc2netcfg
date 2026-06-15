@@ -1926,6 +1926,17 @@ def cmd_tasmota_show(args: argparse.Namespace) -> int:
 # Subcommand: tasmota configure
 # ---------------------------------------------------------------------------
 
+def _tasmota_hosts(config):
+    """Enriched host list with tasmota_data attached (same path as configure)."""
+    from gdoc2netcfg.supplements.tasmota import enrich_hosts_with_tasmota
+
+    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    _enrich_site_from_sheets(config, csv_data)
+    hosts = _build_hosts_from_csvs(config, csv_data)
+    enrich_hosts_with_tasmota(hosts, _load_latest_from_db(config, "load_latest_tasmota"))
+    return hosts
+
+
 def cmd_tasmota_configure(args: argparse.Namespace) -> int:
     """Push configuration to Tasmota devices."""
     config = _load_config(args)
@@ -1941,29 +1952,22 @@ def cmd_tasmota_configure(args: argparse.Namespace) -> int:
         )
         return 1
 
-    from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
-    from gdoc2netcfg.supplements.tasmota import enrich_hosts_with_tasmota
+    # Fail loud before deriving: an empty/weak secret would otherwise push a
+    # password(secret="", host) credential the broker never accepts, breaking
+    # the device's MQTT connection (spec §6, strong-secret guard per consumer).
+    from gdoc2netcfg.derivations.mqtt_credentials import require_strong_secret
+    try:
+        require_strong_secret(config.tasmota.mqtt_secret)
+    except ValueError as exc:
+        print(f"Error: [tasmota] {exc}", file=sys.stderr)
+        return 1
+
     from gdoc2netcfg.supplements.tasmota_configure import (
         configure_all_tasmota_devices,
         configure_tasmota_device,
     )
 
-    # Minimal pipeline to get hosts
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
-    _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
-
-    hosts = build_hosts(all_records, config.site)
-
-    enrich_hosts_with_tasmota(
-        hosts, _load_latest_from_db(config, "load_latest_tasmota"),
-    )
+    hosts = _tasmota_hosts(config)
 
     dry_run = args.dry_run
     force = args.force
@@ -2002,6 +2006,45 @@ def cmd_tasmota_configure(args: argparse.Namespace) -> int:
             dry_run=dry_run, verbose=True, force=force,
         )
         return 0 if ok else 1
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: tasmota register-broker
+# ---------------------------------------------------------------------------
+
+
+def cmd_tasmota_register_broker(args: argparse.Namespace) -> int:
+    """Register Tasmota broker logins on the HA Mosquitto add-on."""
+    from gdoc2netcfg.derivations.tasmota_credentials import PREFIX, build_logins
+    from gdoc2netcfg.supplements.mqtt_broker import register_logins
+
+    config = _load_config(args)
+    hosts = _tasmota_hosts(config)
+
+    if not config.homeassistant.ssh_host:
+        print("Error: [homeassistant] ssh_host not configured", file=sys.stderr)
+        return 1
+
+    try:
+        logins = build_logins(config.tasmota.mqtt_secret, hosts)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    verify = (
+        (config.homeassistant.mqtt.host, config.homeassistant.mqtt.port)
+        if not args.dry_run
+        else None
+    )
+    register_logins(
+        config.homeassistant.ssh_host,
+        PREFIX,
+        logins,
+        dry_run=args.dry_run,
+        prune=args.prune,
+        verify=verify,
+    )
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -2074,6 +2117,111 @@ def cmd_tasmota_ha_sync(args: argparse.Namespace) -> int:
         print(f"  {action} {machine_name:20s}  {old_display} -> \"{new_val}\"")
 
     print(f"\n{action} {len(changes)} device(s).")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommands: sensors2mqtt list
+# ---------------------------------------------------------------------------
+
+
+def _sensors2mqtt_hosts(config):
+    """Load CSVs and build hosts for sensors2mqtt classification.
+
+    Same fetch/enrich/build path as the ``password`` command (so hostnames
+    line up with the rest of the pipeline)."""
+    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    _enrich_site_from_sheets(config, csv_data)
+    return _build_hosts_from_csvs(config, csv_data)
+
+
+def cmd_sensors2mqtt_list(args: argparse.Namespace) -> int:
+    """Show sensors2mqtt classification for all hosts."""
+    config = _load_config(args)
+    hosts = _sensors2mqtt_hosts(config)
+
+    from gdoc2netcfg.derivations.sensors2mqtt import classify
+
+    print(f"{'hostname':<40}  {'sensors'}")
+    print("-" * 50)
+    for h in sorted(hosts, key=lambda h: h.hostname):
+        try:
+            classification = classify(h)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        if classification != "blank":
+            print(f"{h.hostname:<40}  {classification}")
+    return 0
+
+
+def cmd_sensors2mqtt_register(args: argparse.Namespace) -> int:
+    """Register sensors2mqtt broker logins on the HA Mosquitto add-on."""
+    from gdoc2netcfg.derivations.sensors2mqtt import PREFIX, build_logins
+    from gdoc2netcfg.supplements.mqtt_broker import register_logins
+
+    config = _load_config(args)
+    hosts = _sensors2mqtt_hosts(config)
+
+    if not config.homeassistant.ssh_host:
+        print("Error: [homeassistant] ssh_host not configured", file=sys.stderr)
+        return 1
+
+    try:
+        logins = build_logins(config.sensors2mqtt.mqtt_secret, hosts)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    verify = (
+        (config.homeassistant.mqtt.host, config.homeassistant.mqtt.port)
+        if not args.dry_run
+        else None
+    )
+    register_logins(
+        config.homeassistant.ssh_host,
+        PREFIX,
+        logins,
+        dry_run=args.dry_run,
+        prune=args.prune,
+        verify=verify,
+    )
+    return 0
+
+
+def cmd_sensors2mqtt_status(args: argparse.Namespace) -> int:
+    """Show sensors2mqtt entity freshness for all non-blank hosts."""
+    from datetime import datetime, timezone
+
+    from gdoc2netcfg.supplements.sensors2mqtt_status import query_status
+
+    config = _load_config(args)
+
+    if not config.homeassistant.url or not config.homeassistant.token:
+        print(
+            "Error: [homeassistant] url and token must be configured in gdoc2netcfg.toml",
+            file=sys.stderr,
+        )
+        return 1
+
+    hosts = _sensors2mqtt_hosts(config)
+    status = query_status(
+        config.homeassistant,
+        hosts,
+        config.sensors2mqtt.freshness_seconds,
+        datetime.now(timezone.utc),
+    )
+
+    if not status:
+        print("No sensors2mqtt hosts found (no 'local' or 'remote' Sensors column entries).")
+        return 0
+
+    print(f"{'hostname':<40}  {'sel':<8}  {'class':<8}  last_updated")
+    print("-" * 80)
+    for hostname in sorted(status):
+        rec = status[hostname]
+        lu = rec["last_updated"].isoformat() if rec["last_updated"] else "-"
+        print(f"{hostname:<40}  {rec['selection']:<8}  {rec['class']:<8}  {lu}")
     return 0
 
 
@@ -2695,10 +2843,31 @@ def main(argv: list[str] | None = None) -> int:
     tasmota_ha_sync_parser = tasmota_subparsers.add_parser(
         "ha-sync", help="Sync device metadata (names) to Home Assistant",
     )
+
+    rb = tasmota_subparsers.add_parser(
+        "register-broker", help="Register Tasmota broker logins on HA Mosquitto",
+    )
+    rb.add_argument("--dry-run", action="store_true", help="Show changes without applying")
+    rb.add_argument("--prune", action="store_true", help="Remove logins not in current device list")
     tasmota_ha_sync_parser.add_argument(
         "--dry-run", action="store_true",
         help="Show what would be changed without applying",
     )
+
+    # sensors2mqtt (with subcommands)
+    s2m_parser = subparsers.add_parser(
+        "sensors2mqtt", help="sensors2mqtt MQTT credentials",
+    )
+    s2m_subparsers = s2m_parser.add_subparsers(dest="s2m_command")
+    s2m_subparsers.add_parser("list", help="Show sensors2mqtt host classification")
+    s2m_subparsers.add_parser(
+        "status", help="Check Home Assistant entity freshness for sensors2mqtt hosts",
+    )
+    reg = s2m_subparsers.add_parser(
+        "register", help="Register sensors2mqtt broker logins on HA Mosquitto",
+    )
+    reg.add_argument("--dry-run", action="store_true", help="Show changes without applying")
+    reg.add_argument("--prune", action="store_true", help="Remove logins not in current host list")
 
     # zigbee (with subcommands)
     zigbee_parser = subparsers.add_parser(
@@ -2834,8 +3003,22 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_tasmota_ha_status(args)
         elif args.tasmota_command == "ha-sync":
             return cmd_tasmota_ha_sync(args)
+        elif args.tasmota_command == "register-broker":
+            return cmd_tasmota_register_broker(args)
         else:
             tasmota_parser.print_help()
+            return 0
+
+    # Handle sensors2mqtt subcommands
+    if args.command == "sensors2mqtt":
+        if args.s2m_command == "list":
+            return cmd_sensors2mqtt_list(args)
+        elif args.s2m_command == "register":
+            return cmd_sensors2mqtt_register(args)
+        elif args.s2m_command == "status":
+            return cmd_sensors2mqtt_status(args)
+        else:
+            s2m_parser.print_help()
             return 0
 
     # Handle reachability subcommands

@@ -18,6 +18,9 @@ import urllib.request
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from gdoc2netcfg.derivations.mqtt_credentials import password, username
+from gdoc2netcfg.derivations.tasmota_credentials import PREFIX
+
 if TYPE_CHECKING:
     from gdoc2netcfg.config import MqttBrokerConfig, TasmotaConfig
     from gdoc2netcfg.models.host import Host
@@ -51,7 +54,7 @@ def compute_desired_config(
     Args:
         host: Host object with tasmota_data and extra columns.
         mqtt_config: HA Mosquitto broker connection (MqttHost/MqttPort).
-        tasmota_config: Tasmota device MQTT login (MqttUser/MqttPassword).
+        tasmota_config: Tasmota credential secret (derives MqttUser/MqttPassword).
 
     Returns:
         Mapping of Tasmota command name to desired value.
@@ -69,8 +72,8 @@ def compute_desired_config(
         "Topic": host.machine_name,
         "MqttHost": mqtt_config.host,
         "MqttPort": str(mqtt_config.port),
-        "MqttUser": tasmota_config.mqtt_user,
-        "MqttPassword": tasmota_config.mqtt_password,
+        "MqttUser": username(PREFIX, host),
+        "MqttPassword": password(tasmota_config.mqtt_secret, host),
     })
 
     return desired
@@ -107,7 +110,7 @@ def compute_drift(
     Args:
         host: Host with tasmota_data attached.
         mqtt_config: HA Mosquitto broker connection (MqttHost/MqttPort).
-        tasmota_config: Tasmota device MQTT login (MqttUser/MqttPassword).
+        tasmota_config: Tasmota credential secret (derives MqttUser/MqttPassword).
 
     Returns:
         List of ConfigDrift entries for fields that need updating.
@@ -193,7 +196,7 @@ def configure_tasmota_device(
     Args:
         host: Host with tasmota_data attached.
         mqtt_config: HA Mosquitto broker connection (MqttHost/MqttPort).
-        tasmota_config: Tasmota device MQTT login (MqttUser/MqttPassword).
+        tasmota_config: Tasmota credential secret (derives MqttUser/MqttPassword).
         dry_run: If True, show changes without applying.
         verbose: Print progress to stderr.
         force: If True, apply changes that would break HA integration
@@ -313,7 +316,7 @@ def configure_all_tasmota_devices(
     Args:
         hosts: Hosts with tasmota_data attached.
         mqtt_config: HA Mosquitto broker connection (MqttHost/MqttPort).
-        tasmota_config: Tasmota device MQTT login (MqttUser/MqttPassword).
+        tasmota_config: Tasmota credential secret (derives MqttUser/MqttPassword).
         dry_run: If True, show changes without applying.
         verbose: Print progress to stderr.
         force: If True, apply HA-breaking changes (e.g. Topic rename).

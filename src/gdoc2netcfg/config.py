@@ -57,15 +57,14 @@ class GeneratorConfig:
 
 @dataclass
 class TasmotaConfig:
-    """Tasmota device MQTT login pushed to the devices.
+    """Tasmota per-device MQTT credential derivation ([tasmota]).
 
-    The broker host/port the devices connect to come from
-    [homeassistant.mqtt]; this holds only the device login (MqttUser /
-    MqttPassword). Per-device credentials are a future change (#28).
+    `mqtt_secret` derives each device's MqttUser (`tas-<id>`) and MqttPassword
+    (`sha256(secret+<id>)`); the broker stores the pre-hashed form. Replaces the
+    #30 interim shared `mqtt_user`/`mqtt_password` static login.
     """
 
-    mqtt_user: str = ""
-    mqtt_password: str = ""
+    mqtt_secret: str = ""
 
 
 @dataclass
@@ -247,10 +246,7 @@ def _build_tasmota(data: dict) -> TasmotaConfig:
     section = data.get("tasmota", {})
     if not section:
         return TasmotaConfig()
-    return TasmotaConfig(
-        mqtt_user=section.get("mqtt_user", ""),
-        mqtt_password=section.get("mqtt_password", ""),
-    )
+    return TasmotaConfig(mqtt_secret=section.get("mqtt_secret", ""))
 
 
 def _build_sensors2mqtt(data: dict) -> Sensors2mqttConfig:

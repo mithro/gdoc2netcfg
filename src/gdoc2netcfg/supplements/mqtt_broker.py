@@ -18,7 +18,7 @@ import json
 import os
 import subprocess
 import sys
-import time
+import threading
 
 import paho.mqtt.client as mqtt
 
@@ -91,42 +91,41 @@ def _restart_addon(ssh_host: str) -> None:
     _supervisor(ssh_host, f"/addons/{_ADDON}/restart", post=True)
 
 
-def _on_connect(res: dict):
-    def handler(cl, u, f, rc, p):
-        res["rc"] = rc
-
-    return handler
-
-
 def _verify_login(
-    host: str, port: int, user: str, plaintext: str, *, timeout: float = 20.0
+    host: str, port: int, user: str, plaintext: str, *, timeout: float = 90.0
 ) -> None:
-    """Connect once as a just-registered user; raise if the broker rejects it.
-    Retries across the add-on restart window."""
-    deadline = time.time() + timeout
-    last: Exception | str | None = None
-    while time.time() < deadline:
-        res: dict = {"rc": None}
-        c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="gdoc2netcfg-verify")
-        c.username_pw_set(user, plaintext)
-        c.on_connect = _on_connect(res)
-        try:
-            c.connect(host, port, keepalive=10)
-            c.loop_start()
-            t = time.time()
-            while res["rc"] is None and time.time() - t < 3:
-                time.sleep(0.1)
-            c.loop_stop()
-            c.disconnect()
-        except OSError as e:
-            last = e
-            time.sleep(1.0)
-            continue
-        if res["rc"] == 0:
-            return
-        last = f"CONNACK rc={res['rc']}"
-        time.sleep(1.0)
-    raise RuntimeError(f"post-register login verify failed for {user}: {last}")
+    """Connect as a just-registered user; raise if the broker doesn't accept it
+    within ``timeout``.
+
+    Uses paho's async reconnect loop + a ``threading.Event`` instead of a sleep
+    loop: paho keeps (re)connecting across the add-on restart window, and we
+    block on the event, returning the instant a *successful* CONNACK arrives.
+    A heavy restart (many logins) can take tens of seconds, so the window is
+    generous; only ``rc == 0`` sets the event, so a transient rejection while
+    the add-on is still reloading is retried rather than treated as failure."""
+    ev = threading.Event()
+    res: dict = {"rc": None}
+
+    def on_connect(cl, u, f, rc, props):
+        res["rc"] = rc
+        if rc == 0:
+            ev.set()
+
+    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="gdoc2netcfg-verify")
+    c.username_pw_set(user, plaintext)
+    c.on_connect = on_connect
+    c.reconnect_delay_set(min_delay=1, max_delay=5)
+    c.connect_async(host, port, keepalive=10)
+    c.loop_start()
+    try:
+        if not ev.wait(timeout=timeout):
+            raise RuntimeError(
+                f"post-register login verify failed for {user}: no successful "
+                f"CONNACK within {timeout:.0f}s (last rc={res['rc']})"
+            )
+    finally:
+        c.loop_stop()
+        c.disconnect()
 
 
 def register_logins(

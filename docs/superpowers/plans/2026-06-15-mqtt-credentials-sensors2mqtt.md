@@ -58,6 +58,24 @@ Expect `register_logins` to return without raising (the `verify` connect proves 
 
 - [ ] **Step 3: Record outcomes** in this plan (amend Task 6 with the confirmed entity-match rule). No code commit. If the verify fails, STOP — the format is wrong and must be fixed in `mqtt_broker._prehash` before continuing.
 
+> **SPIKE OUTCOME (2026-06-15, Step 1 done — read-only):** sensors2mqtt publishes
+> HA entities named **`sensor.<node_id(host.hostname)>_<metric>`** (node_id =
+> `gdoc2netcfg.utils.mqtt.node_id`). Observed metrics: `cpu_temperature`,
+> `load_1m`/`load_5m`/`load_15m`, `memory_used`/`memory_total`/`memory_available`,
+> `uptime`, `rp1_temperature`, `rp1_voltage_1..4`, `throttled`, `under_voltage`,
+> `frequency_capped`, `soft_temp_limit`, `supply_undervoltage`, `throttle_state`.
+> (friendly_names are HA-customized to the switch port — ignore; match on
+> entity_id.) **Match rule for Task 6:** match EXACT entity_ids
+> `sensor.{node_id}_{metric}` over a canonical metric set — NOT a `sensor.{node_id}_`
+> prefix (bare host `rpi5` vs `rpi5-netv2`/node_id `rpi5_netv2` would overlap).
+> Freshness = newest `last_updated` among the host's matched entities; no match → missing.
+> Currently only some Pis publish (e.g. `rpi5-*`); `ten64`/`rpi3`/`rpi4-ups` have none
+> yet → expected "missing" until Ansible deploys the collector at cutover.
+> **Step 2 (live PBKDF2 validation) DEFERRED to cutover** — it restarts the prod broker
+> twice; bundle with the real first `register` (also a restart) instead of a standalone
+> disruption. Plan 1's `PBKDF2$sha512$…` format was already validated against the
+> authoritative mosquitto-go-auth README in the Plan 1 opus review.
+
 ---
 
 ## Task 2: `Sensors2mqttConfig`

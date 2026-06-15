@@ -2078,6 +2078,41 @@ def cmd_tasmota_ha_sync(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subcommands: sensors2mqtt list
+# ---------------------------------------------------------------------------
+
+
+def _sensors2mqtt_hosts(config):
+    """Load CSVs and build hosts for sensors2mqtt classification.
+
+    Same fetch/enrich/build path as the ``password`` command (so hostnames
+    line up with the rest of the pipeline)."""
+    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    _enrich_site_from_sheets(config, csv_data)
+    return _build_hosts_from_csvs(config, csv_data)
+
+
+def cmd_sensors2mqtt_list(args: argparse.Namespace) -> int:
+    """Show sensors2mqtt classification for all hosts."""
+    config = _load_config(args)
+    hosts = _sensors2mqtt_hosts(config)
+
+    from gdoc2netcfg.derivations.sensors2mqtt import classify
+
+    print(f"{'hostname':<40}  {'sensors'}")
+    print("-" * 50)
+    for h in sorted(hosts, key=lambda h: h.hostname):
+        try:
+            classification = classify(h)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        if classification != "blank":
+            print(f"{h.hostname:<40}  {classification}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Subcommands: zigbee scan / show / update-sheet
 # ---------------------------------------------------------------------------
 
@@ -2700,6 +2735,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Show what would be changed without applying",
     )
 
+    # sensors2mqtt (with subcommands)
+    s2m_parser = subparsers.add_parser(
+        "sensors2mqtt", help="sensors2mqtt MQTT credentials",
+    )
+    s2m_subparsers = s2m_parser.add_subparsers(dest="s2m_command")
+    s2m_subparsers.add_parser("list", help="Show sensors2mqtt host classification")
+
     # zigbee (with subcommands)
     zigbee_parser = subparsers.add_parser(
         "zigbee", help="Zigbee2MQTT device scanning and sheet updates",
@@ -2836,6 +2878,14 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_tasmota_ha_sync(args)
         else:
             tasmota_parser.print_help()
+            return 0
+
+    # Handle sensors2mqtt subcommands
+    if args.command == "sensors2mqtt":
+        if args.s2m_command == "list":
+            return cmd_sensors2mqtt_list(args)
+        else:
+            s2m_parser.print_help()
             return 0
 
     # Handle reachability subcommands

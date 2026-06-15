@@ -182,3 +182,24 @@ def test_credentials_db_path():
 
     cfg = CacheConfig(directory=Path("/x/.cache"))
     assert cfg.credentials_db_path == Path("/x/.cache/credentials.db")
+
+
+class TestSensors2mqttConfig:
+    def _write(self, tmp_path, body):
+        p = tmp_path / "gdoc2netcfg.toml"
+        p.write_text(body)
+        return p
+
+    def test_parsed(self, tmp_path):
+        from gdoc2netcfg.config import load_config
+        c = load_config(self._write(tmp_path,
+            '[site]\nname="t"\ndomain="t.example"\n\n'
+            '[sensors2mqtt]\nmqtt_secret="s"\nfreshness_seconds=600\n'))
+        assert c.sensors2mqtt.mqtt_secret == "s"
+        assert c.sensors2mqtt.freshness_seconds == 600
+
+    def test_defaults(self, tmp_path):
+        from gdoc2netcfg.config import load_config
+        c = load_config(self._write(tmp_path, '[site]\nname="t"\ndomain="t.example"\n'))
+        assert c.sensors2mqtt.mqtt_secret == ""
+        assert c.sensors2mqtt.freshness_seconds == 900

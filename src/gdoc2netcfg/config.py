@@ -69,6 +69,19 @@ class TasmotaConfig:
 
 
 @dataclass
+class Sensors2mqttConfig:
+    """sensors2mqtt credential issuance settings ([sensors2mqtt]).
+
+    `mqtt_secret` derives each `local` collector's broker password; it is also
+    mirrored into the Ansible vault so Ansible recomputes the identical value.
+    `freshness_seconds` is the `status` stale threshold.
+    """
+
+    mqtt_secret: str = ""
+    freshness_seconds: int = 900
+
+
+@dataclass
 class ZigbeeConfig:
     """Configuration for Zigbee2MQTT device scanning and sheet updates.
 
@@ -141,6 +154,7 @@ class PipelineConfig:
     cache: CacheConfig = field(default_factory=CacheConfig)
     generators: dict[str, GeneratorConfig] = field(default_factory=dict)
     tasmota: TasmotaConfig = field(default_factory=TasmotaConfig)
+    sensors2mqtt: Sensors2mqttConfig = field(default_factory=Sensors2mqttConfig)
     homeassistant: HomeAssistantConfig = field(default_factory=HomeAssistantConfig)
     zigbee: ZigbeeConfig = field(default_factory=ZigbeeConfig)
 
@@ -239,6 +253,17 @@ def _build_tasmota(data: dict) -> TasmotaConfig:
     )
 
 
+def _build_sensors2mqtt(data: dict) -> Sensors2mqttConfig:
+    """Build sensors2mqtt config from parsed TOML data."""
+    section = data.get("sensors2mqtt", {})
+    if not section:
+        return Sensors2mqttConfig()
+    return Sensors2mqttConfig(
+        mqtt_secret=section.get("mqtt_secret", ""),
+        freshness_seconds=section.get("freshness_seconds", 900),
+    )
+
+
 def _build_zigbee(data: dict) -> ZigbeeConfig:
     """Build Zigbee config from parsed TOML data.
 
@@ -297,6 +322,7 @@ def load_config(config_path: Path | str | None = None) -> PipelineConfig:
         ),
         generators=_build_generators(data),
         tasmota=_build_tasmota(data),
+        sensors2mqtt=_build_sensors2mqtt(data),
         homeassistant=_build_homeassistant(data),
         zigbee=_build_zigbee(data),
     )

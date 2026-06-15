@@ -1146,8 +1146,12 @@ class TestConfigureTasmotaDevice:
         assert "MqttHost" not in sent_fields
 
     @patch("gdoc2netcfg.supplements.tasmota_configure._send_tasmota_command")
-    def test_apply_sends_mqtt_user_when_drifted(self, mock_send):
-        """MqttUser drift is pushed, but MqttPassword is NOT (MQTT is connected)."""
+    def test_apply_sends_mqtt_password_with_mqtt_user_drift(self, mock_send):
+        """A MqttUser change (migration) on a connected device pushes BOTH
+        MqttUser and MqttPassword — the new user must get its new password, or
+        the device would authenticate with the old password and drop off the
+        broker. (MqttPassword can't be read back, so it's never a detected drift
+        and must ride along with any MqttUser change.)"""
         host = _make_host(hostname="au-plug-10")
         host.tasmota_data = _make_tasmota_data(
             device_name="au-plug-10",
@@ -1157,7 +1161,7 @@ class TestConfigureTasmotaDevice:
             mqtt_host="ha.welland.mithis.com",
             mqtt_port=1883,
             mqtt_user="wrong-user",
-            mqtt_count=3,
+            mqtt_count=3,  # connected
         )
         config = _make_tasmota_config()
         mock_send.return_value = {}
@@ -1167,8 +1171,7 @@ class TestConfigureTasmotaDevice:
 
         sent_fields = [call.args[1].split(" ")[0] for call in mock_send.call_args_list]
         assert "MqttUser" in sent_fields
-        # MqttPassword NOT pushed — MQTT is connected, credentials are working
-        assert "MqttPassword" not in sent_fields
+        assert "MqttPassword" in sent_fields
 
     @patch("gdoc2netcfg.supplements.tasmota_configure._send_tasmota_command")
     def test_apply_failure(self, mock_send):

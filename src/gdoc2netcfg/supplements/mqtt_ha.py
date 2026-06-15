@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING
 
 import paho.mqtt.client as mqtt
 
+from gdoc2netcfg.utils.mqtt import node_id
+
 if TYPE_CHECKING:
     from gdoc2netcfg.config import MqttBrokerConfig, PipelineConfig
     from gdoc2netcfg.models.host import Host, VirtualInterface
@@ -48,23 +50,6 @@ ORIGIN = {
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _node_id(name: str) -> str:
-    """Derive MQTT node_id from a host's hostname.
-
-    Replaces non-alphanumeric characters with underscores.
-
-    Uses hostname (not machine_name) because BMC hosts share their
-    parent's machine_name (e.g. both "big-storage" and
-    "bmc.big-storage" have machine_name="big-storage"), which would
-    cause entity ID collisions.  Hostname is always unique.
-
-    Example: "big-storage" -> "big_storage"
-    Example: "bmc.big-storage" -> "bmc_big_storage"
-    Example: "au-plug-1.iot" -> "au_plug_1_iot"
-    """
-    return re.sub(r"[^a-zA-Z0-9]", "_", name).lower()
-
 
 def _iface_slug(vi: VirtualInterface) -> str:
     """Derive interface slug for MQTT topics and unique_ids.
@@ -246,7 +231,7 @@ def _iface_entities(iface_slug: str, iface_name: str | None) -> list[EntityDef]:
 
 def _device_dict(host: Host) -> dict:
     """Build HA device registry dict for a host."""
-    nid = _node_id(host.hostname)
+    nid = node_id(host.hostname)
     device: dict = {
         "identifiers": [f"gdoc2netcfg_{nid}"],
         "name": host.hostname,
@@ -465,7 +450,7 @@ def build_host_state(
 
     Returns dict mapping state topic suffix to payload string/dict.
     """
-    nid = _node_id(host.hostname)
+    nid = node_id(host.hostname)
     states: dict[str, str | dict] = {}
 
     # Connectivity: ON/OFF
@@ -505,7 +490,7 @@ def build_interface_state(
 
     Returns dict mapping state topic to payload string.
     """
-    nid = _node_id(host.hostname)
+    nid = node_id(host.hostname)
     slug = _iface_slug(vi)
     prefix = f"{STATE_PREFIX}/{nid}/{slug}"
     states: dict[str, str | dict] = {}
@@ -606,7 +591,7 @@ def _publish_hosts_to_client(
 
     # Phase 1: Publish ALL discovery payloads (retained)
     for host in sorted_hosts:
-        nid = _node_id(host.hostname)
+        nid = node_id(host.hostname)
         hr = reachability[host.hostname]
         dev_dict = _device_dict(host)
         avail_list, avail_mode = _availability_list(host)
@@ -672,7 +657,7 @@ def _publish_hosts_to_client(
 
     # Phase 2: Publish ALL state messages (not retained)
     for host in sorted_hosts:
-        nid = _node_id(host.hostname)
+        nid = node_id(host.hostname)
         hr = reachability[host.hostname]
 
         # Host-level state

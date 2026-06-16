@@ -17,6 +17,7 @@ import sys
 import urllib.error
 import urllib.request
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from gdoc2netcfg.models.host import TasmotaData
@@ -26,6 +27,33 @@ if TYPE_CHECKING:
     from gdoc2netcfg.models.network import Site
 
 _UNKNOWN_PREFIX = "_unknown/"
+
+
+@dataclass(frozen=True)
+class TasmotaDiscrepancy:
+    """A mismatch between the network and the golden spreadsheet.
+
+    kind is one of: "unknown_device", "ip_mismatch", "duplicate_sheet_mac",
+    "duplicate_network_mac", "unidentifiable".
+    """
+
+    kind: str
+    mac: str
+    ip: str
+    hostname: str  # sheet hostname when known, else ""
+    detail: str
+
+    def format(self) -> str:
+        loc = self.hostname or self.mac or self.ip or "?"
+        return f"[{self.kind}] {loc}: {self.detail}"
+
+
+@dataclass(frozen=True)
+class TasmotaScanResult:
+    """Outcome of a Tasmota scan: per-device data plus discrepancies."""
+
+    data: dict[str, dict]
+    discrepancies: list[TasmotaDiscrepancy]
 
 
 def _unknown_key(ip: str) -> str:

@@ -1596,3 +1596,31 @@ class TestFetchAllStates:
         call_args = mock_urlopen.call_args
         req = call_args[0][0]
         assert "//" not in req.full_url.replace("http://", "")
+
+
+class TestTasmotaDiscrepancy:
+    def test_format_includes_kind_and_detail(self):
+        from gdoc2netcfg.supplements.tasmota import TasmotaDiscrepancy
+        d = TasmotaDiscrepancy(
+            kind="unknown_device", mac="aa:bb:cc:dd:ee:ff",
+            ip="10.1.90.9", hostname="", detail="not in this site's sheet",
+        )
+        text = d.format()
+        assert "unknown_device" in text
+        assert "not in this site's sheet" in text
+        # falls back to mac when there's no hostname
+        assert "aa:bb:cc:dd:ee:ff" in text
+
+    def test_scan_result_holds_data_and_discrepancies(self):
+        from gdoc2netcfg.supplements.tasmota import (
+            TasmotaDiscrepancy,
+            TasmotaScanResult,
+        )
+        r = TasmotaScanResult(data={"plug1": {}}, discrepancies=[])
+        assert r.data == {"plug1": {}}
+        assert r.discrepancies == []
+        r2 = TasmotaScanResult(
+            data={},
+            discrepancies=[TasmotaDiscrepancy("ip_mismatch", "m", "i", "h", "d")],
+        )
+        assert r2.discrepancies[0].kind == "ip_mismatch"

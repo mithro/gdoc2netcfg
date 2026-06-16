@@ -311,11 +311,12 @@ def _structured_ddl_statements() -> list[str]:
     # Tasmota: one row per device.  The entity column is device_key —
     # a spreadsheet hostname or an "_unknown/<ip>" marker — distinct
     # from the device's self-reported "hostname" field.
-    stmts += _entity_table_ddl("tasmota_devices", "device_key", tuple(
-        (key,
-         _sql_type(typ).replace(" NOT NULL", "")
-         if key in _TASMOTA_OPTIONAL_FIELDS else _sql_type(typ))
-        for key, typ in _TASMOTA_FIELDS
+    stmts += _entity_table_ddl("tasmota_devices", "device_key", (
+        *((key,
+           _sql_type(typ).replace(" NOT NULL", "")
+           if key in _TASMOTA_OPTIONAL_FIELDS else _sql_type(typ))
+          for key, typ in _TASMOTA_FIELDS),
+        ("is_tombstone", "INTEGER NOT NULL DEFAULT 0"),
     ))
 
     # Zigbee: per-site bridge-info rows and per-device rows, each
@@ -727,11 +728,14 @@ class DiscoveryDB(BaseDatabase):
     # v6: bridge port_aliases (ifAlias port descriptions).
     # v7: nullable traffic counters; vendor PoE power, box sensors,
     #     bridge MAC, LLDP port descriptions.
-    SCHEMA_VERSION = 7
+    # v8: tasmota_devices.is_tombstone (sheet-MAC identity tombstones).
+    SCHEMA_VERSION = 8
     SCHEMA_UPGRADES = {
         5: ["ALTER TABLE tasmota_devices ADD COLUMN mqtt_count INTEGER"],
         6: [_upgrade_v6_port_aliases],
         7: [_upgrade_v7_extended_bridge_data],
+        8: ["ALTER TABLE tasmota_devices "
+            "ADD COLUMN is_tombstone INTEGER NOT NULL DEFAULT 0"],
     }
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:

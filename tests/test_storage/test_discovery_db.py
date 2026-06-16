@@ -820,6 +820,11 @@ class TestTasmotaShapes:
         assert db.load_latest_tasmota()["plug1"]["mqtt_count"] == 3
 
 
+def _strip_v8(conn: sqlite3.Connection) -> None:
+    """Regress a current DB's v8 features back to the v7 shape."""
+    conn.execute("ALTER TABLE tasmota_devices DROP COLUMN is_tombstone")
+
+
 def _strip_v7(conn: sqlite3.Connection) -> None:
     """Regress a current DB's v7 features back to the v6 shape."""
     conn.execute(
@@ -851,6 +856,7 @@ class TestSchemaUpgradeV5:
     def _make_v4_db(self, path: Path) -> None:
         """Create a current DB, then strip it back to schema v4."""
         d = DiscoveryDB(path)
+        _strip_v8(d.connection)
         _strip_v7(d.connection)
         d.connection.execute(
             "ALTER TABLE tasmota_devices DROP COLUMN mqtt_count"  # v5
@@ -917,6 +923,7 @@ class TestSchemaUpgradeV6:
     def _make_v5_db(self, path: Path) -> None:
         """Create a current DB, then strip it back to schema v5."""
         d = DiscoveryDB(path)
+        _strip_v8(d.connection)
         _strip_v7(d.connection)
         d.connection.execute("DROP TABLE bridge_port_aliases")
         d.connection.execute(
@@ -987,6 +994,7 @@ class TestSchemaUpgradeV7:
     def _make_v6_db(self, path: Path) -> None:
         """Create a current DB, then strip it back to schema v6."""
         d = DiscoveryDB(path)
+        _strip_v8(d.connection)
         _strip_v7(d.connection)
         d.connection.execute(
             "UPDATE _meta SET value = '6' WHERE key = 'schema_version'"
@@ -1391,3 +1399,41 @@ class TestSchemaVersion:
 
         with pytest.raises(SchemaVersionError, match="newer than the code"):
             DiscoveryDB(path)
+
+
+class TestTasmotaTombstoneMigration:
+    def test_v8_adds_is_tombstone_and_preserves_data(self, tmp_path: Path):
+        path = tmp_path / "discovery.db"
+        # Build a current DB with a tasmota row.
+        db = DiscoveryDB(path)
+        s = db.begin_scan("tasmota")
+        db.save_tasmota(s, {"plug1": _tasmota_doc()})
+        db.finish_scan(s, host_count=1, changed_count=1)
+        db.close()
+
+        # Simulate a pre-v8 DB: drop the column and reset the schema version.
+        raw = sqlite3.connect(path)
+        raw.execute("ALTER TABLE tasmota_devices DROP COLUMN is_tombstone")
+        raw.execute("UPDATE _meta SET value = '7' WHERE key = 'schema_version'")
+        raw.commit()
+        raw.close()
+
+        # Reopening runs the v8 upgrade.
+        db2 = DiscoveryDB(path)
+        cols = [r[1] for r in db2.connection.execute(
+            "PRAGMA table_info(tasmota_devices)")]
+        assert "is_tombstone" in cols
+        version = db2.connection.execute(
+            "SELECT value FROM _meta WHERE key = 'schema_version'"
+        ).fetchone()[0]
+        assert int(version) == 8
+        # Pre-existing row defaults to live (is_tombstone=0) and round-trips.
+        assert db2.load_latest_tasmota() == {"plug1": _tasmota_doc()}
+        db2.close()
+
+    def test_fresh_db_has_is_tombstone_column(self, tmp_path: Path):
+        db = DiscoveryDB(tmp_path / "fresh.db")
+        cols = [r[1] for r in db.connection.execute(
+            "PRAGMA table_info(tasmota_devices)")]
+        assert "is_tombstone" in cols
+        db.close()

@@ -1713,6 +1713,92 @@ class TestScanTasmotaMacIdentity:
                        for d in result.discrepancies)
 
 
+class TestTasmotaCliHelpers:
+    def test_report_discrepancies_returns_one_and_prints(self, capsys):
+        from gdoc2netcfg.cli.main import _report_tasmota_discrepancies
+        from gdoc2netcfg.supplements.tasmota import TasmotaDiscrepancy
+        d = TasmotaDiscrepancy("unknown_device", "aa:bb:cc:dd:ee:ff",
+                               "10.1.90.9", "", "not in this site's sheet")
+        rc = _report_tasmota_discrepancies([d])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "ERROR" in err
+        assert "unknown_device" in err
+
+    def test_report_no_discrepancies_returns_zero(self, capsys):
+        from gdoc2netcfg.cli.main import _report_tasmota_discrepancies
+        assert _report_tasmota_discrepancies([]) == 0
+
+    def test_save_tasmota_to_db_tombstones_vanished(self, tmp_path):
+        from gdoc2netcfg.cli.main import _save_tasmota_to_db
+        from gdoc2netcfg.storage.discovery_db import DiscoveryDB
+        config = MagicMock()
+        config.cache.discovery_db_path = tmp_path / "discovery.db"
+
+        _save_tasmota_to_db(config, {
+            "plug1": _parsed(name="plug1"), "plug2": _parsed(name="plug2"),
+        })
+        _save_tasmota_to_db(config, {"plug1": _parsed(name="plug1")})
+
+        with DiscoveryDB(config.cache.discovery_db_path) as db:
+            assert set(db.load_latest_tasmota()) == {"plug1"}
+
+
+class TestCmdTasmotaScan:
+    # Smoke tests that actually execute cmd_tasmota_scan's body, so a broken
+    # import or mis-wired return value can't pass unnoticed (Task 4's rewrite
+    # broke this command and nothing caught it). Patch targets follow Python's
+    # import semantics: function-level `from X import name` resolves from the
+    # SOURCE module at call time, so scan_tasmota is patched at its source.
+    @patch("gdoc2netcfg.cli.main._save_tasmota_to_db")
+    @patch("gdoc2netcfg.supplements.tasmota.scan_tasmota")
+    @patch("gdoc2netcfg.cli.main._load_latest_from_db", return_value=None)
+    @patch("gdoc2netcfg.cli.main._fresh_scan_age", return_value=None)
+    @patch("gdoc2netcfg.derivations.host_builder.build_hosts", return_value=[])
+    @patch("gdoc2netcfg.cli.main._enrich_site_from_sheets")
+    @patch("gdoc2netcfg.cli.main._fetch_or_load_csvs", return_value=[])
+    @patch("gdoc2netcfg.cli.main._load_config")
+    def test_scan_exit_nonzero_on_discrepancies(
+        self, m_cfg, m_fetch, m_enrich_site, m_build, m_age, m_latest,
+        m_scan, m_save,
+    ):
+        from gdoc2netcfg.cli.main import cmd_tasmota_scan
+        from gdoc2netcfg.supplements.tasmota import (
+            TasmotaDiscrepancy,
+            TasmotaScanResult,
+        )
+        m_scan.return_value = TasmotaScanResult(
+            data={"plug1": _parsed(name="plug1")},
+            discrepancies=[
+                TasmotaDiscrepancy("unknown_device", "m", "i", "", "d"),
+            ],
+        )
+        rc = cmd_tasmota_scan(MagicMock(force=True))
+        assert rc == 1
+        m_save.assert_called_once()
+
+    @patch("gdoc2netcfg.cli.main._save_tasmota_to_db")
+    @patch("gdoc2netcfg.supplements.tasmota.scan_tasmota")
+    @patch("gdoc2netcfg.cli.main._load_latest_from_db", return_value=None)
+    @patch("gdoc2netcfg.cli.main._fresh_scan_age", return_value=None)
+    @patch("gdoc2netcfg.derivations.host_builder.build_hosts", return_value=[])
+    @patch("gdoc2netcfg.cli.main._enrich_site_from_sheets")
+    @patch("gdoc2netcfg.cli.main._fetch_or_load_csvs", return_value=[])
+    @patch("gdoc2netcfg.cli.main._load_config")
+    def test_scan_exit_zero_when_clean(
+        self, m_cfg, m_fetch, m_enrich_site, m_build, m_age, m_latest,
+        m_scan, m_save,
+    ):
+        from gdoc2netcfg.cli.main import cmd_tasmota_scan
+        from gdoc2netcfg.supplements.tasmota import TasmotaScanResult
+        m_scan.return_value = TasmotaScanResult(
+            data={"plug1": _parsed(name="plug1")}, discrepancies=[],
+        )
+        rc = cmd_tasmota_scan(MagicMock(force=True))
+        assert rc == 0
+        m_save.assert_called_once()
+
+
 class TestTasmotaDiscrepancy:
     def test_format_includes_kind_and_detail(self):
         from gdoc2netcfg.supplements.tasmota import TasmotaDiscrepancy

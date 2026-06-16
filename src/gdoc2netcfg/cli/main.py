@@ -241,6 +241,32 @@ def _save_reachability_to_db(config: PipelineConfig, reachability: dict) -> None
             raise
 
 
+def _save_tasmota_to_db(config: PipelineConfig, data: dict) -> None:
+    """Save a tasmota scan and tombstone vanished device_keys.
+
+    Mirrors _save_reachability_to_db: a tasmota scan's `data` is the full
+    present set (matched hosts, _unknown/<mac> markers, carried-forward
+    offline hosts), so keys in the DB's latest state but absent from it have
+    been removed from the sheet or left the network, and are tombstoned
+    under the same scan row.
+    """
+    from gdoc2netcfg.storage.discovery_db import DiscoveryDB
+
+    with DiscoveryDB(config.cache.discovery_db_path) as db:
+        scan_id = db.begin_scan("tasmota")
+        try:
+            changed = db.save_tasmota(scan_id, data)
+            changed += db.tombstone_missing_tasmota(scan_id, set(data))
+            db.finish_scan(
+                scan_id, host_count=len(data), changed_count=changed,
+            )
+        except Exception:
+            db.connection.execute(
+                "DELETE FROM scans WHERE id = ?", (scan_id,),
+            )
+            raise
+
+
 def _load_latest_from_db(config, loader: str):
     """Load the latest supplement data from the DiscoveryDB — the sole source.
 
@@ -1796,6 +1822,24 @@ def cmd_nsdp_show(args: argparse.Namespace) -> int:
 # Subcommand: tasmota scan
 # ---------------------------------------------------------------------------
 
+def _report_tasmota_discrepancies(discrepancies: list) -> int:
+    """Print discrepancies as clear errors; return the process exit code.
+
+    The spreadsheet is the source of truth, so anything the network shows
+    that the sheet doesn't sanction is an error, not a hidden warning.
+    """
+    if not discrepancies:
+        return 0
+    print(
+        f"\nERROR: {len(discrepancies)} discrepancies vs the spreadsheet "
+        f"(the golden source of truth):",
+        file=sys.stderr,
+    )
+    for d in discrepancies:
+        print(f"  {d.format()}", file=sys.stderr)
+    return 1
+
+
 def cmd_tasmota_scan(args: argparse.Namespace) -> int:
     """Scan for Tasmota devices on the IoT VLAN."""
     config = _load_config(args)
@@ -1803,61 +1847,49 @@ def cmd_tasmota_scan(args: argparse.Namespace) -> int:
     from gdoc2netcfg.derivations.host_builder import build_hosts
     from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.tasmota import (
+        _UNKNOWN_PREFIX,
         enrich_hosts_with_tasmota,
-        match_unknown_devices,
         scan_tasmota,
     )
 
-    # Minimal pipeline to get hosts with IPs
+    # Minimal pipeline to get hosts with IPs.
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
     _enrich_site_from_sheets(config, csv_data)
     all_records = []
     for name, csv_text in csv_data:
         if name == "vlan_allocations":
             continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
-
+        all_records.extend(parse_csv(csv_text, name))
     hosts = build_hosts(all_records, config.site)
 
+    discrepancies: list = []
     age = None if args.force else _fresh_scan_age(config, "tasmota")
     if age is not None:
         print(f"Using cached tasmota scan ({age:.0f}s old).", file=sys.stderr)
         tasmota_data = _load_latest_from_db(config, "load_latest_tasmota") or {}
     else:
-        tasmota_data = scan_tasmota(
+        result = scan_tasmota(
             hosts,
             _load_latest_from_db(config, "load_latest_tasmota"),
             site=config.site,
             verbose=True,
         )
+        tasmota_data = result.data
+        discrepancies = result.discrepancies
         if tasmota_data:
-            _save_to_discovery_db(
-                config, "tasmota", "save_tasmota", tasmota_data,
-            )
+            _save_tasmota_to_db(config, tasmota_data)
 
     enrich_hosts_with_tasmota(hosts, tasmota_data)
 
-    # Report
     iot_hosts = [h for h in hosts if h.sheet_type == "IoT"]
     hosts_with_data = sum(1 for h in iot_hosts if h.tasmota_data is not None)
-    from gdoc2netcfg.supplements.tasmota import _UNKNOWN_PREFIX, _unknown_key
-
     unknown = [k for k in tasmota_data if k.startswith(_UNKNOWN_PREFIX)]
-    print(f"\nTasmota data for {hosts_with_data}/{len(iot_hosts)} IoT hosts.")
+    print(
+        f"\nTasmota data for {hosts_with_data}/{len(iot_hosts)} IoT hosts; "
+        f"{len(unknown)} unknown device(s) on the subnet."
+    )
 
-    if unknown:
-        print(f"\n{len(unknown)} unknown device(s) found on subnet:")
-        matches = match_unknown_devices(hosts, tasmota_data)
-        for ip, matched in matches:
-            name = tasmota_data.get(_unknown_key(ip), {}).get("device_name", "?")
-            mac = tasmota_data.get(_unknown_key(ip), {}).get("mac", "?")
-            if matched:
-                print(f"  {ip} — {name} (MAC {mac}) → matches {matched}")
-            else:
-                print(f"  {ip} — {name} (MAC {mac}) — not in spreadsheet")
-
-    return 0
+    return _report_tasmota_discrepancies(discrepancies)
 
 
 # ---------------------------------------------------------------------------
@@ -1911,10 +1943,10 @@ def cmd_tasmota_show(args: argparse.Namespace) -> int:
         print("Unknown devices (not in spreadsheet)")
         print("=" * 60)
         for key in sorted(unknown.keys()):
-            ip = key[len(_UNKNOWN_PREFIX):]
             data = unknown[key]
+            ip = data.get("ip", "?")
             name = data.get("device_name", "?")
-            mac = data.get("mac", "?")
+            mac = data.get("mac", key[len(_UNKNOWN_PREFIX):])
             fw = data.get("firmware_version", "?")
             print(f"  {ip:15s}  {name:20s}  MAC={mac}  fw={fw}")
 

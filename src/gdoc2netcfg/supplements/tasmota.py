@@ -17,8 +17,10 @@ import sys
 import urllib.error
 import urllib.request
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from gdoc2netcfg.models.addressing import MACAddress
 from gdoc2netcfg.models.host import TasmotaData
 
 if TYPE_CHECKING:
@@ -28,9 +30,36 @@ if TYPE_CHECKING:
 _UNKNOWN_PREFIX = "_unknown/"
 
 
-def _unknown_key(ip: str) -> str:
-    """Build cache key for an unknown device by IP."""
-    return f"{_UNKNOWN_PREFIX}{ip}"
+@dataclass(frozen=True)
+class TasmotaDiscrepancy:
+    """A mismatch between the network and the golden spreadsheet.
+
+    kind is one of: "unknown_device", "ip_mismatch", "duplicate_sheet_mac",
+    "duplicate_network_mac", "unidentifiable".
+    """
+
+    kind: str
+    mac: str
+    ip: str
+    hostname: str  # sheet hostname when known, else ""
+    detail: str
+
+    def format(self) -> str:
+        loc = self.hostname or self.mac or self.ip or "?"
+        return f"[{self.kind}] {loc}: {self.detail}"
+
+
+@dataclass(frozen=True)
+class TasmotaScanResult:
+    """Outcome of a Tasmota scan: per-device data plus discrepancies."""
+
+    data: dict[str, dict]
+    discrepancies: list[TasmotaDiscrepancy]
+
+
+def _unknown_key(mac: str) -> str:
+    """Storage key for a device not in the sheet, by its normalized MAC."""
+    return f"{_UNKNOWN_PREFIX}{mac}"
 
 
 def _fetch_tasmota_status(ip: str, timeout: float = 3.0) -> dict | None:
@@ -159,100 +188,126 @@ def scan_tasmota(
     site: Site,
     *,
     verbose: bool = False,
-) -> dict[str, dict]:
-    """Scan for Tasmota devices: known hosts + subnet sweep.
+) -> TasmotaScanResult:
+    """Scan the IoT VLAN and identify devices by their spreadsheet MAC.
 
-    Phase 1: Probe known IoT hosts by their spreadsheet IP.
-    Phase 2: Sweep the IoT subnet to find unregistered devices.
-    Merge results; the caller persists them.
+    Identity comes from the sheet: a device whose MAC matches a sheet IoT
+    host is keyed by that host's hostname (regardless of its IP or self-
+    reported name); a device whose MAC is not in this site's sheet is keyed
+    ``_unknown/<mac>``.  Sheet hosts not seen this scan are carried forward
+    from *baseline* (offline hosts keep last-known data) if still in the
+    sheet.  Discrepancies (unknown devices, IP mismatches, duplicate MACs,
+    unidentifiable devices) are collected, not hidden.
 
-    Known hosts are keyed by hostname. Unknown devices are keyed
-    as "_unknown/{ip}".
-
-    Args:
-        hosts: All hosts from the pipeline.
-        baseline: Last-known Tasmota data (from the DiscoveryDB).  Fresh
-            results are merged over it.
-        site: Site configuration (for subnet computation).
-        verbose: Print progress to stderr.
-
-    Returns:
-        Mapping of hostname (or _unknown/ip) to Tasmota data dict.
+    Returns a TasmotaScanResult(data, discrepancies).  The caller persists
+    ``data`` and tombstones whatever is absent from it.
     """
-    # Drop stale _unknown/ entries from the baseline — the sweep below
-    # rediscovers any that still exist, and stale entries from old IPs
-    # would otherwise accumulate indefinitely.
-    tasmota_data = {
-        k: v for k, v in (baseline or {}).items()
-        if not k.startswith(_UNKNOWN_PREFIX)
-    }
+    baseline = baseline or {}
+    discrepancies: list[TasmotaDiscrepancy] = []
 
-    # Build IP→hostname index for known IoT hosts
-    iot_hosts: list[tuple[str, str]] = []  # (hostname, ip)
-    ip_to_hostname: dict[str, str] = {}
+    # Build the sheet MAC -> hostname index for this site's IoT hosts.
+    mac_to_host: dict[str, str] = {}
+    valid_known: set[str] = set()
+    host_by_name: dict[str, Host] = {}
+    known_ips: list[str] = []
     for host in hosts:
         if host.sheet_type != "IoT":
             continue
-        if host.first_ipv4 is None:
-            continue
-        ip_str = str(host.first_ipv4)
-        iot_hosts.append((host.hostname, ip_str))
-        ip_to_hostname[ip_str] = host.hostname
+        valid_known.add(host.hostname)
+        host_by_name[host.hostname] = host
+        if host.first_ipv4 is not None:
+            known_ips.append(str(host.first_ipv4))
+        for mac in host.all_macs:
+            key = str(mac)
+            existing = mac_to_host.get(key)
+            if existing is not None and existing != host.hostname:
+                discrepancies.append(TasmotaDiscrepancy(
+                    kind="duplicate_sheet_mac", mac=key, ip="",
+                    hostname=host.hostname,
+                    detail=f"MAC also on sheet host {existing}",
+                ))
+                continue
+            mac_to_host[key] = host.hostname
 
-    # Phase 1: Probe known IoT hosts
+    # Probe known sheet IPs (reliable) and sweep the IoT /24 (discovery);
+    # collect every responder keyed by IP.
+    found: dict[str, dict] = {}
     if verbose:
-        print(
-            f"Phase 1: Probing {len(iot_hosts)} known IoT host(s)...",
-            file=sys.stderr,
-        )
-
+        print(f"Probing {len(known_ips)} known IoT IP(s)...", file=sys.stderr)
     with ThreadPoolExecutor(max_workers=32) as pool:
-        futures: list[tuple[str, str, Future[dict | None]]] = []
-        for hostname, ip in iot_hosts:
-            futures.append(
-                (hostname, ip, pool.submit(_fetch_tasmota_status, ip, 3.0))
-            )
+        futures: dict[str, Future[dict | None]] = {
+            ip: pool.submit(_fetch_tasmota_status, ip, 3.0) for ip in known_ips
+        }
+        for ip, future in futures.items():
+            raw = future.result()
+            if raw is not None:
+                found[ip] = _parse_tasmota_status(raw)
 
-        for hostname, ip, future in futures:
-            data = future.result()
-            if data is not None:
-                parsed = _parse_tasmota_status(data)
-                tasmota_data[hostname] = parsed
-                if verbose:
-                    name = parsed.get("device_name", "?")
-                    fw = parsed.get("firmware_version", "?")
-                    print(
-                        f"  {hostname} ({ip}): {name} fw={fw}",
-                        file=sys.stderr,
-                    )
-            elif verbose:
-                print(f"  {hostname} ({ip}): no response", file=sys.stderr)
-
-    # Phase 2: Sweep the IoT subnet
     iot_prefix = site.ip_prefix_for_vlan("iot")
     if iot_prefix is not None:
         if verbose:
-            print(
-                f"Phase 2: Sweeping {iot_prefix}0/24 for unknown devices...",
-                file=sys.stderr,
-            )
-        sweep_results = _scan_subnet(
+            print(f"Sweeping {iot_prefix}0/24...", file=sys.stderr)
+        for ip, parsed in _scan_subnet(
             iot_prefix, max_workers=32, timeout=2.0, verbose=verbose
-        )
-
-        # Merge sweep results — known hosts go under hostname, unknown under _unknown/ip
-        for ip, parsed in sweep_results.items():
-            if ip in ip_to_hostname:
-                # Already captured in phase 1
-                continue
-            tasmota_data[_unknown_key(ip)] = parsed
+        ).items():
+            found.setdefault(ip, parsed)  # probe result wins on duplicate IP
     elif verbose:
-        print(
-            "Phase 2: Skipped — no 'iot' VLAN found in site config.",
-            file=sys.stderr,
-        )
+        print("Sweep skipped — no 'iot' VLAN in site config.", file=sys.stderr)
 
-    return tasmota_data
+    # Group responders by normalized MAC.
+    by_mac: dict[str, list[tuple[str, dict]]] = {}
+    for ip, parsed in found.items():
+        raw_mac = parsed.get("mac", "")
+        try:
+            mac = str(MACAddress.parse(raw_mac))
+        except ValueError:
+            discrepancies.append(TasmotaDiscrepancy(
+                kind="unidentifiable", mac=raw_mac, ip=ip, hostname="",
+                detail=f"device reported an unparseable MAC {raw_mac!r}",
+            ))
+            continue
+        by_mac.setdefault(mac, []).append((ip, parsed))
+
+    data: dict[str, dict] = {}
+    seen_hosts: set[str] = set()
+    for mac, sightings in sorted(by_mac.items()):
+        if len(sightings) > 1:
+            ips = ", ".join(sorted(ip for ip, _ in sightings))
+            discrepancies.append(TasmotaDiscrepancy(
+                kind="duplicate_network_mac", mac=mac, ip=ips, hostname="",
+                detail=f"same MAC answered at multiple IPs: {ips}",
+            ))
+            continue
+        ip, parsed = sightings[0]
+        matched = mac_to_host.get(mac)
+        if matched is not None:
+            data[matched] = parsed
+            seen_hosts.add(matched)
+            host = host_by_name[matched]
+            sheet_ip = str(host.first_ipv4) if host.first_ipv4 is not None else ""
+            if sheet_ip and parsed.get("ip", "") != sheet_ip:
+                discrepancies.append(TasmotaDiscrepancy(
+                    kind="ip_mismatch", mac=mac, ip=parsed.get("ip", ""),
+                    hostname=matched,
+                    detail=f"device at {parsed.get('ip', '?')}, "
+                           f"sheet says {sheet_ip}",
+                ))
+        else:
+            data[_unknown_key(mac)] = parsed
+            discrepancies.append(TasmotaDiscrepancy(
+                kind="unknown_device", mac=mac, ip=ip, hostname="",
+                detail=f"device {parsed.get('device_name', '?')!r} at {ip} "
+                       f"not in this site's sheet",
+            ))
+
+    # Carry forward offline hosts still in the sheet (keep last-known data).
+    # Baseline keys not in the sheet (removed hosts) and stale _unknown/ keys
+    # are intentionally dropped so the caller tombstones them.
+    for key, info in baseline.items():
+        if key in valid_known and key not in seen_hosts:
+            data[key] = info
+
+    return TasmotaScanResult(data=data, discrepancies=discrepancies)
 
 
 def enrich_hosts_with_tasmota(
@@ -303,32 +358,3 @@ def enrich_hosts_with_tasmota(
         )
 
 
-def match_unknown_devices(
-    hosts: list[Host],
-    tasmota_cache: dict[str, dict],
-) -> list[tuple[str, str | None]]:
-    """Match unknown Tasmota devices to spreadsheet entries by MAC.
-
-    Args:
-        hosts: All hosts from the pipeline.
-        tasmota_cache: Mapping including "_unknown/{ip}" entries.
-
-    Returns:
-        List of (ip, matched_hostname_or_None) tuples for unknown devices.
-    """
-    # Build MAC → hostname index from known hosts
-    mac_to_hostname: dict[str, str] = {}
-    for host in hosts:
-        for iface in host.interfaces:
-            mac_to_hostname[str(iface.mac).upper()] = host.hostname
-
-    matches: list[tuple[str, str | None]] = []
-    for key, info in sorted(tasmota_cache.items()):
-        if not key.startswith(_UNKNOWN_PREFIX):
-            continue
-        ip = key[len(_UNKNOWN_PREFIX):]
-        device_mac = info.get("mac", "").upper()
-        matched = mac_to_hostname.get(device_mac)
-        matches.append((ip, matched))
-
-    return matches

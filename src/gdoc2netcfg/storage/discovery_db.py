@@ -234,6 +234,19 @@ def _sql_type(expected: object) -> str:
     raise ValueError(f"Unmapped spec type {expected!r}")
 
 
+def _tombstone_value(typ: object) -> object:
+    """A NOT-NULL-satisfying placeholder for a tombstone row's data columns.
+
+    Tombstone rows are skipped by reconstruction, so the value is never read;
+    it exists only so NOT NULL columns accept the row.  Derived from the same
+    ``_sql_type`` used for the DDL, so it cannot drift from the column type.
+    """
+    sql = _sql_type(typ)
+    if "NOT NULL" not in sql:
+        return None
+    return "" if "TEXT" in sql else 0
+
+
 def _entity_table_ddl(
     table: str,
     entity_col: str,
@@ -311,11 +324,12 @@ def _structured_ddl_statements() -> list[str]:
     # Tasmota: one row per device.  The entity column is device_key —
     # a spreadsheet hostname or an "_unknown/<ip>" marker — distinct
     # from the device's self-reported "hostname" field.
-    stmts += _entity_table_ddl("tasmota_devices", "device_key", tuple(
-        (key,
-         _sql_type(typ).replace(" NOT NULL", "")
-         if key in _TASMOTA_OPTIONAL_FIELDS else _sql_type(typ))
-        for key, typ in _TASMOTA_FIELDS
+    stmts += _entity_table_ddl("tasmota_devices", "device_key", (
+        *((key,
+           _sql_type(typ).replace(" NOT NULL", "")
+           if key in _TASMOTA_OPTIONAL_FIELDS else _sql_type(typ))
+          for key, typ in _TASMOTA_FIELDS),
+        ("is_tombstone", "INTEGER NOT NULL DEFAULT 0"),
     ))
 
     # Zigbee: per-site bridge-info rows and per-device rows, each
@@ -570,8 +584,21 @@ def _insert_tasmota_rows(
         _typecheck(f"{what}.{key}", doc[key], typ)
     _insert_row(
         cur, "tasmota_devices", "device_key", scan_id, device_key,
-        tuple(key for key, _t in _TASMOTA_FIELDS),
-        tuple(doc.get(key) for key, _t in _TASMOTA_FIELDS),
+        (*(key for key, _t in _TASMOTA_FIELDS), "is_tombstone"),
+        (*(doc.get(key) for key, _t in _TASMOTA_FIELDS), 0),
+    )
+
+
+def _insert_tasmota_tombstone(
+    cur: sqlite3.Cursor, scan_id: int, device_key: str,
+) -> None:
+    """A device removed from the sheet, or a stale sweep find: INSERT-only
+    tombstone (history is never deleted) that drops it from reads; a later
+    real row resurrects it.  NOT NULL data columns get never-read sentinels."""
+    _insert_row(
+        cur, "tasmota_devices", "device_key", scan_id, device_key,
+        (*(key for key, _t in _TASMOTA_FIELDS), "is_tombstone"),
+        (*(_tombstone_value(typ) for _key, typ in _TASMOTA_FIELDS), 1),
     )
 
 
@@ -727,11 +754,14 @@ class DiscoveryDB(BaseDatabase):
     # v6: bridge port_aliases (ifAlias port descriptions).
     # v7: nullable traffic counters; vendor PoE power, box sensors,
     #     bridge MAC, LLDP port descriptions.
-    SCHEMA_VERSION = 7
+    # v8: tasmota_devices.is_tombstone (sheet-MAC identity tombstones).
+    SCHEMA_VERSION = 8
     SCHEMA_UPGRADES = {
         5: ["ALTER TABLE tasmota_devices ADD COLUMN mqtt_count INTEGER"],
         6: [_upgrade_v6_port_aliases],
         7: [_upgrade_v7_extended_bridge_data],
+        8: ["ALTER TABLE tasmota_devices "
+            "ADD COLUMN is_tombstone INTEGER NOT NULL DEFAULT 0"],
     }
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:
@@ -1418,6 +1448,43 @@ class DiscoveryDB(BaseDatabase):
             return None
         return self._latest_tasmota()
 
+    def tombstone_missing_tasmota(
+        self, scan_id: int, present: set[str],
+    ) -> int:
+        """Tombstone tasmota device_keys that vanished from the scan.
+
+        *present* must be the FULL set of device_keys this scan produced
+        (matched sheet hostnames, ``_unknown/<mac>`` markers, and carried-
+        forward offline hosts).  A key in the DB's latest state but absent
+        from *present* — a host removed from the sheet, or a stale sweep
+        find no longer on the network — gets a single INSERT-only tombstone
+        row under *scan_id* (history is never deleted) that drops it from
+        ``load_latest_tasmota()``.  A later real row supersedes it.
+
+        Raises ValueError on an empty *present* set — that means the scan
+        itself failed, not that every device was removed.
+
+        Returns the number of device_keys tombstoned.
+        """
+        if not present:
+            raise ValueError(
+                "tombstone_missing_tasmota called with an empty present "
+                "set — refusing to tombstone every device."
+            )
+        missing = sorted(set(self._latest_tasmota()) - set(present))
+        if not missing:
+            return 0
+        cur = self._conn.cursor()
+        try:
+            cur.execute("BEGIN")
+            for device_key in missing:
+                _insert_tasmota_tombstone(cur, scan_id, device_key)
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return len(missing)
+
     def _latest_tasmota(self) -> dict[str, dict]:
         field_cols = ", ".join(key for key, _t in _TASMOTA_FIELDS)
         result = {}
@@ -1425,13 +1492,15 @@ class DiscoveryDB(BaseDatabase):
             self._latest_entity_scans("tasmota_devices", "device_key").items()
         ):
             row = self._conn.execute(
-                f"SELECT {field_cols} FROM tasmota_devices "  # noqa: S608
+                f"SELECT is_tombstone, {field_cols} FROM tasmota_devices "  # noqa: S608
                 "WHERE scan_id = ? AND device_key = ?",
                 (scan_id, device_key),
             ).fetchone()
+            if row[0]:
+                continue
             result[device_key] = {
                 key: value
-                for (key, _t), value in zip(_TASMOTA_FIELDS, row)
+                for (key, _t), value in zip(_TASMOTA_FIELDS, row[1:])
                 if not (key in _TASMOTA_OPTIONAL_FIELDS and value is None)
             }
         return result

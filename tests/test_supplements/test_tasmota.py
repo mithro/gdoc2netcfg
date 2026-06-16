@@ -15,7 +15,6 @@ from gdoc2netcfg.supplements.tasmota import (
     _parse_tasmota_status,
     _unknown_key,
     enrich_hosts_with_tasmota,
-    match_unknown_devices,
 )
 from gdoc2netcfg.supplements.tasmota_configure import (
     ConfigDrift,
@@ -257,7 +256,7 @@ class TestTasmotaDataModel:
 
 class TestUnknownKey:
     def test_unknown_key(self):
-        assert _unknown_key("10.1.90.50") == "_unknown/10.1.90.50"
+        assert _unknown_key("aa:bb:cc:dd:ee:ff") == "_unknown/aa:bb:cc:dd:ee:ff"
 
     def test_prefix_constant(self):
         assert _UNKNOWN_PREFIX == "_unknown/"
@@ -556,54 +555,6 @@ def _min_cache_entry():
     }
 
 
-# ---------------------------------------------------------------------------
-# match_unknown_devices
-# ---------------------------------------------------------------------------
-
-class TestMatchUnknownDevices:
-    def test_match_by_mac(self):
-        host = _make_host(mac="aa:bb:cc:dd:ee:10")
-        cache = {
-            "au-plug-10": {"device_name": "known"},
-            "_unknown/10.1.90.50": {
-                "device_name": "rogue",
-                "mac": "AA:BB:CC:DD:EE:10",
-            },
-        }
-        matches = match_unknown_devices([host], cache)
-        assert len(matches) == 1
-        assert matches[0] == ("10.1.90.50", "au-plug-10")
-
-    def test_no_match(self):
-        host = _make_host(mac="aa:bb:cc:dd:ee:10")
-        cache = {
-            "_unknown/10.1.90.50": {
-                "device_name": "rogue",
-                "mac": "FF:FF:FF:00:00:01",
-            },
-        }
-        matches = match_unknown_devices([host], cache)
-        assert len(matches) == 1
-        assert matches[0] == ("10.1.90.50", None)
-
-    def test_no_unknowns(self):
-        host = _make_host()
-        cache = {"au-plug-10": {"device_name": "known"}}
-        matches = match_unknown_devices([host], cache)
-        assert matches == []
-
-    def test_multiple_unknowns_sorted(self):
-        host = _make_host()
-        cache = {
-            "_unknown/10.1.90.99": {"mac": "11:22:33:44:55:66"},
-            "_unknown/10.1.90.50": {"mac": "FF:FF:FF:00:00:01"},
-        }
-        matches = match_unknown_devices([host], cache)
-        assert len(matches) == 2
-        # Sorted by key, so .50 comes before .99
-        assert matches[0][0] == "10.1.90.50"
-        assert matches[1][0] == "10.1.90.99"
-
 
 # ---------------------------------------------------------------------------
 # scan_tasmota (mocked network)
@@ -630,8 +581,8 @@ class TestScanTasmota:
 
         result = scan_tasmota([host], {}, site)
 
-        assert "au-plug-10" in result
-        assert result["au-plug-10"]["device_name"] == "au-plug-10"
+        assert "au-plug-10" in result.data
+        assert result.data["au-plug-10"]["device_name"] == "au-plug-10"
 
     @patch("gdoc2netcfg.supplements.tasmota._scan_subnet")
     @patch("gdoc2netcfg.supplements.tasmota._fetch_tasmota_status")
@@ -659,8 +610,8 @@ class TestScanTasmota:
 
         result = scan_tasmota([host], {}, site)
 
-        assert "_unknown/10.1.90.50" in result
-        assert result["_unknown/10.1.90.50"]["device_name"] == "rogue"
+        assert "_unknown/ff:ff:ff:00:00:01" in result.data
+        assert result.data["_unknown/ff:ff:ff:00:00:01"]["device_name"] == "rogue"
 
     @patch("gdoc2netcfg.supplements.tasmota._scan_subnet")
     @patch("gdoc2netcfg.supplements.tasmota._fetch_tasmota_status")
@@ -669,9 +620,12 @@ class TestScanTasmota:
         from gdoc2netcfg.models.network import VLAN, Site
 
         mock_fetch.return_value = SAMPLE_STATUS_0
-        # Sweep also finds the same IP
+        # Sweep also finds the same IP — probe result wins (setdefault)
         mock_sweep.return_value = {
-            "10.1.90.10": {"device_name": "au-plug-10", "ip": "10.1.90.10"},
+            "10.1.90.10": {
+                "device_name": "au-plug-10", "ip": "10.1.90.10",
+                "mac": "AA:BB:CC:DD:EE:10",
+            },
         }
 
         host = _make_host()
@@ -686,8 +640,8 @@ class TestScanTasmota:
 
         result = scan_tasmota([host], {}, site)
 
-        assert "au-plug-10" in result
-        assert "_unknown/10.1.90.10" not in result
+        assert "au-plug-10" in result.data
+        assert "_unknown/aa:bb:cc:dd:ee:10" not in result.data
 
     @patch("gdoc2netcfg.supplements.tasmota._scan_subnet")
     @patch("gdoc2netcfg.supplements.tasmota._fetch_tasmota_status")
@@ -714,14 +668,17 @@ class TestScanTasmota:
     @patch("gdoc2netcfg.supplements.tasmota._scan_subnet")
     @patch("gdoc2netcfg.supplements.tasmota._fetch_tasmota_status")
     def test_scan_clears_stale_unknowns(self, mock_fetch, mock_sweep):
-        """A rescan clears stale _unknown/ baseline entries before re-sweeping."""
+        """A rescan drops stale _unknown/ baseline entries (not in valid_known)."""
         from gdoc2netcfg.models.network import VLAN, Site
         from gdoc2netcfg.supplements.tasmota import scan_tasmota
 
+        host = _make_host(hostname="au-plug-10", ip="10.1.90.10",
+                          mac="aa:bb:cc:dd:ee:10")
         # Baseline holds a stale _unknown entry from a previous scan
         baseline = {
-            "known-plug": {"device_name": "known"},
-            "_unknown/10.1.90.99": {"device_name": "stale-rogue", "ip": "10.1.90.99"},
+            "au-plug-10": {"device_name": "known"},
+            "_unknown/ff:ff:ff:00:00:01": {"device_name": "stale-rogue",
+                                           "ip": "10.1.90.99"},
         }
 
         mock_fetch.return_value = None
@@ -734,13 +691,13 @@ class TestScanTasmota:
             vlans={90: VLAN(id=90, name="iot", subdomain="iot")},
         )
 
-        result = scan_tasmota([], baseline, site)
+        result = scan_tasmota([host], baseline, site)
 
-        # Known entries preserved, stale _unknown/ cleared
-        assert "known-plug" in result
-        assert "_unknown/10.1.90.99" not in result
+        # Known sheet host carried forward offline; stale _unknown/ dropped
+        assert "au-plug-10" in result.data
+        assert "_unknown/ff:ff:ff:00:00:01" not in result.data
         # The input baseline is not mutated.
-        assert "_unknown/10.1.90.99" in baseline
+        assert "_unknown/ff:ff:ff:00:00:01" in baseline
 
     @patch("gdoc2netcfg.supplements.tasmota._scan_subnet")
     @patch("gdoc2netcfg.supplements.tasmota._fetch_tasmota_status")
@@ -1596,3 +1553,275 @@ class TestFetchAllStates:
         call_args = mock_urlopen.call_args
         req = call_args[0][0]
         assert "//" not in req.full_url.replace("http://", "")
+
+
+def _parsed(mac="24:ec:4a:b0:a9:b0", ip="10.1.90.63", name="dev", **kw):
+    """A parsed Tasmota dict matching _parse_tasmota_status output."""
+    d = {
+        "device_name": name, "friendly_name": name,
+        "hostname": f"tasmota-{name}", "firmware_version": "13.1.0",
+        "mqtt_host": "ha", "mqtt_port": 1883, "mqtt_topic": name,
+        "mqtt_client": "DVES_X", "mqtt_user": "DVES_USER", "mac": mac,
+        "ip": ip, "wifi_ssid": "iot", "wifi_rssi": 80, "wifi_signal": -55,
+        "uptime": "1T00:00:00", "module": 1, "mqtt_count": 1,
+    }
+    d.update(kw)
+    return d
+
+
+def _raw(mac, ip, name="dev"):
+    """A minimal raw Status 0 response (what _fetch_tasmota_status returns)."""
+    return {
+        "Status": {"DeviceName": name, "FriendlyName": [name],
+                   "Topic": name, "Module": 1},
+        "StatusNET": {"Hostname": f"tasmota-{name}", "Mac": mac,
+                      "IPAddress": ip},
+        "StatusMQT": {"MqttHost": "ha", "MqttPort": 1883,
+                      "MqttClient": "DVES_X", "MqttUser": "DVES_USER"},
+        "StatusFWR": {"Version": "13.1.0"},
+        "StatusSTS": {"Uptime": "1T00:00:00", "MqttCount": 1,
+                      "Wifi": {"SSId": "iot", "RSSI": 80, "Signal": -55}},
+    }
+
+
+def _iot_site(prefix="10.1.90."):
+    site = MagicMock()
+    site.ip_prefix_for_vlan.return_value = prefix
+    return site
+
+
+@patch("gdoc2netcfg.supplements.tasmota._scan_subnet")
+@patch("gdoc2netcfg.supplements.tasmota._fetch_tasmota_status")
+class TestScanTasmotaMacIdentity:
+    def test_match_by_mac_despite_ip_change(self, mock_fetch, mock_sweep):
+        from gdoc2netcfg.supplements.tasmota import scan_tasmota
+        host = _make_host("au-plug-13", ip="10.1.90.63",
+                          mac="24:ec:4a:b0:a9:b0")
+        mock_fetch.return_value = None  # not at its sheet IP
+        mock_sweep.return_value = {
+            "10.1.90.99": _parsed(mac="24:EC:4A:B0:A9:B0", ip="10.1.90.99",
+                                  name="au-plug-13"),
+        }
+        result = scan_tasmota([host], None, _iot_site())
+        assert "au-plug-13" in result.data
+        assert result.data["au-plug-13"]["ip"] == "10.1.90.99"
+        assert any(d.kind == "ip_mismatch" for d in result.discrepancies)
+
+    def test_match_ignores_self_reported_name(self, mock_fetch, mock_sweep):
+        from gdoc2netcfg.supplements.tasmota import scan_tasmota
+        host = _make_host("au-plug-13", ip="10.1.90.63",
+                          mac="24:ec:4a:b0:a9:b0")
+        mock_fetch.return_value = None
+        mock_sweep.return_value = {
+            "10.1.90.63": _parsed(mac="24:EC:4A:B0:A9:B0", ip="10.1.90.63",
+                                  name="bogus-self-name"),
+        }
+        result = scan_tasmota([host], None, _iot_site())
+        assert "au-plug-13" in result.data
+        assert "_unknown/24:ec:4a:b0:a9:b0" not in result.data
+        assert not result.discrepancies  # at sheet IP, MAC matches
+
+    def test_unknown_device_keyed_by_mac(self, mock_fetch, mock_sweep):
+        from gdoc2netcfg.supplements.tasmota import scan_tasmota
+        host = _make_host("au-plug-13", ip="10.1.90.63",
+                          mac="24:ec:4a:b0:a9:b0")
+        mock_fetch.return_value = None
+        mock_sweep.return_value = {
+            "10.1.90.149": _parsed(mac="7C:2C:67:D7:D3:CC", ip="10.1.90.149",
+                                   name="au-plug-10"),
+        }
+        result = scan_tasmota([host], None, _iot_site())
+        assert "_unknown/7c:2c:67:d7:d3:cc" in result.data
+        assert any(d.kind == "unknown_device" for d in result.discrepancies)
+
+    def test_carry_forward_offline_in_sheet_host(self, mock_fetch, mock_sweep):
+        from gdoc2netcfg.supplements.tasmota import scan_tasmota
+        host = _make_host("au-plug-13", ip="10.1.90.63",
+                          mac="24:ec:4a:b0:a9:b0")
+        mock_fetch.return_value = None
+        mock_sweep.return_value = {}
+        baseline = {"au-plug-13": _parsed(name="au-plug-13")}
+        result = scan_tasmota([host], baseline, _iot_site())
+        assert result.data == {"au-plug-13": baseline["au-plug-13"]}
+
+    def test_removed_from_sheet_host_dropped(self, mock_fetch, mock_sweep):
+        from gdoc2netcfg.supplements.tasmota import scan_tasmota
+        host = _make_host("au-plug-13", ip="10.1.90.63",
+                          mac="24:ec:4a:b0:a9:b0")
+        mock_fetch.return_value = None
+        mock_sweep.return_value = {}
+        baseline = {
+            "au-plug-13": _parsed(name="au-plug-13"),
+            "old-plug": _parsed(name="old-plug"),
+        }
+        result = scan_tasmota([host], baseline, _iot_site())
+        assert "old-plug" not in result.data
+        assert "au-plug-13" in result.data
+
+    def test_duplicate_sheet_mac(self, mock_fetch, mock_sweep):
+        from gdoc2netcfg.supplements.tasmota import scan_tasmota
+        h1 = _make_host("plug-a", ip="10.1.90.10", mac="aa:bb:cc:dd:ee:01")
+        h2 = _make_host("plug-b", ip="10.1.90.11", mac="aa:bb:cc:dd:ee:01")
+        mock_fetch.return_value = None
+        mock_sweep.return_value = {}
+        result = scan_tasmota([h1, h2], None, _iot_site())
+        assert any(d.kind == "duplicate_sheet_mac" for d in result.discrepancies)
+
+    def test_duplicate_network_mac(self, mock_fetch, mock_sweep):
+        from gdoc2netcfg.supplements.tasmota import scan_tasmota
+        host = _make_host("plug-a", ip="10.1.90.10", mac="aa:bb:cc:dd:ee:01")
+        mock_fetch.return_value = None
+        mock_sweep.return_value = {
+            "10.1.90.10": _parsed(mac="AA:BB:CC:DD:EE:01", ip="10.1.90.10"),
+            "10.1.90.20": _parsed(mac="AA:BB:CC:DD:EE:01", ip="10.1.90.20"),
+        }
+        result = scan_tasmota([host], None, _iot_site())
+        assert any(d.kind == "duplicate_network_mac"
+                   for d in result.discrepancies)
+        assert "plug-a" not in result.data  # ambiguous, not auto-keyed
+
+    def test_unparseable_mac_is_unidentifiable(self, mock_fetch, mock_sweep):
+        from gdoc2netcfg.supplements.tasmota import scan_tasmota
+        host = _make_host("plug-a", ip="10.1.90.10", mac="aa:bb:cc:dd:ee:01")
+        mock_fetch.return_value = None
+        mock_sweep.return_value = {"10.1.90.55": _parsed(mac="", ip="10.1.90.55")}
+        result = scan_tasmota([host], None, _iot_site())
+        assert any(d.kind == "unidentifiable" for d in result.discrepancies)
+        assert result.data == {}  # not stored under a fabricated key
+
+    def test_known_ip_probe_path(self, mock_fetch, mock_sweep):
+        from gdoc2netcfg.supplements.tasmota import scan_tasmota
+        host = _make_host("plug-a", ip="10.1.90.10", mac="aa:bb:cc:dd:ee:01")
+        mock_fetch.return_value = _raw("AA:BB:CC:DD:EE:01", "10.1.90.10",
+                                       "plug-a")
+        mock_sweep.return_value = {}
+        result = scan_tasmota([host], None, _iot_site())
+        assert "plug-a" in result.data
+        assert not result.discrepancies
+
+    def test_dedupe_probe_and_sweep(self, mock_fetch, mock_sweep):
+        from gdoc2netcfg.supplements.tasmota import scan_tasmota
+        host = _make_host("plug-a", ip="10.1.90.10", mac="aa:bb:cc:dd:ee:01")
+        mock_fetch.return_value = _raw("AA:BB:CC:DD:EE:01", "10.1.90.10",
+                                       "plug-a")
+        mock_sweep.return_value = {
+            "10.1.90.10": _parsed(mac="AA:BB:CC:DD:EE:01", ip="10.1.90.10"),
+        }
+        result = scan_tasmota([host], None, _iot_site())
+        assert "plug-a" in result.data
+        assert not any(d.kind == "duplicate_network_mac"
+                       for d in result.discrepancies)
+
+
+class TestTasmotaCliHelpers:
+    def test_report_discrepancies_returns_one_and_prints(self, capsys):
+        from gdoc2netcfg.cli.main import _report_tasmota_discrepancies
+        from gdoc2netcfg.supplements.tasmota import TasmotaDiscrepancy
+        d = TasmotaDiscrepancy("unknown_device", "aa:bb:cc:dd:ee:ff",
+                               "10.1.90.9", "", "not in this site's sheet")
+        rc = _report_tasmota_discrepancies([d])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "ERROR" in err
+        assert "unknown_device" in err
+
+    def test_report_no_discrepancies_returns_zero(self, capsys):
+        from gdoc2netcfg.cli.main import _report_tasmota_discrepancies
+        assert _report_tasmota_discrepancies([]) == 0
+
+    def test_save_tasmota_to_db_tombstones_vanished(self, tmp_path):
+        from gdoc2netcfg.cli.main import _save_tasmota_to_db
+        from gdoc2netcfg.storage.discovery_db import DiscoveryDB
+        config = MagicMock()
+        config.cache.discovery_db_path = tmp_path / "discovery.db"
+
+        _save_tasmota_to_db(config, {
+            "plug1": _parsed(name="plug1"), "plug2": _parsed(name="plug2"),
+        })
+        _save_tasmota_to_db(config, {"plug1": _parsed(name="plug1")})
+
+        with DiscoveryDB(config.cache.discovery_db_path) as db:
+            assert set(db.load_latest_tasmota()) == {"plug1"}
+
+
+class TestCmdTasmotaScan:
+    # Smoke tests that actually execute cmd_tasmota_scan's body, so a broken
+    # import or mis-wired return value can't pass unnoticed (Task 4's rewrite
+    # broke this command and nothing caught it). Patch targets follow Python's
+    # import semantics: function-level `from X import name` resolves from the
+    # SOURCE module at call time, so scan_tasmota is patched at its source.
+    @patch("gdoc2netcfg.cli.main._save_tasmota_to_db")
+    @patch("gdoc2netcfg.supplements.tasmota.scan_tasmota")
+    @patch("gdoc2netcfg.cli.main._load_latest_from_db", return_value=None)
+    @patch("gdoc2netcfg.cli.main._fresh_scan_age", return_value=None)
+    @patch("gdoc2netcfg.derivations.host_builder.build_hosts", return_value=[])
+    @patch("gdoc2netcfg.cli.main._enrich_site_from_sheets")
+    @patch("gdoc2netcfg.cli.main._fetch_or_load_csvs", return_value=[])
+    @patch("gdoc2netcfg.cli.main._load_config")
+    def test_scan_exit_nonzero_on_discrepancies(
+        self, m_cfg, m_fetch, m_enrich_site, m_build, m_age, m_latest,
+        m_scan, m_save,
+    ):
+        from gdoc2netcfg.cli.main import cmd_tasmota_scan
+        from gdoc2netcfg.supplements.tasmota import (
+            TasmotaDiscrepancy,
+            TasmotaScanResult,
+        )
+        m_scan.return_value = TasmotaScanResult(
+            data={"plug1": _parsed(name="plug1")},
+            discrepancies=[
+                TasmotaDiscrepancy("unknown_device", "m", "i", "", "d"),
+            ],
+        )
+        rc = cmd_tasmota_scan(MagicMock(force=True))
+        assert rc == 1
+        m_save.assert_called_once()
+
+    @patch("gdoc2netcfg.cli.main._save_tasmota_to_db")
+    @patch("gdoc2netcfg.supplements.tasmota.scan_tasmota")
+    @patch("gdoc2netcfg.cli.main._load_latest_from_db", return_value=None)
+    @patch("gdoc2netcfg.cli.main._fresh_scan_age", return_value=None)
+    @patch("gdoc2netcfg.derivations.host_builder.build_hosts", return_value=[])
+    @patch("gdoc2netcfg.cli.main._enrich_site_from_sheets")
+    @patch("gdoc2netcfg.cli.main._fetch_or_load_csvs", return_value=[])
+    @patch("gdoc2netcfg.cli.main._load_config")
+    def test_scan_exit_zero_when_clean(
+        self, m_cfg, m_fetch, m_enrich_site, m_build, m_age, m_latest,
+        m_scan, m_save,
+    ):
+        from gdoc2netcfg.cli.main import cmd_tasmota_scan
+        from gdoc2netcfg.supplements.tasmota import TasmotaScanResult
+        m_scan.return_value = TasmotaScanResult(
+            data={"plug1": _parsed(name="plug1")}, discrepancies=[],
+        )
+        rc = cmd_tasmota_scan(MagicMock(force=True))
+        assert rc == 0
+        m_save.assert_called_once()
+
+
+class TestTasmotaDiscrepancy:
+    def test_format_includes_kind_and_detail(self):
+        from gdoc2netcfg.supplements.tasmota import TasmotaDiscrepancy
+        d = TasmotaDiscrepancy(
+            kind="unknown_device", mac="aa:bb:cc:dd:ee:ff",
+            ip="10.1.90.9", hostname="", detail="not in this site's sheet",
+        )
+        text = d.format()
+        assert "unknown_device" in text
+        assert "not in this site's sheet" in text
+        # falls back to mac when there's no hostname
+        assert "aa:bb:cc:dd:ee:ff" in text
+
+    def test_scan_result_holds_data_and_discrepancies(self):
+        from gdoc2netcfg.supplements.tasmota import (
+            TasmotaDiscrepancy,
+            TasmotaScanResult,
+        )
+        r = TasmotaScanResult(data={"plug1": {}}, discrepancies=[])
+        assert r.data == {"plug1": {}}
+        assert r.discrepancies == []
+        r2 = TasmotaScanResult(
+            data={},
+            discrepancies=[TasmotaDiscrepancy("ip_mismatch", "m", "i", "h", "d")],
+        )
+        assert r2.discrepancies[0].kind == "ip_mismatch"

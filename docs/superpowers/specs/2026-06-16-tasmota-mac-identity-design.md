@@ -114,11 +114,16 @@ physical/site discrepancy, is operator action / the `audit/` module.
   as `_insert_zigbee_device_tombstone`.)
 - `_insert_tasmota_tombstone(cur, scan_id, device_key)`: row of sentinels +
   `is_tombstone=1`.
-- `_save_entities(..., *, tombstone_rows=None)`: when provided, raise `ValueError`
-  on empty `data` (guard), and after the insert loop tombstone
-  `sorted(set(latest) - set(data))` via `tombstone_rows`. Callers that don't pass
-  it are unchanged.
-- `save_tasmota`: pass `tombstone_rows=_insert_tasmota_tombstone`.
+- `tombstone_missing_tasmota(scan_id, present: set[str]) -> int`: mirrors the
+  existing `tombstone_missing_reachability` — tombstones `set(_latest_tasmota) -
+  present` with INSERT-only tombstone rows, raising `ValueError` on an empty
+  `present` set (a failed scan, not a wholesale removal). `save_tasmota` itself
+  stays a pure delta save (unchanged signature).
+- `cli/main.py::_save_tasmota_to_db(config, data)`: mirrors
+  `_save_reachability_to_db` — one scan row that runs `save_tasmota` then
+  `tombstone_missing_tasmota(scan_id, set(data))`, cleaning up the scan row on
+  failure. `cmd_tasmota_scan` calls it instead of the generic
+  `_save_to_discovery_db`.
 - `_latest_tasmota`: select `is_tombstone`; skip tombstoned keys. A later real row
   resurrects a key.
 

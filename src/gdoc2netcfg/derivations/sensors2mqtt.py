@@ -1,7 +1,7 @@
 """sensors2mqtt host selection (Network sheet `Sensors` column) + broker login
 building.
 
-Pure. Reads the `Sensors` column from `host.extra` (local/remote/blank) and
+Pure. Reads the `Sensors` column from `host.extra` (local/remote/proxy/blank) and
 builds the `{s2m-<id>: password}` map for `register`, reusing the shared
 credential core.
 """
@@ -22,18 +22,22 @@ if TYPE_CHECKING:
 
 PREFIX = "s2m-"
 _COLUMN = "Sensors"
-_VALID = {"local", "remote", ""}
+_VALID = {"local", "remote", "proxy", ""}
 
 
 def classify(host: Host) -> str:
-    """Return 'local' / 'remote' / 'blank' for a host's `Sensors` column value.
+    """Return 'local' / 'remote' / 'proxy' / 'blank' for a host's `Sensors` value.
 
-    Fails loud on an unrecognized non-blank value (never silently skipped)."""
+    'local' runs a collector locally and gets an HA broker login; 'remote' is polled
+    by a collector elsewhere; 'proxy' runs a collector that publishes to a different
+    broker which proxies the data onto HA (so it gets NO HA login but is still
+    state-checked); blank means not involved. Fails loud on an unrecognized non-blank
+    value (never silently skipped)."""
     value = host.extra.get(_COLUMN, "").strip().lower()
     if value not in _VALID:
         raise ValueError(
             f"host {host.hostname}: unrecognized Sensors value "
-            f"{value!r} (expected 'local', 'remote', or blank)"
+            f"{value!r} (expected 'local', 'remote', 'proxy', or blank)"
         )
     return "blank" if value == "" else value
 

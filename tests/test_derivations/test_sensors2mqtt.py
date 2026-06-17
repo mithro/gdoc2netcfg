@@ -34,6 +34,9 @@ class TestClassify:
         with pytest.raises(ValueError, match="Sensors"):
             classify(_host("a", "maybe"))
 
+    def test_proxy(self):
+        assert classify(_host("pi1.fpgas", "proxy")) == "proxy"
+
 
 class TestSelect:
     def test_select_local(self):
@@ -42,6 +45,11 @@ class TestSelect:
 
     def test_select_non_blank(self):
         hosts = [_host("a", "local"), _host("b", "remote"), _host("c")]
+        assert sorted(h.hostname for h in select_non_blank(hosts)) == ["a", "b"]
+
+    def test_proxy_no_login_but_checked(self):
+        hosts = [_host("a", "local"), _host("b", "proxy"), _host("c")]
+        assert [h.hostname for h in select_local(hosts)] == ["a"]
         assert sorted(h.hostname for h in select_non_blank(hosts)) == ["a", "b"]
 
 
@@ -63,3 +71,8 @@ class TestBuildLogins:
         with pytest.raises(ValueError, match="collide"):
             build_logins("0123456789abcdef0123456789abcdef",
                          [_host("a.b", "local"), _host("a-b", "local")])
+
+    def test_proxy_excluded(self):
+        secret = "0123456789abcdef0123456789abcdef"
+        logins = build_logins(secret, [_host("a", "proxy"), _host("b", "local")])
+        assert set(logins) == {"s2m-b"}

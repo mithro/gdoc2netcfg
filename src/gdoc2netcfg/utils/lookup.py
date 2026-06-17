@@ -188,14 +188,13 @@ def suggest_matches(
 ) -> list[str]:
     """Suggest close matches for a failed query using fuzzy matching.
 
-    Compares against all hostnames, machine_names, MACs, and IPs.
+    Compares against all hostnames, MACs, and IPs — the identifiers exact
+    lookup can resolve (machine_name is intentionally excluded).
     Returns up to max_suggestions suggestions.
     """
     candidates: list[str] = []
     for host in hosts:
         candidates.append(host.hostname)
-        if host.machine_name != host.hostname:
-            candidates.append(host.machine_name)
         for mac in host.all_macs:
             candidates.append(str(mac))
         for iface in host.interfaces:

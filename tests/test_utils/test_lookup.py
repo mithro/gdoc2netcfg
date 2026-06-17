@@ -262,10 +262,11 @@ class TestMatchByMAC:
 
 class TestSuggestMatches:
     def test_close_hostname(self):
+        """Fuzzy matching against the hostname (exact lookup identifier)."""
         hosts = [
-            _make_host("switch1", "switch1.net.welland.mithis.com",
+            _make_host("switch1", "switch1",
                         ip="10.1.30.1", mac="aa:bb:cc:dd:ee:01"),
-            _make_host("switch2", "switch2.net.welland.mithis.com",
+            _make_host("switch2", "switch2",
                         ip="10.1.30.2", mac="aa:bb:cc:dd:ee:02"),
         ]
         suggestions = suggest_matches("swtich1", hosts)
@@ -288,6 +289,17 @@ class TestSuggestMatches:
         ]
         suggestions = suggest_matches("zzzzzzzzzzz", hosts)
         assert suggestions == []
+
+    def test_suggests_full_hostname_not_machine_name(self):
+        """A short IoT name should suggest the resolvable '.iot' hostname,
+        not the bare machine_name (which no longer resolves)."""
+        hosts = [
+            _make_host("au-plug-1", "au-plug-1.iot",
+                        ip="10.1.90.71", mac="aa:bb:cc:dd:ee:06"),
+        ]
+        suggestions = suggest_matches("au-plug-1", hosts)
+        assert "au-plug-1.iot" in suggestions
+        assert "au-plug-1" not in suggestions
 
 
 # --- TestGetCredentialFields ------------------------------------------------

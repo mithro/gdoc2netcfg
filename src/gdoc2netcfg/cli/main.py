@@ -2487,21 +2487,38 @@ def cmd_password(args: argparse.Namespace) -> int:
     best = results[0]
     host = best.host
 
-    # Credentials live in the root-only credentials.db, not the cache.
-    # Only consult it when a credential field is actually requested, so a
-    # --field for a non-credential column stays sudo-free.
     from gdoc2netcfg.sources.credentials import credential_field_names
     from gdoc2netcfg.storage.credentials_db import CredentialsDB
-    from gdoc2netcfg.utils.lookup import CREDENTIAL_TYPES
+    from gdoc2netcfg.utils.lookup import CREDENTIAL_TYPES, split_login
 
-    credential_names = set(credential_field_names())
-    if args.field_name is not None:
+    # --type ipmi: credentials come from the associated BMC host's single
+    # Password column (username:password), not the queried host itself.
+    cred_host = host
+    if args.credential_type == "ipmi":
+        if host.hostname.startswith("bmc."):
+            cred_host = host
+        else:
+            bmc_hostname = f"bmc.{host.hostname}"
+            match = next(
+                (h for h in hosts if h.hostname == bmc_hostname), None,
+            )
+            if match is None:
+                print(
+                    f"Error: no BMC host ({bmc_hostname}) found for "
+                    f"'{host.hostname}'",
+                    file=sys.stderr,
+                )
+                return 1
+            cred_host = match
+        requested = {"Password"}
+    elif args.field_name is not None:
         requested = {args.field_name}
     elif args.credential_type is not None:
         requested = set(CREDENTIAL_TYPES.get(args.credential_type, []))
     else:
         requested = set(CREDENTIAL_TYPES["password"])
 
+    credential_names = set(credential_field_names())
     if requested & credential_names:
         cred_path = config.cache.credentials_db_path
         try:
@@ -2521,11 +2538,25 @@ def cmd_password(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        host.extra.update(stored.get(host.hostname, {}))
+        cred_host.extra.update(stored.get(cred_host.hostname, {}))
 
-    cred = get_credential_fields(
-        host, args.credential_type, args.field_name,
-    )
+    if args.credential_type == "ipmi":
+        raw = cred_host.extra.get("Password", "").strip()
+        if not raw:
+            print(
+                f"Error: BMC {cred_host.hostname} has no Password",
+                file=sys.stderr,
+            )
+            return 1
+        user, pw = split_login(raw)
+        cred = {}
+        if user is not None:
+            cred["IPMI Username"] = user
+        cred["IPMI Password"] = pw
+    else:
+        cred = get_credential_fields(
+            host, args.credential_type, args.field_name,
+        )
 
     if not cred:
         what = args.field_name or args.credential_type or "password"
@@ -2551,6 +2582,8 @@ def cmd_password(args: argparse.Namespace) -> int:
         if host.all_macs:
             print(f"MAC:        {host.all_macs[0]}")
         print(f"Matched by: {best.match_detail}")
+        if args.credential_type == "ipmi" and cred_host is not host:
+            print(f"IPMI source: {cred_host.hostname}")
         print()
         for field_name, value in cred.items():
             print(f"{field_name}: {value}")

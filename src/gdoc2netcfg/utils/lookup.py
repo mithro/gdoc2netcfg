@@ -228,7 +228,6 @@ def suggest_matches(
 CREDENTIAL_TYPES: dict[str, list[str]] = {
     "password": ["Password"],
     "snmp": ["SNMP Community"],
-    "ipmi": ["IPMI Username", "IPMI Password"],
 }
 
 

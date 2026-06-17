@@ -49,6 +49,24 @@ def detect_query_type(query: str) -> str:
     return "hostname"
 
 
+def split_login(value: str) -> tuple[str | None, str]:
+    """Split a ``username:password`` credential value on the first colon.
+
+    Returns ``(username, password)``; when there is no colon, the username is
+    ``None`` and the whole value is the password. The password itself may
+    contain colons (only the first is the separator).
+
+    >>> split_login("ADMIN:s3cr3t")
+    ('ADMIN', 's3cr3t')
+    >>> split_login("s3cr3t")
+    (None, 's3cr3t')
+    """
+    username, sep, password = value.partition(":")
+    if not sep:
+        return None, value
+    return username, password
+
+
 # --- Lookup result ----------------------------------------------------------
 
 @dataclass(frozen=True)

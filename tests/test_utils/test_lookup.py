@@ -12,6 +12,7 @@ from gdoc2netcfg.utils.lookup import (
     detect_query_type,
     get_credential_fields,
     lookup_host,
+    split_login,
     suggest_matches,
 )
 
@@ -362,6 +363,22 @@ class TestGetCredentialFields:
         host = _make_host("switch1", "switch1", extra={})
         result = get_credential_fields(host, field_name="Nonexistent")
         assert result == {}
+
+
+# --- TestSplitLogin ---------------------------------------------------------
+
+class TestSplitLogin:
+    def test_username_and_password(self):
+        assert split_login("ADMIN:s3cr3t") == ("ADMIN", "s3cr3t")
+
+    def test_no_colon_is_password_only(self):
+        assert split_login("s3cr3t") == (None, "s3cr3t")
+
+    def test_password_may_contain_colons(self):
+        assert split_login("ADMIN:a:b:c") == ("ADMIN", "a:b:c")
+
+    def test_empty(self):
+        assert split_login("") == (None, "")
 
 
 # --- TestAvailableCredentialFields ------------------------------------------

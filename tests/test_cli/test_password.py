@@ -70,14 +70,13 @@ class TestPasswordByHostname:
         assert "sw1pass" in captured.out
         assert "switch1" in captured.out
 
-    def test_lookup_by_substring(self, password_config, capsys):
-        """Substring match finds server1 via 'server'."""
+    def test_substring_no_longer_matches(self, password_config, capsys):
+        """A partial name ('serv') must NOT resolve under exact matching."""
         result = main([
-            "-c", str(password_config), "password", "server1",
+            "-c", str(password_config), "password", "serv",
         ])
-        assert result == 0
-        captured = capsys.readouterr()
-        assert "srv1pass" in captured.out
+        assert result == 1
+        assert "no device found" in capsys.readouterr().err
 
 
 class TestPasswordByIP:

@@ -57,8 +57,8 @@ class LookupResult:
 
     Attributes:
         host: The matched Host object.
-        match_type: How it was matched ('exact', 'prefix', 'substring',
-            'wildcard').
+        match_type: How it was matched — 'exact' (hostname, IP, or MAC) or
+            'wildcard' (IP second-octet fallback only).
         match_detail: Human-readable description of what matched.
     """
 
@@ -72,82 +72,70 @@ class LookupResult:
 def _match_by_hostname(
     query: str, hosts: list[Host],
 ) -> list[LookupResult]:
-    """Match hosts by hostname or machine_name.
+    """Match hosts by exact hostname (case-insensitive).
 
-    Priority order:
-    1. Exact match on hostname or machine_name (case-insensitive)
-    2. Prefix match: query + "." is prefix of hostname
-    3. Substring match on hostname or machine_name
-
-    Returns results ordered by match quality.
+    Only an exact hostname match counts — no machine_name, prefix, or
+    substring matching. Production hostnames are the short compute_hostname
+    form (e.g. 'desktop', 'bmc.big-storage', 'au-plug-1.iot'), so a BMC is
+    reached by its full 'bmc.<machine>' hostname and an IoT device by its
+    '.iot' hostname.
     """
     q = query.lower()
-    exact: list[LookupResult] = []
-    prefix: list[LookupResult] = []
-    substring: list[LookupResult] = []
-
-    for host in hosts:
-        hn = host.hostname.lower()
-        mn = host.machine_name.lower()
-
-        if q == hn or q == mn:
-            exact.append(LookupResult(
-                host=host, match_type="exact",
-                match_detail=f"hostname '{host.hostname}'",
-            ))
-        elif hn.startswith(q + "."):
-            prefix.append(LookupResult(
-                host=host, match_type="prefix",
-                match_detail=f"hostname '{host.hostname}' (prefix match)",
-            ))
-        elif q in hn or q in mn:
-            substring.append(LookupResult(
-                host=host, match_type="substring",
-                match_detail=f"hostname '{host.hostname}' (substring match)",
-            ))
-
-    return exact + prefix + substring
+    return [
+        LookupResult(
+            host=host, match_type="exact",
+            match_detail=f"hostname '{host.hostname}'",
+        )
+        for host in hosts
+        if host.hostname.lower() == q
+    ]
 
 
 def _match_by_ip(query: str, hosts: list[Host]) -> list[LookupResult]:
-    """Match hosts by IPv4 address.
+    """Match hosts by IPv4 address, exact-first.
 
-    Priority order:
-    1. Exact match on any interface IPv4
-    2. Wildcard second-octet: compare octets 1, 3, 4 only
-       (handles 10.X.Y.Z site placeholder pattern)
+    Tier 1 — exact match on any interface IPv4.
+    Tier 2 — second-octet wildcard (octets 1, 3, 4 equal, octet 2 differs),
+             the cross-site 10.X.Y.Z placeholder pattern.
 
-    Returns results ordered by match quality.
+    Returns Tier 1 if non-empty; otherwise Tier 2. Never both. One result
+    per host (exact preferred over a wildcard on another interface).
     """
     q_parts = query.split(".")
     exact: list[LookupResult] = []
     wildcard: list[LookupResult] = []
 
     for host in hosts:
+        host_exact: LookupResult | None = None
+        host_wildcard: LookupResult | None = None
         for iface in host.interfaces:
             ip_str = str(iface.ipv4)
             if query == ip_str:
-                exact.append(LookupResult(
+                host_exact = LookupResult(
                     host=host, match_type="exact",
                     match_detail=f"IP {ip_str} on interface "
                                  f"{iface.name or 'default'}",
-                ))
-                break  # One match per host for exact
-            else:
-                ip_parts = ip_str.split(".")
-                if (len(q_parts) == 4 and len(ip_parts) == 4
-                        and q_parts[0] == ip_parts[0]
-                        and q_parts[2] == ip_parts[2]
-                        and q_parts[3] == ip_parts[3]
-                        and q_parts[1] != ip_parts[1]):
-                    wildcard.append(LookupResult(
-                        host=host, match_type="wildcard",
-                        match_detail=f"IP {ip_str} (second-octet wildcard "
-                                     f"match for {query})",
-                    ))
-                    break  # One match per host for wildcard
+                )
+                break  # exact is best for this host
+            ip_parts = ip_str.split(".")
+            if (host_wildcard is None and len(q_parts) == 4
+                    and len(ip_parts) == 4
+                    and q_parts[0] == ip_parts[0]
+                    and q_parts[2] == ip_parts[2]
+                    and q_parts[3] == ip_parts[3]
+                    and q_parts[1] != ip_parts[1]):
+                host_wildcard = LookupResult(
+                    host=host, match_type="wildcard",
+                    match_detail=f"IP {ip_str} (second-octet wildcard "
+                                 f"match for {query})",
+                )
+                # keep scanning — a later interface may be an exact hit
+        if host_exact is not None:
+            exact.append(host_exact)
+        elif host_wildcard is not None:
+            wildcard.append(host_wildcard)
 
-    return exact + wildcard
+    return exact if exact else wildcard
 
 
 def _match_by_mac(query: str, hosts: list[Host]) -> list[LookupResult]:
@@ -200,14 +188,13 @@ def suggest_matches(
 ) -> list[str]:
     """Suggest close matches for a failed query using fuzzy matching.
 
-    Compares against all hostnames, machine_names, MACs, and IPs.
+    Compares against all hostnames, MACs, and IPs — the identifiers exact
+    lookup can resolve (machine_name is intentionally excluded).
     Returns up to max_suggestions suggestions.
     """
     candidates: list[str] = []
     for host in hosts:
         candidates.append(host.hostname)
-        if host.machine_name != host.hostname:
-            candidates.append(host.machine_name)
         for mac in host.all_macs:
             candidates.append(str(mac))
         for iface in host.interfaces:

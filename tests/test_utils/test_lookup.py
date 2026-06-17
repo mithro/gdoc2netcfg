@@ -109,68 +109,65 @@ class TestMatchByHostname:
     @pytest.fixture
     def hosts(self):
         return [
-            _make_host("switch1", "switch1.net.welland.mithis.com",
+            # Network devices: hostname == machine_name (short)
+            _make_host("switch1", "switch1",
                         ip="10.1.30.1", mac="aa:bb:cc:dd:ee:01"),
-            _make_host("desktop", "desktop.int.welland.mithis.com",
-                        ip="10.1.10.2", mac="aa:bb:cc:dd:ee:02"),
-            _make_host("big-storage", "big-storage.int.welland.mithis.com",
-                        ip="10.1.10.3", mac="aa:bb:cc:dd:ee:03"),
-            _make_host("switch10", "switch10.net.welland.mithis.com",
+            _make_host("switch10", "switch10",
                         ip="10.1.30.10", mac="aa:bb:cc:dd:ee:04"),
+            _make_host("big-storage", "big-storage",
+                        ip="10.1.10.3", mac="aa:bb:cc:dd:ee:03"),
+            # BMC: hostname "bmc.big-storage", machine_name shared with parent
+            _make_host("big-storage", "bmc.big-storage",
+                        ip="10.1.10.4", mac="aa:bb:cc:dd:ee:05"),
+            # IoT: hostname carries the ".iot" suffix, machine_name is short
+            _make_host("au-plug-1", "au-plug-1.iot",
+                        ip="10.1.90.71", mac="aa:bb:cc:dd:ee:06"),
         ]
 
     def test_exact_hostname_match(self, hosts):
-        results = lookup_host(
-            "switch1.net.welland.mithis.com", hosts,
-        )
-        assert len(results) == 1
-        assert results[0].host.hostname == "switch1.net.welland.mithis.com"
-        assert results[0].match_type == "exact"
-
-    def test_exact_machine_name_match(self, hosts):
         results = lookup_host("switch1", hosts)
-        assert len(results) >= 1
-        assert results[0].host.machine_name == "switch1"
+        assert len(results) == 1
+        assert results[0].host.hostname == "switch1"
         assert results[0].match_type == "exact"
 
     def test_case_insensitive(self, hosts):
         results = lookup_host("SWITCH1", hosts)
-        assert len(results) >= 1
-        assert results[0].host.machine_name == "switch1"
-
-    def test_prefix_match(self, hosts):
-        results = lookup_host("desktop", hosts)
-        # "desktop" exactly matches machine_name, so it's exact
-        assert results[0].match_type == "exact"
-
-    def test_prefix_match_domain_stripping(self, hosts):
-        """Query like 'switch1' that has exact machine_name match AND prefix."""
-        results = lookup_host("switch1", hosts)
-        # Exact match on machine_name comes first
-        assert results[0].host.machine_name == "switch1"
-        assert results[0].match_type == "exact"
-
-    def test_substring_match(self, hosts):
-        results = lookup_host("storage", hosts)
         assert len(results) == 1
-        assert results[0].host.machine_name == "big-storage"
-        assert results[0].match_type == "substring"
+        assert results[0].host.hostname == "switch1"
 
-    def test_ordering_exact_before_prefix_before_substring(self, hosts):
-        """'switch1' should match: exact(switch1), prefix(switch1.net..),
-        then substring(switch10) should come last."""
-        results = lookup_host("switch1", hosts)
-        types = [r.match_type for r in results]
-        # Exact first, then possibly substring for switch10
-        assert types[0] == "exact"
-        # switch10 contains "switch1" as substring
-        if len(results) > 1:
-            assert results[-1].match_type == "substring"
-            assert results[-1].host.machine_name == "switch10"
+    def test_bmc_collision_resolved(self, hosts):
+        """'big-storage' must resolve ONLY the primary, never bmc.big-storage."""
+        results = lookup_host("big-storage", hosts)
+        assert len(results) == 1
+        assert results[0].host.hostname == "big-storage"
+        assert results[0].match_type == "exact"
+
+    def test_bmc_reached_by_full_hostname(self, hosts):
+        results = lookup_host("bmc.big-storage", hosts)
+        assert len(results) == 1
+        assert results[0].host.hostname == "bmc.big-storage"
+
+    def test_machine_name_not_matched(self, hosts):
+        """machine_name no longer matches: 'au-plug-1' != hostname 'au-plug-1.iot'."""
+        assert lookup_host("au-plug-1", hosts) == []
+
+    def test_iot_full_hostname_matches(self, hosts):
+        results = lookup_host("au-plug-1.iot", hosts)
+        assert len(results) == 1
+        assert results[0].host.hostname == "au-plug-1.iot"
+
+    def test_substring_no_longer_matches(self, hosts):
+        """'storage' was a substring of 'big-storage'; now no match."""
+        assert lookup_host("storage", hosts) == []
+
+    def test_prefix_no_longer_matches(self, hosts):
+        """'switch1' must NOT prefix-match 'switch10'."""
+        matched = {r.host.hostname for r in lookup_host("switch1", hosts)}
+        assert matched == {"switch1"}
+        assert "switch10" not in matched
 
     def test_no_match(self, hosts):
-        results = lookup_host("nonexistent", hosts)
-        assert results == []
+        assert lookup_host("nonexistent", hosts) == []
 
 
 # --- TestMatchByIP ----------------------------------------------------------
@@ -179,34 +176,37 @@ class TestMatchByIP:
     @pytest.fixture
     def hosts(self):
         return [
-            _make_host("switch1", "switch1.net.welland.mithis.com",
+            _make_host("switch1", "switch1",
                         ip="10.1.30.1", mac="aa:bb:cc:dd:ee:01"),
-            _make_host("server1", "server1.int.welland.mithis.com",
+            _make_host("server1", "server1",
                         ip="10.1.10.5", mac="aa:bb:cc:dd:ee:02"),
+            # Same octets 1/3/4 as switch1 but a different second octet:
+            _make_host("switch1-m", "switch1-m",
+                        ip="10.2.30.1", mac="aa:bb:cc:dd:ee:03"),
         ]
 
     def test_exact_ip_match(self, hosts):
         results = lookup_host("10.1.30.1", hosts)
-        assert len(results) == 1
-        assert results[0].host.machine_name == "switch1"
+        assert results[0].host.hostname == "switch1"
         assert results[0].match_type == "exact"
 
-    def test_wildcard_second_octet(self, hosts):
-        # Query with different second octet (e.g., Monarto IP 10.2.30.1
-        # matching Welland host at 10.1.30.1)
-        results = lookup_host("10.2.30.1", hosts)
-        assert len(results) == 1
-        assert results[0].host.machine_name == "switch1"
-        assert results[0].match_type == "wildcard"
-
-    def test_exact_before_wildcard(self, hosts):
-        """If a host has exact match, it comes before wildcard matches."""
+    def test_exact_shadows_wildcard(self, hosts):
+        """An exact hit suppresses the wildcard tier entirely."""
         results = lookup_host("10.1.30.1", hosts)
-        assert results[0].match_type == "exact"
+        assert len(results) == 1
+        assert all(r.match_type == "exact" for r in results)
+        assert results[0].host.hostname == "switch1"
+
+    def test_wildcard_only_when_no_exact(self, hosts):
+        """No host has 10.3.30.1, so the wildcard tier is returned."""
+        results = lookup_host("10.3.30.1", hosts)
+        assert len(results) == 2
+        hostnames = {r.host.hostname for r in results}
+        assert hostnames == {"switch1", "switch1-m"}
+        assert all(r.match_type == "wildcard" for r in results)
 
     def test_no_match(self, hosts):
-        results = lookup_host("10.1.99.99", hosts)
-        assert results == []
+        assert lookup_host("10.1.99.99", hosts) == []
 
 
 # --- TestMatchByMAC ---------------------------------------------------------
@@ -262,10 +262,11 @@ class TestMatchByMAC:
 
 class TestSuggestMatches:
     def test_close_hostname(self):
+        """Fuzzy matching against the hostname (exact lookup identifier)."""
         hosts = [
-            _make_host("switch1", "switch1.net.welland.mithis.com",
+            _make_host("switch1", "switch1",
                         ip="10.1.30.1", mac="aa:bb:cc:dd:ee:01"),
-            _make_host("switch2", "switch2.net.welland.mithis.com",
+            _make_host("switch2", "switch2",
                         ip="10.1.30.2", mac="aa:bb:cc:dd:ee:02"),
         ]
         suggestions = suggest_matches("swtich1", hosts)
@@ -288,6 +289,17 @@ class TestSuggestMatches:
         ]
         suggestions = suggest_matches("zzzzzzzzzzz", hosts)
         assert suggestions == []
+
+    def test_suggests_full_hostname_not_machine_name(self):
+        """A short IoT name should suggest the resolvable '.iot' hostname,
+        not the bare machine_name (which no longer resolves)."""
+        hosts = [
+            _make_host("au-plug-1", "au-plug-1.iot",
+                        ip="10.1.90.71", mac="aa:bb:cc:dd:ee:06"),
+        ]
+        suggestions = suggest_matches("au-plug-1", hosts)
+        assert "au-plug-1.iot" in suggestions
+        assert "au-plug-1" not in suggestions
 
 
 # --- TestGetCredentialFields ------------------------------------------------

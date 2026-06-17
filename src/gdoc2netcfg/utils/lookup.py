@@ -92,44 +92,50 @@ def _match_by_hostname(
 
 
 def _match_by_ip(query: str, hosts: list[Host]) -> list[LookupResult]:
-    """Match hosts by IPv4 address.
+    """Match hosts by IPv4 address, exact-first.
 
-    Priority order:
-    1. Exact match on any interface IPv4
-    2. Wildcard second-octet: compare octets 1, 3, 4 only
-       (handles 10.X.Y.Z site placeholder pattern)
+    Tier 1 — exact match on any interface IPv4.
+    Tier 2 — second-octet wildcard (octets 1, 3, 4 equal, octet 2 differs),
+             the cross-site 10.X.Y.Z placeholder pattern.
 
-    Returns results ordered by match quality.
+    Returns Tier 1 if non-empty; otherwise Tier 2. Never both. One result
+    per host (exact preferred over a wildcard on another interface).
     """
     q_parts = query.split(".")
     exact: list[LookupResult] = []
     wildcard: list[LookupResult] = []
 
     for host in hosts:
+        host_exact: LookupResult | None = None
+        host_wildcard: LookupResult | None = None
         for iface in host.interfaces:
             ip_str = str(iface.ipv4)
             if query == ip_str:
-                exact.append(LookupResult(
+                host_exact = LookupResult(
                     host=host, match_type="exact",
                     match_detail=f"IP {ip_str} on interface "
                                  f"{iface.name or 'default'}",
-                ))
-                break  # One match per host for exact
-            else:
-                ip_parts = ip_str.split(".")
-                if (len(q_parts) == 4 and len(ip_parts) == 4
-                        and q_parts[0] == ip_parts[0]
-                        and q_parts[2] == ip_parts[2]
-                        and q_parts[3] == ip_parts[3]
-                        and q_parts[1] != ip_parts[1]):
-                    wildcard.append(LookupResult(
-                        host=host, match_type="wildcard",
-                        match_detail=f"IP {ip_str} (second-octet wildcard "
-                                     f"match for {query})",
-                    ))
-                    break  # One match per host for wildcard
+                )
+                break  # exact is best for this host
+            ip_parts = ip_str.split(".")
+            if (host_wildcard is None and len(q_parts) == 4
+                    and len(ip_parts) == 4
+                    and q_parts[0] == ip_parts[0]
+                    and q_parts[2] == ip_parts[2]
+                    and q_parts[3] == ip_parts[3]
+                    and q_parts[1] != ip_parts[1]):
+                host_wildcard = LookupResult(
+                    host=host, match_type="wildcard",
+                    match_detail=f"IP {ip_str} (second-octet wildcard "
+                                 f"match for {query})",
+                )
+                # keep scanning — a later interface may be an exact hit
+        if host_exact is not None:
+            exact.append(host_exact)
+        elif host_wildcard is not None:
+            wildcard.append(host_wildcard)
 
-    return exact + wildcard
+    return exact if exact else wildcard
 
 
 def _match_by_mac(query: str, hosts: list[Host]) -> list[LookupResult]:

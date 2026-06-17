@@ -176,34 +176,37 @@ class TestMatchByIP:
     @pytest.fixture
     def hosts(self):
         return [
-            _make_host("switch1", "switch1.net.welland.mithis.com",
+            _make_host("switch1", "switch1",
                         ip="10.1.30.1", mac="aa:bb:cc:dd:ee:01"),
-            _make_host("server1", "server1.int.welland.mithis.com",
+            _make_host("server1", "server1",
                         ip="10.1.10.5", mac="aa:bb:cc:dd:ee:02"),
+            # Same octets 1/3/4 as switch1 but a different second octet:
+            _make_host("switch1-m", "switch1-m",
+                        ip="10.2.30.1", mac="aa:bb:cc:dd:ee:03"),
         ]
 
     def test_exact_ip_match(self, hosts):
         results = lookup_host("10.1.30.1", hosts)
-        assert len(results) == 1
-        assert results[0].host.machine_name == "switch1"
+        assert results[0].host.hostname == "switch1"
         assert results[0].match_type == "exact"
 
-    def test_wildcard_second_octet(self, hosts):
-        # Query with different second octet (e.g., Monarto IP 10.2.30.1
-        # matching Welland host at 10.1.30.1)
-        results = lookup_host("10.2.30.1", hosts)
-        assert len(results) == 1
-        assert results[0].host.machine_name == "switch1"
-        assert results[0].match_type == "wildcard"
-
-    def test_exact_before_wildcard(self, hosts):
-        """If a host has exact match, it comes before wildcard matches."""
+    def test_exact_shadows_wildcard(self, hosts):
+        """An exact hit suppresses the wildcard tier entirely."""
         results = lookup_host("10.1.30.1", hosts)
-        assert results[0].match_type == "exact"
+        assert len(results) == 1
+        assert all(r.match_type == "exact" for r in results)
+        assert results[0].host.hostname == "switch1"
+
+    def test_wildcard_only_when_no_exact(self, hosts):
+        """No host has 10.3.30.1, so the wildcard tier is returned."""
+        results = lookup_host("10.3.30.1", hosts)
+        assert len(results) == 2
+        hostnames = {r.host.hostname for r in results}
+        assert hostnames == {"switch1", "switch1-m"}
+        assert all(r.match_type == "wildcard" for r in results)
 
     def test_no_match(self, hosts):
-        results = lookup_host("10.1.99.99", hosts)
-        assert results == []
+        assert lookup_host("10.1.99.99", hosts) == []
 
 
 # --- TestMatchByMAC ---------------------------------------------------------

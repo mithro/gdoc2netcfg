@@ -57,8 +57,8 @@ class LookupResult:
 
     Attributes:
         host: The matched Host object.
-        match_type: How it was matched ('exact', 'prefix', 'substring',
-            'wildcard').
+        match_type: How it was matched — 'exact' (hostname, IP, or MAC) or
+            'wildcard' (IP second-octet fallback only).
         match_detail: Human-readable description of what matched.
     """
 
@@ -72,41 +72,23 @@ class LookupResult:
 def _match_by_hostname(
     query: str, hosts: list[Host],
 ) -> list[LookupResult]:
-    """Match hosts by hostname or machine_name.
+    """Match hosts by exact hostname (case-insensitive).
 
-    Priority order:
-    1. Exact match on hostname or machine_name (case-insensitive)
-    2. Prefix match: query + "." is prefix of hostname
-    3. Substring match on hostname or machine_name
-
-    Returns results ordered by match quality.
+    Only an exact hostname match counts — no machine_name, prefix, or
+    substring matching. Production hostnames are the short compute_hostname
+    form (e.g. 'desktop', 'bmc.big-storage', 'au-plug-1.iot'), so a BMC is
+    reached by its full 'bmc.<machine>' hostname and an IoT device by its
+    '.iot' hostname.
     """
     q = query.lower()
-    exact: list[LookupResult] = []
-    prefix: list[LookupResult] = []
-    substring: list[LookupResult] = []
-
-    for host in hosts:
-        hn = host.hostname.lower()
-        mn = host.machine_name.lower()
-
-        if q == hn or q == mn:
-            exact.append(LookupResult(
-                host=host, match_type="exact",
-                match_detail=f"hostname '{host.hostname}'",
-            ))
-        elif hn.startswith(q + "."):
-            prefix.append(LookupResult(
-                host=host, match_type="prefix",
-                match_detail=f"hostname '{host.hostname}' (prefix match)",
-            ))
-        elif q in hn or q in mn:
-            substring.append(LookupResult(
-                host=host, match_type="substring",
-                match_detail=f"hostname '{host.hostname}' (substring match)",
-            ))
-
-    return exact + prefix + substring
+    return [
+        LookupResult(
+            host=host, match_type="exact",
+            match_detail=f"hostname '{host.hostname}'",
+        )
+        for host in hosts
+        if host.hostname.lower() == q
+    ]
 
 
 def _match_by_ip(query: str, hosts: list[Host]) -> list[LookupResult]:

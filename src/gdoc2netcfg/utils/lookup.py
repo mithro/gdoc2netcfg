@@ -240,8 +240,9 @@ def get_credential_fields(
 
     Args:
         host: The host to extract credentials from.
-        credential_type: One of 'password', 'snmp', 'ipmi' (uses
-            CREDENTIAL_TYPES mapping).
+        credential_type: One of 'password', 'snmp' (uses CREDENTIAL_TYPES).
+            'ipmi' is not handled here — cmd_password special-cases it,
+            resolving the BMC host's Password (#39).
         field_name: An arbitrary extra column name (mutually exclusive
             with credential_type).
 

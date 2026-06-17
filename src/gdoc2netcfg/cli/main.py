@@ -1165,6 +1165,29 @@ def cmd_bmc_firmware(args: argparse.Namespace) -> int:
 
     hosts = build_hosts(all_records, config.site)
 
+    # BMC IPMI creds come from each BMC host's Password column (username:password),
+    # stored root-only in credentials.db. Best-effort: the scan still works on
+    # factory ADMIN/ADMIN BMCs if the store is unavailable.
+    from gdoc2netcfg.storage.credentials_db import CredentialsDB
+    cred_path = config.cache.credentials_db_path
+    try:
+        with CredentialsDB(cred_path, read_only=True) as cred_db:
+            stored = cred_db.load_latest_credentials() or {}
+        for h in hosts:
+            h.extra.update(stored.get(h.hostname, {}))
+    except FileNotFoundError:
+        print(
+            "Warning: no credential store; trying ADMIN/ADMIN only. "
+            "Run 'gdoc2netcfg fetch' (as root) for custom-credential BMCs.",
+            file=sys.stderr,
+        )
+    except sqlite3.OperationalError:
+        print(
+            "Warning: credential store unreadable (root-only); trying "
+            "ADMIN/ADMIN only. Re-run with sudo for custom-credential BMCs.",
+            file=sys.stderr,
+        )
+
     reachability = _load_or_run_reachability(config, hosts, force=args.force)
     _print_reachability_summary(reachability, hosts)
 

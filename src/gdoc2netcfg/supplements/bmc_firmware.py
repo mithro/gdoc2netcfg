@@ -19,6 +19,7 @@ from gdoc2netcfg.derivations.hardware import (
     HARDWARE_SUPERMICRO_BMC_LEGACY,
 )
 from gdoc2netcfg.models.host import BMCFirmwareInfo
+from gdoc2netcfg.utils.lookup import split_login
 
 if TYPE_CHECKING:
     from gdoc2netcfg.models.host import Host
@@ -78,28 +79,27 @@ def _try_ipmi_credentials(
     ip: str,
     host: Host,
 ) -> dict[str, str] | None:
-    """Try IPMI credential cascade for a BMC.
+    """Try the IPMI credential cascade for a BMC.
 
-    Credential order:
-    1. Default ADMIN/ADMIN (Supermicro factory default)
-    2. host.extra["IPMI Username"] + host.extra["IPMI Password"] if present
+    Order (first success wins):
+    1. The BMC host's own ``Password`` column (``username:password``); a value
+       with no colon uses username ``ADMIN`` (ipmitool requires ``-U``).
+    2. Factory default ``ADMIN``/``ADMIN``.
 
     Returns parsed mc info dict, or None if all attempts fail.
     """
-    # Try 1: Default credentials
-    result = _run_ipmitool_mc_info(ip, "ADMIN", "ADMIN")
-    if result is not None:
-        return result
+    attempts: list[tuple[str, str]] = []
+    raw = host.extra.get("Password", "").strip()
+    if raw:
+        user, pw = split_login(raw)
+        attempts.append((user or "ADMIN", pw))
+    if ("ADMIN", "ADMIN") not in attempts:
+        attempts.append(("ADMIN", "ADMIN"))
 
-    # Try 2: Custom credentials from spreadsheet
-    custom_user = host.extra.get("IPMI Username", "").strip()
-    custom_pass = host.extra.get("IPMI Password", "").strip()
-    if custom_user and custom_pass:
-        if custom_user != "ADMIN" or custom_pass != "ADMIN":
-            result = _run_ipmitool_mc_info(ip, custom_user, custom_pass)
-            if result is not None:
-                return result
-
+    for user, pw in attempts:
+        result = _run_ipmitool_mc_info(ip, user, pw)
+        if result is not None:
+            return result
     return None
 
 

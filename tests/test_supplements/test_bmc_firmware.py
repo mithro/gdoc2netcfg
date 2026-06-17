@@ -254,50 +254,52 @@ class TestRefineBMCHardwareType:
 
 class TestTryIPMICredentials:
     @patch("gdoc2netcfg.supplements.bmc_firmware._run_ipmitool_mc_info")
-    def test_default_credentials_succeed(self, mock_run):
-        mock_run.return_value = {
-            "Product Name": "X11SPM-T(P)F",
-            "Firmware Revision": "1.74",
-            "IPMI Version": "2.0",
-        }
-        host = _make_host()
-        result = _try_ipmi_credentials("10.1.5.10", host)
-
+    def test_no_password_tries_admin_only(self, mock_run):
+        mock_run.return_value = {"Product Name": "X11SPM-T(P)F",
+                                 "Firmware Revision": "1.74", "IPMI Version": "2.0"}
+        result = _try_ipmi_credentials("10.1.5.10", _make_host())
         assert result is not None
-        assert result["Product Name"] == "X11SPM-T(P)F"
         mock_run.assert_called_once_with("10.1.5.10", "ADMIN", "ADMIN")
 
     @patch("gdoc2netcfg.supplements.bmc_firmware._run_ipmitool_mc_info")
-    def test_fallback_to_custom_credentials(self, mock_run):
-        # Default ADMIN/ADMIN fails, custom succeeds
-        mock_run.side_effect = [
-            None,
-            {"Product Name": "X11SPM-T(P)F", "Firmware Revision": "1.74", "IPMI Version": "2.0"},
-        ]
-        host = _make_host(extra={"IPMI Username": "root", "IPMI Password": "secret"})
+    def test_configured_creds_tried_first(self, mock_run):
+        mock_run.return_value = {"Product Name": "X11SPM-T(P)F",
+                                 "Firmware Revision": "1.74", "IPMI Version": "2.0"}
+        host = _make_host(extra={"Password": "root:secret"})
         result = _try_ipmi_credentials("10.1.5.10", host)
-
         assert result is not None
-        assert mock_run.call_count == 2
-        mock_run.assert_any_call("10.1.5.10", "ADMIN", "ADMIN")
-        mock_run.assert_any_call("10.1.5.10", "root", "secret")
+        mock_run.assert_called_once_with("10.1.5.10", "root", "secret")
 
     @patch("gdoc2netcfg.supplements.bmc_firmware._run_ipmitool_mc_info")
-    def test_all_credentials_fail(self, mock_run):
-        mock_run.return_value = None
-        host = _make_host()
+    def test_falls_back_to_admin(self, mock_run):
+        mock_run.side_effect = [None, {"Product Name": "X11SPM-T(P)F",
+                                       "Firmware Revision": "1.74", "IPMI Version": "2.0"}]
+        host = _make_host(extra={"Password": "root:secret"})
         result = _try_ipmi_credentials("10.1.5.10", host)
-        assert result is None
+        assert result is not None
+        assert mock_run.call_args_list[0][0] == ("10.1.5.10", "root", "secret")
+        assert mock_run.call_args_list[1][0] == ("10.1.5.10", "ADMIN", "ADMIN")
 
     @patch("gdoc2netcfg.supplements.bmc_firmware._run_ipmitool_mc_info")
-    def test_skips_duplicate_credentials(self, mock_run):
-        """If custom creds are ADMIN/ADMIN, don't try twice."""
-        mock_run.return_value = None
-        host = _make_host(extra={"IPMI Username": "ADMIN", "IPMI Password": "ADMIN"})
-        result = _try_ipmi_credentials("10.1.5.10", host)
+    def test_no_colon_defaults_username_admin(self, mock_run):
+        mock_run.side_effect = [None, None]
+        host = _make_host(extra={"Password": "justpass"})
+        _try_ipmi_credentials("10.1.5.10", host)
+        assert mock_run.call_args_list[0][0] == ("10.1.5.10", "ADMIN", "justpass")
+        assert mock_run.call_args_list[1][0] == ("10.1.5.10", "ADMIN", "ADMIN")
 
+    @patch("gdoc2netcfg.supplements.bmc_firmware._run_ipmitool_mc_info")
+    def test_admin_password_not_tried_twice(self, mock_run):
+        mock_run.return_value = None
+        host = _make_host(extra={"Password": "ADMIN:ADMIN"})
+        result = _try_ipmi_credentials("10.1.5.10", host)
         assert result is None
         assert mock_run.call_count == 1
+
+    @patch("gdoc2netcfg.supplements.bmc_firmware._run_ipmitool_mc_info")
+    def test_all_fail(self, mock_run):
+        mock_run.return_value = None
+        assert _try_ipmi_credentials("10.1.5.10", _make_host()) is None
 
 
 class TestScanBMCFirmware:

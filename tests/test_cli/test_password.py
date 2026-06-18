@@ -20,6 +20,10 @@ def password_config(tmp_path):
         "switch1,aa:bb:cc:dd:ee:01,10.1.30.1,\n"
         "desktop,aa:bb:cc:dd:ee:02,10.1.10.2,\n"
         "server1,aa:bb:cc:dd:ee:03,10.1.10.5,\n"
+        "big-storage,aa:bb:cc:dd:ee:04,10.1.10.7,\n"
+        "big-storage,aa:bb:cc:dd:ee:05,10.1.10.8,bmc\n"
+        "gpu,aa:bb:cc:dd:ee:06,10.1.10.9,\n"
+        "gpu,aa:bb:cc:dd:ee:07,10.1.10.10,bmc\n"
     )
 
     # Credentials in the root-only store, keyed by hostname.
@@ -30,8 +34,9 @@ def password_config(tmp_path):
             "switch1": {"Password": "sw1pass", "SNMP Community": "public"},
             "desktop": {"IPMI Username": "admin", "IPMI Password": "hunter2"},
             "server1": {"Password": "srv1pass", "SNMP Community": "community1"},
+            "bmc.big-storage": {"Password": "ADMIN:bmcsecret"},
         })
-        db.finish_scan(s, host_count=3, changed_count=5)
+        db.finish_scan(s, host_count=4, changed_count=7)
 
     config = tmp_path / "gdoc2netcfg.toml"
     config.write_text(textwrap.dedent(f"""\
@@ -110,16 +115,12 @@ class TestPasswordQuietMode:
         assert captured.out.strip() == "sw1pass"
         assert "Host:" not in captured.out
 
-    def test_quiet_ipmi_outputs_both_values(self, password_config, capsys):
-        result = main([
-            "-c", str(password_config), "password",
-            "--quiet", "--type", "ipmi", "desktop",
-        ])
+    def test_ipmi_quiet_outputs_user_and_pass(self, password_config, capsys):
+        result = main(["-c", str(password_config), "password",
+                       "--quiet", "--type", "ipmi", "big-storage"])
         assert result == 0
-        captured = capsys.readouterr()
-        lines = captured.out.strip().split("\n")
-        assert "admin" in lines
-        assert "hunter2" in lines
+        lines = capsys.readouterr().out.strip().split("\n")
+        assert "ADMIN" in lines and "bmcsecret" in lines
 
 
 class TestPasswordTypes:
@@ -133,17 +134,33 @@ class TestPasswordTypes:
         assert "public" in captured.out
         assert "SNMP Community" in captured.out
 
-    def test_ipmi_type(self, password_config, capsys):
-        result = main([
-            "-c", str(password_config), "password",
-            "--type", "ipmi", "desktop",
-        ])
+    def test_ipmi_resolves_bmc_password(self, password_config, capsys):
+        result = main(["-c", str(password_config), "password",
+                       "--type", "ipmi", "big-storage"])
         assert result == 0
-        captured = capsys.readouterr()
-        assert "admin" in captured.out
-        assert "hunter2" in captured.out
-        assert "IPMI Username" in captured.out
-        assert "IPMI Password" in captured.out
+        out = capsys.readouterr().out
+        assert "ADMIN" in out and "bmcsecret" in out
+        # Non-quiet output notes the BMC the credentials came from.
+        assert "IPMI source:" in out and "bmc.big-storage" in out
+
+    def test_ipmi_direct_bmc_query(self, password_config, capsys):
+        result = main(["-c", str(password_config), "password",
+                       "--type", "ipmi", "bmc.big-storage"])
+        assert result == 0
+        assert "bmcsecret" in capsys.readouterr().out
+
+    def test_ipmi_no_bmc_fails_loud(self, password_config, capsys):
+        result = main(["-c", str(password_config), "password",
+                       "--type", "ipmi", "switch1"])
+        assert result == 1
+        assert "no BMC host" in capsys.readouterr().err
+
+    def test_ipmi_bmc_no_password_fails_loud(self, password_config, capsys):
+        # gpu has a bmc.gpu host, but no Password is stored for it.
+        result = main(["-c", str(password_config), "password",
+                       "--type", "ipmi", "gpu"])
+        assert result == 1
+        assert "has no Password" in capsys.readouterr().err
 
     def test_field_flag(self, password_config, capsys):
         result = main([

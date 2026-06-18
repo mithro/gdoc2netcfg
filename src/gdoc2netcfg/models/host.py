@@ -387,13 +387,6 @@ class Host:
         """All MAC addresses across all interfaces."""
         return [iface.mac for iface in self.interfaces]
 
-    def is_bmc(self) -> bool:
-        """Check if any interface is a BMC (Baseboard Management Controller)."""
-        return any(
-            iface.name and 'bmc' in iface.name.lower()
-            for iface in self.interfaces
-        )
-
     @property
     def virtual_interfaces(self) -> list[VirtualInterface]:
         """Group physical interfaces by IPv4 into logical endpoints.

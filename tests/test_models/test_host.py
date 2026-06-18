@@ -75,24 +75,6 @@ class TestHost:
         assert len(macs) == 2
         assert MACAddress.parse('aa:bb:cc:dd:ee:01') in macs
 
-    def test_is_bmc(self):
-        bmc_iface = _make_interface(name='bmc', ip='10.1.5.1')
-        host = Host(
-            machine_name='server',
-            hostname='server',
-            interfaces=[bmc_iface],
-        )
-        assert host.is_bmc()
-
-    def test_is_not_bmc(self):
-        eth_iface = _make_interface(name='eth0')
-        host = Host(
-            machine_name='server',
-            hostname='server',
-            interfaces=[eth_iface],
-        )
-        assert not host.is_bmc()
-
     def test_is_multi_interface(self):
         eth0 = _make_interface(name='eth0', mac='aa:bb:cc:dd:ee:01', ip='10.1.10.1')
         eth1 = _make_interface(name='eth1', mac='aa:bb:cc:dd:ee:02', ip='10.1.20.1')

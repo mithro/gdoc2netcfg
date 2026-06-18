@@ -14,7 +14,7 @@ from gdoc2netcfg.sources.credentials import (
 
 def test_field_names_are_flattened_credential_types():
     names = credential_field_names()
-    assert names == ["Password", "SNMP Community", "IPMI Username", "IPMI Password"]
+    assert names == ["Password", "SNMP Community"]
 
 
 def test_strip_removes_credential_columns():
@@ -60,9 +60,9 @@ def test_extract_credentials_keyed_by_hostname():
     hosts = [
         _FakeHost("switch1", {"Password": "p1", "Notes": "x"}),
         _FakeHost("desktop", {"Notes": "y"}),  # no credentials
-        _FakeHost("bmc.server1", {"IPMI Username": "admin", "IPMI Password": "pw"}),
+        _FakeHost("bmc.server1", {"Password": "admin:secret"}),
     ]
     assert extract_credentials(hosts) == {
         "switch1": {"Password": "p1"},
-        "bmc.server1": {"IPMI Username": "admin", "IPMI Password": "pw"},
+        "bmc.server1": {"Password": "admin:secret"},
     }

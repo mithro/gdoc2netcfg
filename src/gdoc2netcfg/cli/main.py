@@ -35,6 +35,13 @@ if TYPE_CHECKING:
     from gdoc2netcfg.supplements.reachability import HostReachability
 
 
+# Sheets that are not device-record sources — the VLAN Allocations and Sites
+# tabs.  Every host builder skips these so their rows are never parsed as
+# devices.  Single source of truth shared by _build_hosts_from_csvs and
+# _build_pipeline, so the exclusion can't drift between the two.
+_NON_DEVICE_SHEETS = frozenset({"vlan_allocations", "sites"})
+
+
 def _load_config(args: argparse.Namespace):
     """Load pipeline config, handling errors."""
     from gdoc2netcfg.config import load_config
@@ -164,23 +171,83 @@ def _enrich_all_sites_from_sheet(config, csv_data: list[tuple[str, str]]) -> Non
 
 
 def _build_hosts_from_csvs(config, csv_data: list[tuple[str, str]]):
-    """Parse cached CSVs and build hosts — the shared fetch/password path.
+    """Parse cached CSVs and build hosts — the shared fetch/password/scan
+    host builder.
 
-    Both ``cmd_fetch`` (to key credentials by hostname) and ``cmd_password``
-    (to match a query) MUST build hosts identically, so the credential
-    store's keys line up with lookups.  Skips the vlan_allocations sheet
-    (not device records).  Callers must run ``_enrich_site_from_sheets``
-    first so hostname derivation has VLAN/site data.
+    ``cmd_fetch`` (to key credentials by hostname), ``cmd_password`` (to
+    match a query) and the device-scan commands all build hosts through
+    here, so the credential store's keys line up with every lookup and
+    merge.  Skips non-device sheets (``_NON_DEVICE_SHEETS``) so the Sites
+    and VLAN Allocations tabs are never parsed as devices — the same
+    exclusion ``_build_pipeline`` applies.  Callers must run
+    ``_enrich_site_from_sheets`` first so hostname derivation has VLAN/site
+    data.
     """
     from gdoc2netcfg.derivations.host_builder import build_hosts
     from gdoc2netcfg.sources.parser import parse_csv
 
     records = []
     for name, csv_text in csv_data:
-        if name == "vlan_allocations":
+        if name in _NON_DEVICE_SHEETS:
             continue
         records.extend(parse_csv(csv_text, name))
     return build_hosts(records, config.site)
+
+
+def _load_stored_credentials(config) -> dict[str, dict[str, str]]:
+    """Open the root-only credential store read-only and return its latest
+    ``{hostname: {field: value}}`` mapping.
+
+    The credential columns (Password, SNMP Community) are stripped from the
+    world-readable cache at fetch time and live only here.  Raises
+    ``FileNotFoundError`` if the store does not exist, and
+    ``sqlite3.OperationalError`` if it exists but is unreadable (it is
+    root-only, mode 0600).  Callers choose how to handle those — ``password``
+    fails hard, scans warn and fall back to factory defaults.
+    """
+    from gdoc2netcfg.storage.credentials_db import CredentialsDB
+
+    with CredentialsDB(
+        config.cache.credentials_db_path, read_only=True,
+    ) as cred_db:
+        return cred_db.load_latest_credentials() or {}
+
+
+def _merge_credentials_into_hosts(hosts, config) -> None:
+    """Merge stored device credentials onto ``host.extra`` ahead of a scan.
+
+    Any scan that authenticates to devices needs the credential columns that
+    ``fetch`` stripped into the root-only store: BMC IPMI reads ``Password``,
+    SNMP reads ``SNMP Community``.  Call this immediately after building hosts
+    and before scanning, so the lookup keys (hostnames) line up with how the
+    store was written.
+
+    Best-effort: if the store is missing or unreadable, warn and continue so
+    factory-default devices (ADMIN/ADMIN BMCs, the ``public`` SNMP community)
+    still scan.  The merge itself is field-agnostic — it copies whatever
+    credential fields are stored for each host.
+    """
+    cred_path = config.cache.credentials_db_path
+    try:
+        stored = _load_stored_credentials(config)
+    except FileNotFoundError:
+        print(
+            f"Warning: no credential store at {cred_path}; scanning with "
+            "factory defaults only. Run 'gdoc2netcfg fetch' (as root) to "
+            "populate stored device credentials.",
+            file=sys.stderr,
+        )
+        return
+    except sqlite3.OperationalError:
+        print(
+            f"Warning: credential store at {cred_path} is unreadable "
+            "(root-only); scanning with factory defaults only. Re-run with "
+            "sudo to use stored device credentials.",
+            file=sys.stderr,
+        )
+        return
+    for host in hosts:
+        host.extra.update(stored.get(host.hostname, {}))
 
 
 def _save_to_discovery_db(
@@ -351,10 +418,10 @@ def _build_pipeline(config):
         # Enrich site config from VLAN Allocations sheet
         _enrich_site_from_sheets(config, csv_data)
 
-        # Parse device records (exclude vlan_allocations — not a device sheet)
+        # Parse device records (skip non-device sheets — VLAN Allocations, Sites)
         all_records = []
         for name, csv_text in csv_data:
-            if name in ("vlan_allocations", "sites"):
+            if name in _NON_DEVICE_SHEETS:
                 continue
             records = parse_csv(csv_text, name)
             all_records.extend(records)
@@ -1054,8 +1121,6 @@ def cmd_snmp_host(args: argparse.Namespace) -> int:
     config = _load_config(args)
 
     from gdoc2netcfg.constraints.snmp_validation import validate_snmp_availability
-    from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.bmc_firmware import (
         enrich_hosts_with_bmc_firmware,
         refine_bmc_hardware_type,
@@ -1066,17 +1131,12 @@ def cmd_snmp_host(args: argparse.Namespace) -> int:
         scan_snmp,
     )
 
-    # Minimal pipeline to get hosts with IPs
+    # Minimal pipeline to get hosts with IPs, then merge stored device
+    # credentials (Password for BMC IPMI, SNMP Community for SNMP).
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
-
-    hosts = build_hosts(all_records, config.site)
+    hosts = _build_hosts_from_csvs(config, csv_data)
+    _merge_credentials_into_hosts(hosts, config)
 
     reachability = _load_or_run_reachability(config, hosts, force=args.force)
     _print_reachability_summary(reachability, hosts)
@@ -1145,25 +1205,19 @@ def cmd_bmc_firmware(args: argparse.Namespace) -> int:
         HARDWARE_SUPERMICRO_BMC,
         HARDWARE_SUPERMICRO_BMC_LEGACY,
     )
-    from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.bmc_firmware import (
         enrich_hosts_with_bmc_firmware,
         refine_bmc_hardware_type,
         scan_bmc_firmware,
     )
 
-    # Minimal pipeline to get hosts with IPs
+    # Minimal pipeline to get hosts with IPs, then merge stored device
+    # credentials. BMC IPMI creds come from each BMC host's Password column
+    # (username:password), stored root-only in credentials.db.
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
-
-    hosts = build_hosts(all_records, config.site)
+    hosts = _build_hosts_from_csvs(config, csv_data)
+    _merge_credentials_into_hosts(hosts, config)
 
     reachability = _load_or_run_reachability(config, hosts, force=args.force)
     _print_reachability_summary(reachability, hosts)
@@ -1215,24 +1269,17 @@ def cmd_snmp_switch(args: argparse.Namespace) -> int:
     """Scan switches for bridge/topology data via SNMP."""
     config = _load_config(args)
 
-    from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.bridge import (
         enrich_hosts_with_bridge_data,
         scan_bridge,
     )
 
-    # Minimal pipeline to get hosts with IPs
+    # Minimal pipeline to get hosts with IPs, then merge the stored SNMP
+    # community strings the bridge scan authenticates with.
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
-
-    hosts = build_hosts(all_records, config.site)
+    hosts = _build_hosts_from_csvs(config, csv_data)
+    _merge_credentials_into_hosts(hosts, config)
 
     reachability = _load_or_run_reachability(config, hosts, force=args.force)
     _print_reachability_summary(reachability, hosts)
@@ -1306,8 +1353,7 @@ def cmd_bridge_scan(args: argparse.Namespace) -> int:
         validate_mac_connectivity,
         validate_vlan_names,
     )
-    from gdoc2netcfg.derivations.host_builder import build_hosts, build_inventory
-    from gdoc2netcfg.sources.parser import parse_csv
+    from gdoc2netcfg.derivations.host_builder import build_inventory
     from gdoc2netcfg.supplements.bridge import (
         enrich_hosts_with_bridge_data,
         scan_bridge,
@@ -1317,17 +1363,12 @@ def cmd_bridge_scan(args: argparse.Namespace) -> int:
         scan_nsdp,
     )
 
-    # Build hosts from cached CSVs
+    # Build hosts from cached CSVs, then merge stored SNMP community strings
+    # for the SNMP bridge scan (NSDP needs no credentials).
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
-
-    hosts = build_hosts(all_records, config.site)
+    hosts = _build_hosts_from_csvs(config, csv_data)
+    _merge_credentials_into_hosts(hosts, config)
 
     reachability = _load_or_run_reachability(config, hosts, force=args.force)
     _print_reachability_summary(reachability, hosts)
@@ -2487,26 +2528,41 @@ def cmd_password(args: argparse.Namespace) -> int:
     best = results[0]
     host = best.host
 
-    # Credentials live in the root-only credentials.db, not the cache.
-    # Only consult it when a credential field is actually requested, so a
-    # --field for a non-credential column stays sudo-free.
     from gdoc2netcfg.sources.credentials import credential_field_names
-    from gdoc2netcfg.storage.credentials_db import CredentialsDB
-    from gdoc2netcfg.utils.lookup import CREDENTIAL_TYPES
+    from gdoc2netcfg.utils.lookup import CREDENTIAL_TYPES, split_login
 
-    credential_names = set(credential_field_names())
-    if args.field_name is not None:
+    # --type ipmi: credentials come from the associated BMC host's single
+    # Password column (username:password), not the queried host itself.
+    cred_host = host
+    if args.credential_type == "ipmi":
+        if host.hostname.startswith("bmc."):
+            cred_host = host
+        else:
+            bmc_hostname = f"bmc.{host.hostname}"
+            match = next(
+                (h for h in hosts if h.hostname == bmc_hostname), None,
+            )
+            if match is None:
+                print(
+                    f"Error: no BMC host ({bmc_hostname}) found for "
+                    f"'{host.hostname}'",
+                    file=sys.stderr,
+                )
+                return 1
+            cred_host = match
+        requested = {"Password"}
+    elif args.field_name is not None:
         requested = {args.field_name}
     elif args.credential_type is not None:
         requested = set(CREDENTIAL_TYPES.get(args.credential_type, []))
     else:
         requested = set(CREDENTIAL_TYPES["password"])
 
+    credential_names = set(credential_field_names())
     if requested & credential_names:
         cred_path = config.cache.credentials_db_path
         try:
-            with CredentialsDB(cred_path, read_only=True) as cred_db:
-                stored = cred_db.load_latest_credentials() or {}
+            stored = _load_stored_credentials(config)
         except FileNotFoundError:
             print(
                 "Error: no credential store at "
@@ -2521,11 +2577,25 @@ def cmd_password(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        host.extra.update(stored.get(host.hostname, {}))
+        cred_host.extra.update(stored.get(cred_host.hostname, {}))
 
-    cred = get_credential_fields(
-        host, args.credential_type, args.field_name,
-    )
+    if args.credential_type == "ipmi":
+        raw = cred_host.extra.get("Password", "").strip()
+        if not raw:
+            print(
+                f"Error: BMC {cred_host.hostname} has no Password",
+                file=sys.stderr,
+            )
+            return 1
+        user, pw = split_login(raw)
+        cred = {}
+        if user is not None:
+            cred["IPMI Username"] = user
+        cred["IPMI Password"] = pw
+    else:
+        cred = get_credential_fields(
+            host, args.credential_type, args.field_name,
+        )
 
     if not cred:
         what = args.field_name or args.credential_type or "password"
@@ -2551,6 +2621,8 @@ def cmd_password(args: argparse.Namespace) -> int:
         if host.all_macs:
             print(f"MAC:        {host.all_macs[0]}")
         print(f"Matched by: {best.match_detail}")
+        if args.credential_type == "ipmi" and cred_host is not host:
+            print(f"IPMI source: {cred_host.hostname}")
         print()
         for field_name, value in cred.items():
             print(f"{field_name}: {value}")

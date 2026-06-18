@@ -35,6 +35,13 @@ if TYPE_CHECKING:
     from gdoc2netcfg.supplements.reachability import HostReachability
 
 
+# Sheets that are not device-record sources — the VLAN Allocations and Sites
+# tabs.  Every host builder skips these so their rows are never parsed as
+# devices.  Single source of truth shared by _build_hosts_from_csvs and
+# _build_pipeline, so the exclusion can't drift between the two.
+_NON_DEVICE_SHEETS = frozenset({"vlan_allocations", "sites"})
+
+
 def _load_config(args: argparse.Namespace):
     """Load pipeline config, handling errors."""
     from gdoc2netcfg.config import load_config
@@ -164,21 +171,24 @@ def _enrich_all_sites_from_sheet(config, csv_data: list[tuple[str, str]]) -> Non
 
 
 def _build_hosts_from_csvs(config, csv_data: list[tuple[str, str]]):
-    """Parse cached CSVs and build hosts — the one canonical host builder.
+    """Parse cached CSVs and build hosts — the shared fetch/password/scan
+    host builder.
 
     ``cmd_fetch`` (to key credentials by hostname), ``cmd_password`` (to
     match a query) and the device-scan commands all build hosts through
     here, so the credential store's keys line up with every lookup and
-    merge.  Skips the vlan_allocations sheet (not device records).  Callers
-    must run ``_enrich_site_from_sheets`` first so hostname derivation has
-    VLAN/site data.
+    merge.  Skips non-device sheets (``_NON_DEVICE_SHEETS``) so the Sites
+    and VLAN Allocations tabs are never parsed as devices — the same
+    exclusion ``_build_pipeline`` applies.  Callers must run
+    ``_enrich_site_from_sheets`` first so hostname derivation has VLAN/site
+    data.
     """
     from gdoc2netcfg.derivations.host_builder import build_hosts
     from gdoc2netcfg.sources.parser import parse_csv
 
     records = []
     for name, csv_text in csv_data:
-        if name == "vlan_allocations":
+        if name in _NON_DEVICE_SHEETS:
             continue
         records.extend(parse_csv(csv_text, name))
     return build_hosts(records, config.site)
@@ -408,10 +418,10 @@ def _build_pipeline(config):
         # Enrich site config from VLAN Allocations sheet
         _enrich_site_from_sheets(config, csv_data)
 
-        # Parse device records (exclude vlan_allocations — not a device sheet)
+        # Parse device records (skip non-device sheets — VLAN Allocations, Sites)
         all_records = []
         for name, csv_text in csv_data:
-            if name in ("vlan_allocations", "sites"):
+            if name in _NON_DEVICE_SHEETS:
                 continue
             records = parse_csv(csv_text, name)
             all_records.extend(records)

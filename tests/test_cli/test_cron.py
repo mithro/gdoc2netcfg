@@ -698,6 +698,9 @@ class TestCmdCronShow:
                 "gdoc2netcfg.cli.cron.detect_project_root",
                 return_value=Path("/opt/gdoc2netcfg"),
             ),
+            # zigbee_configured() reads <root>/gdoc2netcfg.toml; isolate the
+            # test from any ambient config so it is hermetic on a clean runner.
+            patch("gdoc2netcfg.cli.cron.zigbee_configured", return_value=False),
         ):
             result = cmd_cron_show()
 
@@ -717,6 +720,9 @@ class TestCmdCronShow:
                 "gdoc2netcfg.cli.cron.detect_project_root",
                 return_value=Path("/opt/gdoc2netcfg"),
             ),
+            # zigbee_configured() reads <root>/gdoc2netcfg.toml; isolate the
+            # test from any ambient config so it is hermetic on a clean runner.
+            patch("gdoc2netcfg.cli.cron.zigbee_configured", return_value=False),
         ):
             cmd_cron_show()
 
@@ -738,6 +744,9 @@ class TestCmdCronInstall:
                 "gdoc2netcfg.cli.cron.detect_project_root",
                 return_value=Path("/opt/gdoc2netcfg"),
             ),
+            # zigbee_configured() reads <root>/gdoc2netcfg.toml; isolate the
+            # test from any ambient config so it is hermetic on a clean runner.
+            patch("gdoc2netcfg.cli.cron.zigbee_configured", return_value=False),
             patch("gdoc2netcfg.cli.cron.read_current_crontab", return_value=""),
             patch("gdoc2netcfg.cli.cron.write_crontab") as mock_write,
         ):
@@ -759,6 +768,9 @@ class TestCmdCronInstall:
                 "gdoc2netcfg.cli.cron.detect_project_root",
                 return_value=Path("/opt/gdoc2netcfg"),
             ),
+            # zigbee_configured() reads <root>/gdoc2netcfg.toml; isolate the
+            # test from any ambient config so it is hermetic on a clean runner.
+            patch("gdoc2netcfg.cli.cron.zigbee_configured", return_value=False),
             patch(
                 "gdoc2netcfg.cli.cron.read_current_crontab",
                 return_value="0 * * * * other-job\n",

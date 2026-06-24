@@ -64,3 +64,27 @@ def test_build_plug_data(mod):
 def test_build_plug_data_no_ipv4(mod):
     h = _host("au-plug-99", "au-plug-99.iot", "au-plug-99", ipv4=None)
     assert mod._build_plug_data(h, "welland.mithis.com")["ipv4"] == ""
+
+
+def test_verify_plug_entities_warns_on_missing(mod, capsys):
+    plugs = [
+        {"machine": "au-plug-10", "topic": "au_plug_10"},
+        {"machine": "au-plug-99", "topic": "au_plug_99"},  # entities absent
+    ]
+    states = [
+        {"entity_id": "switch.au_plug_10"},
+        {"entity_id": "sensor.au_plug_10_energy_power"},
+    ]
+    warnings = mod._verify_plug_entities(plugs, states)
+    assert len(warnings) == 1
+    assert "au-plug-99" in warnings[0]
+    assert "au-plug-99" in capsys.readouterr().err
+
+
+def test_verify_plug_entities_all_present(mod):
+    plugs = [{"machine": "au-plug-10", "topic": "au_plug_10"}]
+    states = [
+        {"entity_id": "switch.au_plug_10"},
+        {"entity_id": "sensor.au_plug_10_energy_power"},
+    ]
+    assert mod._verify_plug_entities(plugs, states) == []

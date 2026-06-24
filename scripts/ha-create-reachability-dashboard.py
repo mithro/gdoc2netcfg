@@ -350,6 +350,25 @@ def _build_plug_data(host, domain: str) -> dict:
     }
 
 
+def _verify_plug_entities(plugs: list[dict], ha_states: list[dict]) -> list[str]:
+    """Warn (stderr) for any plug whose relay or power entity is absent in HA.
+
+    Fail-loud, but non-fatal: the row still renders with blanks at runtime.
+    """
+    have = {e["entity_id"] for e in ha_states}
+    warnings = []
+    for p in plugs:
+        missing = [
+            eid for eid in (f"switch.{p['topic']}", f"sensor.{p['topic']}_energy_power")
+            if eid not in have
+        ]
+        if missing:
+            msg = f"plug {p['machine']}: missing HA entities {missing}"
+            warnings.append(msg)
+            print(f"  warning: {msg}", file=sys.stderr)
+    return warnings
+
+
 # ---------------------------------------------------------------------------
 # HTML generation
 # ---------------------------------------------------------------------------

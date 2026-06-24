@@ -1,0 +1,524 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+:root{--bg:#111;--text:#e1e1e1;--text2:#9b9b9b;--div:#3a3a3a;--hover:#2a2a2a;--link:#4fc3f7;}
+body{font-family:Roboto,Noto,sans-serif;margin:16px;background:var(--bg);color:var(--text);font-size:14px;}
+h1{font-size:1.3em;margin:0 0 2px;}
+h2{font-size:1.05em;margin:20px 0 6px;color:var(--text2);border-bottom:1px solid var(--div);padding-bottom:3px;}
+.note{color:var(--text2);font-size:0.85em;margin-bottom:12px;}
+.note b{color:#ffb74d;}
+table{border-collapse:collapse;font-size:0.85em;}
+th{text-align:left;padding:5px 8px;border-bottom:2px solid var(--div);color:var(--text2);white-space:nowrap;cursor:pointer;}
+th.r,td.r{text-align:right;}
+td{padding:4px 8px;white-space:nowrap;border-bottom:1px solid #1c1c1c;vertical-align:middle;}
+tr.off{opacity:0.55;}
+a{color:var(--link);text-decoration:none;}
+.on{color:#66bb6a;} .offdot{color:#9b9b9b;} .red{color:#ef5350;}
+.seen{font-size:0.78em;color:var(--text2);}
+.toggle{display:inline-block;min-width:52px;box-sizing:border-box;text-align:center;cursor:pointer;border:1px solid var(--div);border-radius:4px;padding:1px 6px;user-select:none;}
+.z{color:#666;}
+.ctrl{color:#ce93d8;}
+.ctrl div{white-space:nowrap;}
+.ctrl a{color:var(--link);}
+.ctrl .dim{opacity:0.5;}
+.warn{color:#ffb74d;}
+.load{color:#fff;}
+td.n{padding:3px 6px;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;font-size:0.85em;}
+th.n{padding:3px 6px;text-align:right;}
+.grp{border-left:1px solid var(--div);}
+th.grphdr{text-align:center;border-left:1px solid var(--div);padding:5px 6px;}
+tfoot td{border-top:2px solid var(--div);color:var(--text2);font-weight:bold;padding-top:8px;}
+</style></head>
+<body>
+<h1>🔌 Power Plugs</h1>
+<div class="note"><b>MOCKUP — static snapshot 2026-06-24 19:05</b> (real fleet data). In the live dashboard:
+columns are click-to-sort, Power is a working toggle (with confirm), and all values update in real time via HA WebSocket.</div>
+<h2>Examples — all states (illustrative, not real devices)</h2>
+<table><thead><tr><th rowspan="2">Plug</th><th rowspan="2">IP</th><th rowspan="2">Online</th><th rowspan="2">Power</th><th rowspan="2">Controls</th><th rowspan="2" class="n">Load</th><th colspan="3" class="grphdr">Rate</th><th colspan="3" class="grphdr">Energy</th></tr><tr><th class="n grp">5m</th><th class="n">1h</th><th class="n">24h</th><th class="n grp">1h</th><th class="n">24h</th><th class="n">today</th></tr></thead>
+<tbody>
+<tr><td><b>online · on · drawing</b></td><td><span class="offdot">—</span></td><td><span class="on">🟢 online</span></td><td><span class="toggle on">🟢 ON</span></td><td class="ctrl"><div>🟢 <a href="#">server-a</a></div></td><td class="n load"><span>42&nbsp;W</span></td><td class="n grp"><span>40&nbsp;W</span></td><td class="n"><span>41&nbsp;W</span></td><td class="n"><span>39&nbsp;W</span></td><td class="n grp"><span>0.041&nbsp;kWh</span></td><td class="n"><span>0.980&nbsp;kWh</span></td><td class="n"><span>0.300&nbsp;kWh</span></td></tr><tr><td><b>relay off (standby)</b></td><td><span class="offdot">—</span></td><td><span class="on">🟢 online</span></td><td><span class="toggle offdot">⚪ OFF</span></td><td class="ctrl"><div class="dim" title="Offline (plug is off)">⚪ <a href="#">server-d</a></div></td><td class="n load"><span class="z">0&nbsp;W</span></td><td class="n grp"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td><td class="n grp"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td></tr><tr><td><b>⚠ device on, plug off</b></td><td><span class="offdot">—</span></td><td><span class="on">🟢 online</span></td><td><span class="toggle offdot">⚪ OFF</span></td><td class="ctrl"><div title="Online but its plug is OFF">⚠️ <a href="#">server-b</a></div></td><td class="n load"><span class="z">0&nbsp;W</span></td><td class="n grp"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td><td class="n grp"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td></tr><tr><td><b>🔴 device off, plug on</b></td><td><span class="offdot">—</span></td><td><span class="on">🟢 online</span></td><td><span class="toggle on">🟢 ON</span></td><td class="ctrl"><div title="Offline but plug is ON">🔴 <a href="#">server-c</a></div></td><td class="n load"><span>6&nbsp;W</span></td><td class="n grp"><span>5&nbsp;W</span></td><td class="n"><span>6&nbsp;W</span></td><td class="n"><span>6&nbsp;W</span></td><td class="n grp"><span>0.006&nbsp;kWh</span></td><td class="n"><span>0.140&nbsp;kWh</span></td><td class="n"><span>0.050&nbsp;kWh</span></td></tr><tr><td><b>❗ unlisted load</b></td><td><span class="offdot">—</span></td><td><span class="on">🟢 online</span></td><td><span class="toggle on">🟢 ON</span></td><td class="ctrl"><span class="warn" title="Drawing power but no controlled device recorded">❗ unlisted load</span></td><td class="n load"><span>30&nbsp;W</span></td><td class="n grp"><span>29&nbsp;W</span></td><td class="n"><span>30&nbsp;W</span></td><td class="n"><span>28&nbsp;W</span></td><td class="n grp"><span>0.030&nbsp;kWh</span></td><td class="n"><span>0.700&nbsp;kWh</span></td><td class="n"><span>0.220&nbsp;kWh</span></td></tr><tr><td><b>other controls</b></td><td><span class="offdot">—</span></td><td><span class="on">🟢 online</span></td><td><span class="toggle on">🟢 ON</span></td><td class="ctrl"><div><span class="offdot">• unknown-host</span></div><div><span class="offdot">• Some Free Text</span></div></td><td class="n load"><span>12&nbsp;W</span></td><td class="n grp"><span>11&nbsp;W</span></td><td class="n"><span>12&nbsp;W</span></td><td class="n"><span>12&nbsp;W</span></td><td class="n grp"><span>0.012&nbsp;kWh</span></td><td class="n"><span>0.280&nbsp;kWh</span></td><td class="n"><span>0.090&nbsp;kWh</span></td></tr><tr><td><b>plug offline (recent)</b></td><td><span class="offdot">—</span></td><td><span class="red">🔴 offline</span><div class="seen">last seen 5 minutes ago</div></td><td><span class="toggle offdot">—</span></td><td class="ctrl"><div class="dim" title="Offline (plug state unknown)">⚪ <a href="#">server-e</a></div></td><td class="n load">—</td><td class="n grp">—</td><td class="n">—</td><td class="n">—</td><td class="n grp">—</td><td class="n">—</td><td class="n">—</td></tr><tr><td><b>plug offline (&gt;14d)</b></td><td><span class="offdot">—</span></td><td><span class="red">🔴 offline</span><div class="seen">last seen &gt;14 days ago</div></td><td><span class="toggle offdot">—</span></td><td class="ctrl"><span class="offdot">—</span></td><td class="n load">—</td><td class="n grp">—</td><td class="n">—</td><td class="n">—</td><td class="n grp">—</td><td class="n">—</td><td class="n">—</td></tr><tr><td><b>plug offline (no history)</b></td><td><span class="offdot">—</span></td><td><span class="red">🔴 offline</span><div class="seen">last seen unknown</div></td><td><span class="toggle offdot">—</span></td><td class="ctrl"><span class="offdot">—</span></td><td class="n load">—</td><td class="n grp">—</td><td class="n">—</td><td class="n">—</td><td class="n grp">—</td><td class="n">—</td><td class="n">—</td></tr>
+</tbody>
+</table>
+<h2>Welland fleet</h2>
+<table><thead><tr><th rowspan="2">Plug</th><th rowspan="2">IP</th><th rowspan="2">Online</th><th rowspan="2">Power</th><th rowspan="2">Controls</th><th rowspan="2" class="n">Load</th><th colspan="3" class="grphdr">Rate</th><th colspan="3" class="grphdr">Energy</th></tr><tr><th class="n grp">5m</th><th class="n">1h</th><th class="n">24h</th><th class="n grp">1h</th><th class="n">24h</th><th class="n">today</th></tr></thead>
+<tbody>
+<tr class="">
+<td><a href="http://ipv4.au-plug-1.iot.welland.mithis.com">au-plug-1</a></td>
+<td><a href="http://10.1.91.1">10.1.91.1</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><div class="">🟢 <a href="http://ipv4.sw-netgear-m4300-16x-poe.welland.mithis.com">sw-netgear-m4300-16x-poe</a></div></td>
+<td class="n load" title="239 V, PF 0.61"><span>32&nbsp;W</span></td>
+<td class="n grp"><span>24&nbsp;W</span></td><td class="n"><span>32&nbsp;W</span></td><td class="n"><span>1&nbsp;W</span></td>
+<td class="n grp"><span>0.032&nbsp;kWh</span></td><td class="n"><span>0.031&nbsp;kWh</span></td><td class="n"><span>0.049&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-2.iot.welland.mithis.com">au-plug-2</a></td>
+<td><a href="http://10.1.91.2">10.1.91.2</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><div><span class="offdot">• rpi-sdr-kraken.iot</span></div></td>
+<td class="n load" title="240 V, PF 0.19"><span>3&nbsp;W</span></td>
+<td class="n grp"><span class="z">0&nbsp;W</span></td><td class="n"><span>3&nbsp;W</span></td><td class="n"><span>3&nbsp;W</span></td>
+<td class="n grp"><span>0.003&nbsp;kWh</span></td><td class="n"><span>0.063&nbsp;kWh</span></td><td class="n"><span>0.028&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-3.iot.welland.mithis.com">au-plug-3</a></td>
+<td><a href="http://10.1.91.3">10.1.91.3</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><div><span class="offdot">• bar header</span></div></td>
+<td class="n load" title="238 V, PF 1.0"><span>837&nbsp;W</span></td>
+<td class="n grp"><span>852&nbsp;W</span></td><td class="n"><span>843&nbsp;W</span></td><td class="n"><span>535&nbsp;W</span></td>
+<td class="n grp"><span>0.843&nbsp;kWh</span></td><td class="n"><span>12.833&nbsp;kWh</span></td><td class="n"><span>3.771&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-4.iot.welland.mithis.com">au-plug-4</a></td>
+<td><a href="http://10.1.91.4">10.1.91.4</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle offdot">⚪ OFF</span></td>
+<td class="ctrl"><div class="dim" title="Offline (plug is off)">⚪ <a href="http://ipv4.desktop.welland.mithis.com">desktop</a></div></td>
+<td class="n load" title="237 V, PF 0.0"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-5.iot.welland.mithis.com">au-plug-5</a></td>
+<td><a href="http://10.1.91.5">10.1.91.5</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle offdot">⚪ OFF</span></td>
+<td class="ctrl"><div class="dim" title="Offline (plug is off)">⚪ <a href="http://ipv4.sw-netgear-gsm7252ps-s3.welland.mithis.com">sw-netgear-gsm7252ps-s3</a></div></td>
+<td class="n load" title="238 V, PF 0.0"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-6.iot.welland.mithis.com">au-plug-6</a></td>
+<td><a href="http://10.1.91.6">10.1.91.6</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle offdot">⚪ OFF</span></td>
+<td class="ctrl"><div><span class="offdot">• nvme</span></div></td>
+<td class="n load" title="224 V, PF 0.0"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-7.iot.welland.mithis.com">au-plug-7</a></td>
+<td><a href="http://10.1.91.7">10.1.91.7</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><span class="warn" title="Drawing power but no controlled device recorded">❗ unlisted load</span></td>
+<td class="n load" title="225 V, PF 0.67"><span>20&nbsp;W</span></td>
+<td class="n grp"><span>12&nbsp;W</span></td><td class="n"><span>20&nbsp;W</span></td><td class="n"><span>20&nbsp;W</span></td>
+<td class="n grp"><span>0.020&nbsp;kWh</span></td><td class="n"><span>0.487&nbsp;kWh</span></td><td class="n"><span>0.216&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-8.iot.welland.mithis.com">au-plug-8</a></td>
+<td><a href="http://10.1.91.8">10.1.91.8</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><span class="warn" title="Drawing power but no controlled device recorded">❗ unlisted load</span></td>
+<td class="n load" title="227 V, PF 0.86"><span>408&nbsp;W</span></td>
+<td class="n grp"><span>408&nbsp;W</span></td><td class="n"><span>410&nbsp;W</span></td><td class="n"><span>406&nbsp;W</span></td>
+<td class="n grp"><span>0.410&nbsp;kWh</span></td><td class="n"><span>9.751&nbsp;kWh</span></td><td class="n"><span>4.291&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-10.iot.welland.mithis.com">au-plug-10</a></td>
+<td><a href="http://10.1.91.10">10.1.91.10</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><span class="warn" title="Drawing power but no controlled device recorded">❗ unlisted load</span></td>
+<td class="n load" title="226 V, PF 0.66"><span>24&nbsp;W</span></td>
+<td class="n grp"><span>24&nbsp;W</span></td><td class="n"><span>24&nbsp;W</span></td><td class="n"><span>24&nbsp;W</span></td>
+<td class="n grp"><span>0.024&nbsp;kWh</span></td><td class="n"><span>0.577&nbsp;kWh</span></td><td class="n"><span>0.254&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-11.iot.welland.mithis.com">au-plug-11</a></td>
+<td><a href="http://10.1.91.11">10.1.91.11</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><div><span class="offdot">• esp32cam-elec.welland</span></div></td>
+<td class="n load" title="239 V, PF 0.09"><span>1&nbsp;W</span></td>
+<td class="n grp"><span class="z">0&nbsp;W</span></td><td class="n"><span>1&nbsp;W</span></td><td class="n"><span>1&nbsp;W</span></td>
+<td class="n grp"><span>0.001&nbsp;kWh</span></td><td class="n"><span>0.021&nbsp;kWh</span></td><td class="n"><span>0.009&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-12.iot.welland.mithis.com">au-plug-12</a></td>
+<td><a href="http://10.1.91.12">10.1.91.12</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle offdot">⚪ OFF</span></td>
+<td class="ctrl"><div><span class="offdot">• speakers.rpiz-dash-2</span></div></td>
+<td class="n load" title="229 V, PF 0.0"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span>0.003&nbsp;kWh</span></td><td class="n"><span>0.003&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-13.iot.welland.mithis.com">au-plug-13</a></td>
+<td><a href="http://10.1.91.13">10.1.91.13</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle offdot">⚪ OFF</span></td>
+<td class="ctrl"><div class="dim" title="Offline (plug is off)">⚪ <a href="http://ipv4.rpiz-dash-2.welland.mithis.com">rpiz-dash-2</a></div></td>
+<td class="n load" title="229 V, PF 0.0"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td><td class="n"><span>1&nbsp;W</span></td>
+<td class="n grp"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span>0.021&nbsp;kWh</span></td><td class="n"><span>0.021&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-14.iot.welland.mithis.com">au-plug-14</a></td>
+<td><a href="http://10.1.91.14">10.1.91.14</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><div class="">🟢 <a href="http://ipv4.sw-netgear-gsm7252ps-s1.welland.mithis.com">sw-netgear-gsm7252ps-s1</a></div></td>
+<td class="n load" title="225 V, PF 0.91"><span>178&nbsp;W</span></td>
+<td class="n grp"><span>180&nbsp;W</span></td><td class="n"><span>178&nbsp;W</span></td><td class="n"><span>176&nbsp;W</span></td>
+<td class="n grp"><span>0.178&nbsp;kWh</span></td><td class="n"><span>4.217&nbsp;kWh</span></td><td class="n"><span>1.864&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-15.iot.welland.mithis.com">au-plug-15</a></td>
+<td><a href="http://10.1.91.15">10.1.91.15</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><div class="">🟢 <a href="http://ipv4.sw-netgear-gsm7252ps-s2.welland.mithis.com">sw-netgear-gsm7252ps-s2</a></div></td>
+<td class="n load" title="226 V, PF 0.91"><span>200&nbsp;W</span></td>
+<td class="n grp"><span>192&nbsp;W</span></td><td class="n"><span>200&nbsp;W</span></td><td class="n"><span>200&nbsp;W</span></td>
+<td class="n grp"><span>0.200&nbsp;kWh</span></td><td class="n"><span>4.808&nbsp;kWh</span></td><td class="n"><span>2.124&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-16.iot.welland.mithis.com">au-plug-16</a></td>
+<td><a href="http://10.1.91.16">10.1.91.16</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><div class="">🟢 <a href="http://ipv4.sw-netgear-gsm7252ps-s1.welland.mithis.com">sw-netgear-gsm7252ps-s1</a></div><div class="">🟢 <a href="http://ipv4.sw-netgear-gsm7252ps-s2.welland.mithis.com">sw-netgear-gsm7252ps-s2</a></div><div class="" title="Offline but plug is ON">🔴 <a href="http://ipv4.sw-netgear-gsm7252ps-s3.welland.mithis.com">sw-netgear-gsm7252ps-s3</a></div></td>
+<td class="n load" title="226 V, PF 0.38"><span>31&nbsp;W</span></td>
+<td class="n grp"><span>36&nbsp;W</span></td><td class="n"><span>31&nbsp;W</span></td><td class="n"><span>30&nbsp;W</span></td>
+<td class="n grp"><span>0.031&nbsp;kWh</span></td><td class="n"><span>0.709&nbsp;kWh</span></td><td class="n"><span>0.305&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-17.iot.welland.mithis.com">au-plug-17</a></td>
+<td><a href="http://10.1.91.17">10.1.91.17</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><div><span class="offdot">• nbn-router</span></div></td>
+<td class="n load" title="239 V, PF 0.48"><span>8&nbsp;W</span></td>
+<td class="n grp"><span>12&nbsp;W</span></td><td class="n"><span>8&nbsp;W</span></td><td class="n"><span>8&nbsp;W</span></td>
+<td class="n grp"><span>0.008&nbsp;kWh</span></td><td class="n"><span>0.192&nbsp;kWh</span></td><td class="n"><span>0.085&nbsp;kWh</span></td>
+</tr><tr class="off">
+<td><a href="http://ipv4.au-plug-18.iot.welland.mithis.com">au-plug-18</a></td>
+<td><a href="http://10.1.91.18">10.1.91.18</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen 4 days ago</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-19.iot.welland.mithis.com">au-plug-19</a></td>
+<td><a href="http://10.1.91.19">10.1.91.19</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><div class="" title="Offline but plug is ON">🔴 <a href="http://ipv4.minnow-turbot-1.welland.mithis.com">minnow-turbot-1</a></div></td>
+<td class="n load" title="226 V, PF 0.0"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-20.iot.welland.mithis.com">au-plug-20</a></td>
+<td><a href="http://10.1.91.20">10.1.91.20</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle offdot">⚪ OFF</span></td>
+<td class="ctrl"><div><span class="offdot">• monitors.desktop</span></div></td>
+<td class="n load" title="239 V, PF 0.0"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-21.iot.welland.mithis.com">au-plug-21</a></td>
+<td><a href="http://10.1.91.21">10.1.91.21</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle offdot">⚪ OFF</span></td>
+<td class="ctrl"><div class="dim" title="Offline (plug is off)">⚪ <a href="http://ipv4.rpiz-dash-1.welland.mithis.com">rpiz-dash-1</a></div></td>
+<td class="n load" title="227 V, PF 0.0"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span>0.004&nbsp;kWh</span></td><td class="n"><span>0.004&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-22.iot.welland.mithis.com">au-plug-22</a></td>
+<td><a href="http://10.1.91.22">10.1.91.22</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><div><span class="offdot">• minnow-turbot-2</span></div></td>
+<td class="n load" title="225 V, PF 0.0"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-23.iot.welland.mithis.com">au-plug-23</a></td>
+<td><a href="http://10.1.91.23">10.1.91.23</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle offdot">⚪ OFF</span></td>
+<td class="ctrl"><div class="dim" title="Offline (plug is off)">⚪ <a href="http://ipv4.sm-pcie-1.welland.mithis.com">sm-pcie-1</a></div></td>
+<td class="n load" title="228 V, PF 0.0"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-24.iot.welland.mithis.com">au-plug-24</a></td>
+<td><a href="http://10.1.91.24">10.1.91.24</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle offdot">⚪ OFF</span></td>
+<td class="ctrl"><div class="dim" title="Offline (plug is off)">⚪ <a href="http://ipv4.gpu.welland.mithis.com">gpu</a></div></td>
+<td class="n load" title="230 V, PF 0.0"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-25.iot.welland.mithis.com">au-plug-25</a></td>
+<td><a href="http://10.1.91.25">10.1.91.25</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><div><span class="offdot">• rpi-sdr-pluto.iot</span></div></td>
+<td class="n load" title="228 V, PF 0.38"><span>5&nbsp;W</span></td>
+<td class="n grp"><span>12&nbsp;W</span></td><td class="n"><span>5&nbsp;W</span></td><td class="n"><span>5&nbsp;W</span></td>
+<td class="n grp"><span>0.005&nbsp;kWh</span></td><td class="n"><span>0.122&nbsp;kWh</span></td><td class="n"><span>0.054&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-26.iot.welland.mithis.com">au-plug-26</a></td>
+<td><a href="http://10.1.91.26">10.1.91.26</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle offdot">⚪ OFF</span></td>
+<td class="ctrl"><div class="dim" title="Offline (plug is off)">⚪ <a href="http://ipv4.sw-netgear-s3300-1.welland.mithis.com">sw-netgear-s3300-1</a></div></td>
+<td class="n load" title="224 V, PF 0.0"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-27.iot.welland.mithis.com">au-plug-27</a></td>
+<td><a href="http://10.1.91.27">10.1.91.27</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle offdot">⚪ OFF</span></td>
+<td class="ctrl"><div class="dim" title="Offline (plug is off)">⚪ <a href="http://ipv4.hifive-unmatched-1.welland.mithis.com">hifive-unmatched-1</a></div><div class="dim" title="Offline (plug is off)">⚪ <a href="http://ipv4.hifive-unmatched-2.welland.mithis.com">hifive-unmatched-2</a></div></td>
+<td class="n load" title="225 V, PF 0.0"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-28.iot.welland.mithis.com">au-plug-28</a></td>
+<td><a href="http://10.1.91.28">10.1.91.28</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><div class="">🟢 <a href="http://ipv4.tweed.welland.mithis.com">tweed</a></div></td>
+<td class="n load" title="225 V, PF 0.68"><span>15&nbsp;W</span></td>
+<td class="n grp"><span>24&nbsp;W</span></td><td class="n"><span>15&nbsp;W</span></td><td class="n"><span>15&nbsp;W</span></td>
+<td class="n grp"><span>0.015&nbsp;kWh</span></td><td class="n"><span>0.351&nbsp;kWh</span></td><td class="n"><span>0.155&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-29.iot.welland.mithis.com">au-plug-29</a></td>
+<td><a href="http://10.1.91.29">10.1.91.29</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load" title="239 V, PF 0.0"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-30.iot.welland.mithis.com">au-plug-30</a></td>
+<td><a href="http://10.1.91.30">10.1.91.30</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><div class="">🟢 <a href="http://ipv4.rpi-birds-welland-front.welland.mithis.com">rpi-birds-welland-front</a></div></td>
+<td class="n load" title="240 V, PF 0.33"><span>4&nbsp;W</span></td>
+<td class="n grp"><span class="z">0&nbsp;W</span></td><td class="n"><span>4&nbsp;W</span></td><td class="n"><span>3&nbsp;W</span></td>
+<td class="n grp"><span>0.004&nbsp;kWh</span></td><td class="n"><span>0.076&nbsp;kWh</span></td><td class="n"><span>0.034&nbsp;kWh</span></td>
+</tr><tr class="off">
+<td><a href="http://ipv4.au-plug-31.iot.welland.mithis.com">au-plug-31</a></td>
+<td><a href="http://10.1.91.31">10.1.91.31</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen 6 days ago</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr><tr class="off">
+<td><a href="http://ipv4.au-plug-32.iot.welland.mithis.com">au-plug-32</a></td>
+<td><a href="http://10.1.91.32">10.1.91.32</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen 6 days ago</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr><tr class="off">
+<td><a href="http://ipv4.au-plug-33.iot.welland.mithis.com">au-plug-33</a></td>
+<td><a href="http://10.1.91.33">10.1.91.33</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen 6 days ago</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr><tr class="off">
+<td><a href="http://ipv4.au-plug-34.iot.welland.mithis.com">au-plug-34</a></td>
+<td><a href="http://10.1.91.34">10.1.91.34</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen 6 days ago</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr><tr class="off">
+<td><a href="http://ipv4.au-plug-35.iot.welland.mithis.com">au-plug-35</a></td>
+<td><a href="http://10.1.91.35">10.1.91.35</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen 6 days ago</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr><tr class="off">
+<td><a href="http://ipv4.au-plug-36.iot.welland.mithis.com">au-plug-36</a></td>
+<td><a href="http://10.1.91.36">10.1.91.36</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen 6 days ago</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr><tr class="off">
+<td><a href="http://ipv4.au-plug-37.iot.welland.mithis.com">au-plug-37</a></td>
+<td><a href="http://10.1.91.37">10.1.91.37</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen 6 days ago</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr><tr class="off">
+<td><a href="http://ipv4.au-plug-38.iot.welland.mithis.com">au-plug-38</a></td>
+<td><a href="http://10.1.91.38">10.1.91.38</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen 6 days ago</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr><tr class="off">
+<td><a href="http://ipv4.au-plug-39.iot.welland.mithis.com">au-plug-39</a></td>
+<td><a href="http://10.1.91.39">10.1.91.39</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen 6 days ago</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr><tr class="off">
+<td><a href="http://ipv4.au-plug-40.iot.welland.mithis.com">au-plug-40</a></td>
+<td><a href="http://10.1.91.40">10.1.91.40</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen 6 days ago</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr><tr class="off">
+<td><a href="http://ipv4.au-plug-41.iot.welland.mithis.com">au-plug-41</a></td>
+<td><a href="http://10.1.91.41">10.1.91.41</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen 6 days ago</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr><tr class="off">
+<td><a href="http://ipv4.au-plug-42.iot.welland.mithis.com">au-plug-42</a></td>
+<td><a href="http://10.1.91.42">10.1.91.42</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen 4 days ago</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr><tr class="off">
+<td><a href="http://ipv4.au-plug-43.iot.welland.mithis.com">au-plug-43</a></td>
+<td><a href="http://10.1.91.43">10.1.91.43</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen 4 days ago</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr><tr class="off">
+<td><a href="http://ipv4.au-plug-44.iot.welland.mithis.com">au-plug-44</a></td>
+<td><a href="http://10.1.91.44">10.1.91.44</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen 4 days ago</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr><tr class="off">
+<td><a href="http://ipv4.au-plug-45.iot.welland.mithis.com">au-plug-45</a></td>
+<td><a href="http://10.1.91.45">10.1.91.45</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen 4 days ago</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-46.iot.welland.mithis.com">au-plug-46</a></td>
+<td><a href="http://10.1.91.46">10.1.91.46</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><div class="">🟢 <a href="http://ipv4.sw-bb-25g.welland.mithis.com">sw-bb-25g</a></div></td>
+<td class="n load" title="231 V, PF 0.96"><span>65&nbsp;W</span></td>
+<td class="n grp"><span>72&nbsp;W</span></td><td class="n"><span>65&nbsp;W</span></td><td class="n"><span>64&nbsp;W</span></td>
+<td class="n grp"><span>0.065&nbsp;kWh</span></td><td class="n"><span>1.544&nbsp;kWh</span></td><td class="n"><span>0.681&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-47.iot.welland.mithis.com">au-plug-47</a></td>
+<td><a href="http://10.1.91.47">10.1.91.47</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><span class="warn" title="Drawing power but no controlled device recorded">❗ unlisted load</span></td>
+<td class="n load" title="223 V, PF 0.99"><span>885&nbsp;W</span></td>
+<td class="n grp"><span>876&nbsp;W</span></td><td class="n"><span>864&nbsp;W</span></td><td class="n"><span>866&nbsp;W</span></td>
+<td class="n grp"><span>0.864&nbsp;kWh</span></td><td class="n"><span>20.781&nbsp;kWh</span></td><td class="n"><span>9.033&nbsp;kWh</span></td>
+</tr><tr class="">
+<td><a href="http://ipv4.au-plug-48.iot.welland.mithis.com">au-plug-48</a></td>
+<td><a href="http://10.1.91.48">10.1.91.48</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><div class="">🟢 <a href="http://ipv4.rpi4-ups.welland.mithis.com">rpi4-ups</a></div><div class="">🟢 <a href="http://ipv4.sw-bb-25g.welland.mithis.com">sw-bb-25g</a></div><div class="">🟢 <a href="http://ipv4.openmesh-96-00.welland.mithis.com">openmesh-96-00</a></div></td>
+<td class="n load" title="232 V, PF 0.92"><span>77&nbsp;W</span></td>
+<td class="n grp"><span>72&nbsp;W</span></td><td class="n"><span>77&nbsp;W</span></td><td class="n"><span>77&nbsp;W</span></td>
+<td class="n grp"><span>0.077&nbsp;kWh</span></td><td class="n"><span>1.838&nbsp;kWh</span></td><td class="n"><span>0.808&nbsp;kWh</span></td>
+</tr><tr class="off">
+<td><a href="http://ipv4.au-plug-49.iot.welland.mithis.com">au-plug-49</a></td>
+<td><a href="http://10.1.91.49">10.1.91.49</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen unknown</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr><tr class="off">
+<td><a href="http://ipv4.au-plug-50.iot.welland.mithis.com">au-plug-50</a></td>
+<td><a href="http://10.1.91.50">10.1.91.50</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen unknown</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr><tr class="">
+<td><a href="http://ipv4.us-plug-1.iot.welland.mithis.com">us-plug-1</a></td>
+<td><a href="http://10.1.90.136">10.1.90.136</a></td>
+<td><span class="on">🟢 online</span></td>
+<td><span class="toggle on">🟢 ON</span></td>
+<td class="ctrl"><div><span class="offdot">• ac</span></div></td>
+<td class="n load" title="119 V, PF 0.0"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td><td class="n"><span class="z">0&nbsp;W</span></td>
+<td class="n grp"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td><td class="n"><span class="z">0.000&nbsp;kWh</span></td>
+</tr><tr class="off">
+<td><a href="http://ipv4.us-plug-2.iot.welland.mithis.com">us-plug-2</a></td>
+<td><a href="http://10.1.90.137">10.1.90.137</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen 3 days ago</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr><tr class="off">
+<td><a href="http://ipv4.us-plug-3.iot.welland.mithis.com">us-plug-3</a></td>
+<td><a href="http://10.1.90.138">10.1.90.138</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen &gt;14 days ago</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr><tr class="off">
+<td><a href="http://ipv4.us-plug-4.iot.welland.mithis.com">us-plug-4</a></td>
+<td><a href="http://10.1.90.139">10.1.90.139</a></td>
+<td><span class="red">🔴 offline</span><div class="seen">last seen &gt;14 days ago</div></td>
+<td><span class="toggle offdot">—</span></td>
+<td class="ctrl"><span class="offdot">—</span></td>
+<td class="n load">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+<td class="n grp">—</td><td class="n">—</td><td class="n">—</td>
+</tr>
+</tbody>
+<tfoot><tr><td colspan="5">53 plugs &middot; 32 online &middot; 21 relay ON</td><td class="n load">2793&nbsp;W</td><td class="n grp"></td><td class="n"></td><td class="n"></td><td class="n grp"></td><td class="n">58.429&nbsp;kWh</td><td class="n"></td></tr></tfoot>
+</table>
+</body></html>

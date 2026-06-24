@@ -313,6 +313,44 @@ def _build_host_data(host, controls_map, ipv6_prefix, domain):
 
 
 # ---------------------------------------------------------------------------
+# Power Plugs dashboard — structural data
+# ---------------------------------------------------------------------------
+
+_PLUG_RE = re.compile(r"(au|us)-plug-(\d+)")
+
+
+def _is_plug(machine_name: str) -> bool:
+    """True for au-plug-<n> / us-plug-<n> machine names."""
+    return _PLUG_RE.fullmatch(machine_name) is not None
+
+
+def _select_plug_hosts(hosts: list) -> list:
+    """Tasmota-enriched plug hosts, sorted by family (au, us) then number."""
+    plugs = [h for h in hosts if h.tasmota_data is not None and _is_plug(h.machine_name)]
+    fam = {"au": 0, "us": 1}
+    return sorted(
+        plugs,
+        key=lambda h: (
+            fam[_PLUG_RE.fullmatch(h.machine_name).group(1)],
+            int(_PLUG_RE.fullmatch(h.machine_name).group(2)),
+        ),
+    )
+
+
+def _build_plug_data(host, domain: str) -> dict:
+    """Structural JSON for one plug (no live state — JS reads that at runtime)."""
+    first_ip = host.first_ipv4
+    return {
+        "machine": host.machine_name,
+        "topic": _node_id(host.tasmota_data.mqtt_topic),
+        "nid": _node_id(host.hostname),
+        "fqdn": f"{host.hostname}.{domain}",
+        "ipv4": str(first_ip) if first_ip else "",
+        "controls": list(host.tasmota_data.controls),
+    }
+
+
+# ---------------------------------------------------------------------------
 # HTML generation
 # ---------------------------------------------------------------------------
 

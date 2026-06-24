@@ -134,6 +134,7 @@ class HomeAssistantConfig:
 
     url: str = ""
     token: str = ""
+    dashboard_token: str = ""
     ssh_host: str = ""
     mqtt: MqttBrokerConfig = field(default_factory=MqttBrokerConfig)
 
@@ -284,6 +285,7 @@ def _build_homeassistant(data: dict) -> HomeAssistantConfig:
     return HomeAssistantConfig(
         url=section.get("url", ""),
         token=section.get("token", ""),
+        dashboard_token=section.get("dashboard_token", ""),
         ssh_host=section.get("ssh_host", ""),
         mqtt=MqttBrokerConfig(
             host=mqtt_section.get("host", ""),

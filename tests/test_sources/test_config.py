@@ -142,6 +142,7 @@ domain = "test.example.com"
 [homeassistant]
 url = "https://ha.example/"
 token = "tok"
+dashboard_token = "dash"
 ssh_host = "ha.example"
 
 [homeassistant.mqtt]
@@ -152,6 +153,7 @@ password = "pw"
 """))
         assert config.homeassistant.url == "https://ha.example/"
         assert config.homeassistant.token == "tok"
+        assert config.homeassistant.dashboard_token == "dash"
         assert config.homeassistant.ssh_host == "ha.example"
         assert config.homeassistant.mqtt.host == "ha.example"
         assert config.homeassistant.mqtt.port == 8883
@@ -169,6 +171,7 @@ domain = "test.example.com"
 url = "https://ha.example/"
 """))
         assert config.homeassistant.ssh_host == ""
+        assert config.homeassistant.dashboard_token == ""
         assert config.homeassistant.mqtt.host == ""
         assert config.homeassistant.mqtt.port == 1883
         assert config.homeassistant.mqtt.user == ""

@@ -59,6 +59,8 @@ HA_WWW_PATH = "/config/www/network-reachability.html"
 HA_PANEL_URL = "/local/network-reachability.html"
 HA_SWITCH_WWW_PATH = "/config/www/network-switch-ports.html"
 HA_SWITCH_PANEL_URL = "/local/network-switch-ports.html"
+HA_PLUG_WWW_PATH = "/config/www/network-power-plugs.html"
+HA_PLUG_PANEL_URL = "/local/network-power-plugs.html"
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +315,62 @@ def _build_host_data(host, controls_map, ipv6_prefix, domain):
 
 
 # ---------------------------------------------------------------------------
+# Power Plugs dashboard — structural data
+# ---------------------------------------------------------------------------
+
+_PLUG_RE = re.compile(r"(au|us)-plug-(\d+)")
+_PLUG_FAMILY_ORDER = {"au": 0, "us": 1}
+
+
+def _is_plug(machine_name: str) -> bool:
+    """True for au-plug-<n> / us-plug-<n> machine names."""
+    return _PLUG_RE.fullmatch(machine_name) is not None
+
+
+def _select_plug_hosts(hosts: list) -> list:
+    """Tasmota-enriched plug hosts, sorted by family (au, us) then number."""
+    plugs = [h for h in hosts if h.tasmota_data is not None and _is_plug(h.machine_name)]
+
+    def _key(h):
+        m = _PLUG_RE.fullmatch(h.machine_name)
+        return (_PLUG_FAMILY_ORDER[m.group(1)], int(m.group(2)))
+
+    return sorted(plugs, key=_key)
+
+
+def _build_plug_data(host, domain: str) -> dict:
+    """Structural JSON for one plug (no live state — JS reads that at runtime)."""
+    first_ip = host.first_ipv4
+    return {
+        "machine": host.machine_name,
+        "topic": _node_id(host.tasmota_data.mqtt_topic),
+        "nid": _node_id(host.hostname),
+        "fqdn": f"{host.hostname}.{domain}",
+        "ipv4": str(first_ip) if first_ip else "",
+        "controls": list(host.tasmota_data.controls),
+    }
+
+
+def _verify_plug_entities(plugs: list[dict], ha_states: list[dict]) -> list[str]:
+    """Warn (stderr) for any plug whose relay or power entity is absent in HA.
+
+    Fail-loud, but non-fatal: the row still renders with blanks at runtime.
+    """
+    have = {e["entity_id"] for e in ha_states}
+    warnings = []
+    for p in plugs:
+        missing = [
+            eid for eid in (f"switch.{p['topic']}", f"sensor.{p['topic']}_energy_power")
+            if eid not in have
+        ]
+        if missing:
+            msg = f"plug {p['machine']}: missing HA entities {missing}"
+            warnings.append(msg)
+            print(f"  warning: {msg}", file=sys.stderr)
+    return warnings
+
+
+# ---------------------------------------------------------------------------
 # HTML generation
 # ---------------------------------------------------------------------------
 
@@ -385,6 +443,21 @@ def _deploy_html(html_content: str, path: str = HA_WWW_PATH) -> None:
 # ---------------------------------------------------------------------------
 
 _SWITCH_HTML_TEMPLATE_PATH = Path(__file__).parent / "ha-switch-dashboard.html"
+_PLUG_HTML_TEMPLATE_PATH = Path(__file__).parent / "ha-plug-dashboard.html"
+
+
+def _generate_plug_html(plugs_data: list[dict], domain: str, config) -> str:
+    """Bake plug structural JSON into the plug dashboard template."""
+    data_json = json.dumps(plugs_data, separators=(",", ":")).replace("</", r"<\/")
+    ws_url = f"wss://ha.{domain}/api/websocket"
+    template = _PLUG_HTML_TEMPLATE_PATH.read_text()
+    return (
+        template
+        .replace("__PLUGS_JSON__", data_json)
+        .replace("__DOMAIN__", _js_esc(domain))
+        .replace("__HA_WS_URL__", _js_esc(ws_url))
+        .replace("__HA_TOKEN__", _js_esc(config.homeassistant.token))
+    )
 
 # Hardware sensor suffixes that some switches expose.
 _HW_SENSOR_SUFFIXES = ["temperature", "fan_1", "fan_2", "psu_power"]
@@ -510,6 +583,19 @@ def _fetch_ha_states(config) -> list[dict]:
         return json.loads(resp.read())
 
 
+async def _recv_result(ws, expected_id: int, timeout: float = 30.0) -> dict:
+    """Read WS messages until the one matching expected_id (skipping others)."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        remaining = deadline - asyncio.get_event_loop().time()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"No WS response for id={expected_id} within {timeout}s")
+        msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
+        if msg.get("id") == expected_id:
+            return msg
+
+
 async def _ensure_iframe_dashboard(config) -> None:
     """Create or update the Lovelace iframe dashboard in HA."""
     import time
@@ -524,25 +610,6 @@ async def _ensure_iframe_dashboard(config) -> None:
     )
 
     async with websockets.connect(ws_url, max_size=10 * 1024 * 1024) as ws:
-        # Read responses matching on id, skipping any interleaved
-        # server-initiated messages (pings, events, etc.).
-        async def recv_result(
-            expected_id: int, timeout: float = 30.0,
-        ) -> dict:
-            deadline = asyncio.get_event_loop().time() + timeout
-            while True:
-                remaining = deadline - asyncio.get_event_loop().time()
-                if remaining <= 0:
-                    raise TimeoutError(
-                        f"No WS response for id={expected_id} "
-                        f"within {timeout}s",
-                    )
-                msg = json.loads(
-                    await asyncio.wait_for(ws.recv(), timeout=remaining),
-                )
-                if msg.get("id") == expected_id:
-                    return msg
-
         await ws.recv()  # auth_required
         await ws.send(json.dumps({
             "type": "auth",
@@ -556,7 +623,7 @@ async def _ensure_iframe_dashboard(config) -> None:
         await ws.send(json.dumps({
             "id": msg_id, "type": "lovelace/dashboards/list",
         }))
-        resp = await recv_result(msg_id)
+        resp = await _recv_result(ws, msg_id)
         msg_id += 1
         if not resp.get("success"):
             raise RuntimeError(
@@ -578,7 +645,7 @@ async def _ensure_iframe_dashboard(config) -> None:
                 "require_admin": False,
                 "show_in_sidebar": True,
             }))
-            resp = await recv_result(msg_id)
+            resp = await _recv_result(ws, msg_id)
             msg_id += 1
             if not resp.get("success"):
                 raise RuntimeError(
@@ -618,7 +685,7 @@ async def _ensure_iframe_dashboard(config) -> None:
                 ],
             },
         }))
-        resp = await recv_result(msg_id)
+        resp = await _recv_result(ws, msg_id)
         msg_id += 1
         if not resp.get("success"):
             raise RuntimeError(
@@ -628,6 +695,63 @@ async def _ensure_iframe_dashboard(config) -> None:
             "Dashboard config saved "
             "(2 views: Host Reachability, Switch Ports)",
         )
+
+
+async def _ensure_plug_dashboard(config) -> None:
+    """Create or update the standalone 'Power Plugs' Lovelace dashboard."""
+    import time
+
+    import websockets
+
+    ws_url = (
+        config.homeassistant.url.rstrip("/")
+        .replace("http://", "ws://").replace("https://", "wss://")
+        + "/api/websocket"
+    )
+    async with websockets.connect(ws_url, max_size=10 * 1024 * 1024) as ws:
+        await ws.recv()  # auth_required
+        await ws.send(json.dumps({"type": "auth", "access_token": config.homeassistant.token}))
+        if json.loads(await ws.recv()).get("type") != "auth_ok":
+            raise RuntimeError("Auth failed")
+
+        msg_id = 1
+        await ws.send(json.dumps({"id": msg_id, "type": "lovelace/dashboards/list"}))
+        resp = await _recv_result(ws, msg_id)
+        msg_id += 1
+        if not resp.get("success"):
+            raise RuntimeError(f"Failed to list dashboards: {resp.get('error')}")
+        exists = any(d.get("url_path") == "power-plugs" for d in resp["result"])
+
+        if not exists:
+            await ws.send(json.dumps({
+                "id": msg_id, "type": "lovelace/dashboards/create",
+                "url_path": "power-plugs", "title": "Power Plugs",
+                "icon": "mdi:power-plug", "require_admin": False, "show_in_sidebar": True,
+            }))
+            resp = await _recv_result(ws, msg_id)
+            msg_id += 1
+            if not resp.get("success"):
+                raise RuntimeError(f"Failed to create dashboard: {resp.get('error')}")
+            print("Created dashboard 'power-plugs'")
+
+        bust = int(time.time())
+        await ws.send(json.dumps({
+            "id": msg_id, "type": "lovelace/config/save", "url_path": "power-plugs",
+            "config": {"views": [{
+                "title": "Power Plugs", "path": "default", "icon": "mdi:power-plug",
+                "panel": True,
+                "cards": [{
+                    "type": "iframe",
+                    "url": f"{HA_PLUG_PANEL_URL}?v={bust}",
+                    "aspect_ratio": "",
+                }],
+            }]},
+        }))
+        resp = await _recv_result(ws, msg_id)
+        msg_id += 1
+        if not resp.get("success"):
+            raise RuntimeError(f"Failed to save dashboard config: {resp.get('error')}")
+        print("Power Plugs dashboard config saved")
 
 
 # ---------------------------------------------------------------------------
@@ -684,14 +808,24 @@ def main():
     switch_html = _generate_switch_html(switches, domain, config)
     print(f"  {len(switch_html):,} bytes")
 
+    print("Generating Power Plugs dashboard...")
+    plug_hosts = _select_plug_hosts(hosts)
+    plugs_data = [_build_plug_data(h, domain) for h in plug_hosts]
+    _verify_plug_entities(plugs_data, ha_states)
+    plug_html = _generate_plug_html(plugs_data, domain, config)
+    print(f"  {len(plugs_data)} plugs, {len(plug_html):,} bytes")
+
     print("Deploying...")
     _deploy_html(html_content, HA_WWW_PATH)
     _deploy_html(switch_html, HA_SWITCH_WWW_PATH)
+    _deploy_html(plug_html, HA_PLUG_WWW_PATH)
     asyncio.run(_ensure_iframe_dashboard(config))
+    asyncio.run(_ensure_plug_dashboard(config))
 
     print("\nDashboards at:")
     print(f"  https://ha.{domain}/network-reachability/default")
     print(f"  https://ha.{domain}/network-reachability/switches")
+    print(f"  https://ha.{domain}/power-plugs/default")
 
 
 if __name__ == "__main__":

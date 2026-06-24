@@ -125,8 +125,9 @@ outage. `—` when the relay state is unavailable.
 
 ## Controls column (list + relay-aware icons + flag)
 
-Source: `tasmota_data.controls`, **split on newline / comma / slash** (the sheet's
-`Controls` cell uses in-cell newlines). Rendered as a vertical list; each device
+Source: `tasmota_data.controls`, **already split on comma / newline** by
+`supplements/tasmota.py` (the sheet's `Controls` cell uses in-cell newlines; no
+sheet cell uses `/` or `;`, so the generator consumes the tuple as-is). Rendered as a vertical list; each device
 resolved via `sensor.gdoc2netcfg_host_directory` (machine→hostname → `nid` →
 connectivity + `http://ipv4.{host}.{domain}` link).
 

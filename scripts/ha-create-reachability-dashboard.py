@@ -418,7 +418,7 @@ def _generate_html(networks, controls_map, ipv6_prefix, domain, config):
         .replace("__IPV6_PREFIX__", _js_esc(ipv6_prefix))
         .replace("__DOMAIN__", _js_esc(domain))
         .replace("__HA_WS_URL__", _js_esc(ws_url))
-        .replace("__HA_TOKEN__", _js_esc(config.homeassistant.token))
+        .replace("__HA_TOKEN__", _js_esc(config.homeassistant.dashboard_token))
     )
 
 
@@ -456,7 +456,7 @@ def _generate_plug_html(plugs_data: list[dict], domain: str, config) -> str:
         .replace("__PLUGS_JSON__", data_json)
         .replace("__DOMAIN__", _js_esc(domain))
         .replace("__HA_WS_URL__", _js_esc(ws_url))
-        .replace("__HA_TOKEN__", _js_esc(config.homeassistant.token))
+        .replace("__HA_TOKEN__", _js_esc(config.homeassistant.dashboard_token))
     )
 
 # Hardware sensor suffixes that some switches expose.
@@ -566,7 +566,7 @@ def _generate_switch_html(switch_data: list[dict], domain: str, config) -> str:
         .replace("__SWITCH_DATA_JSON__", data_json)
         .replace("__DOMAIN__", _js_esc(domain))
         .replace("__HA_WS_URL__", _js_esc(ws_url))
-        .replace("__HA_TOKEN__", _js_esc(config.homeassistant.token))
+        .replace("__HA_TOKEN__", _js_esc(config.homeassistant.dashboard_token))
     )
 
 

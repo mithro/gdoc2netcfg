@@ -65,6 +65,7 @@ var attrs = {};        // entity_id -> attributes (host_directory only)
 var win = {};          // topic -> {r5,r1,r24,e1,e24}
 var seen = {};         // nid  -> "x ago" | ">14 days ago" | "unknown"
 var sortState = {col: "plug", dir: 1};
+var statsTimer = null, seenTimer = null;
 
 var GREEN = "🟢", RED = "🔴", WHITE = "⚪",
     WARN = "⚠️", BANG = "❗";
@@ -108,8 +109,8 @@ function haConnect(){
       connected = true; setStatus("Fetching state…");
       send({type:"get_states"}, onStates);
       send({type:"subscribe_events", event_type:"state_changed"});
-      setInterval(fetchStats, 60000);
-      setInterval(fetchLastSeen, 300000);
+      clearInterval(statsTimer); statsTimer = setInterval(fetchStats, 60000);
+      clearInterval(seenTimer);  seenTimer  = setInterval(fetchLastSeen, 300000);
     } else if(msg.type === "auth_invalid"){
       setStatus("Auth failed: " + (msg.message || "invalid token"));
     } else if(msg.type === "result" && pending[msg.id]){
@@ -372,9 +373,9 @@ function render(){
   table.appendChild(tbody);
   var tfoot=document.createElement("tfoot"); var ftr=document.createElement("tr");
   var f1=document.createElement("td"); f1.colSpan=5; f1.textContent=PLUGS.length+" plugs · "+nOnline+" online · "+nOn+" relay ON"; ftr.appendChild(f1);
-  ftr.appendChild(cellN('<span class="load">'+totLoad.toFixed(0)+'&nbsp;W</span>'));
+  var ftLoad = cellN(fmtW(totLoad)); ftLoad.classList.add("load"); ftr.appendChild(ftLoad);
   ftr.appendChild(cellN("", true)); ftr.appendChild(cellN("")); ftr.appendChild(cellN(""));
-  ftr.appendChild(cellN("", true)); ftr.appendChild(cellN(totE24.toFixed(3)+"&nbsp;kWh")); ftr.appendChild(cellN(""));
+  ftr.appendChild(cellN("", true)); ftr.appendChild(cellN(fmtKwh(totE24))); ftr.appendChild(cellN(""));
   tfoot.appendChild(ftr); table.appendChild(tfoot);
   root.appendChild(table);
 }

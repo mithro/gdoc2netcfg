@@ -319,6 +319,7 @@ def _build_host_data(host, controls_map, ipv6_prefix, domain):
 # ---------------------------------------------------------------------------
 
 _PLUG_RE = re.compile(r"(au|us)-plug-(\d+)")
+_PLUG_FAMILY_ORDER = {"au": 0, "us": 1}
 
 
 def _is_plug(machine_name: str) -> bool:
@@ -329,14 +330,12 @@ def _is_plug(machine_name: str) -> bool:
 def _select_plug_hosts(hosts: list) -> list:
     """Tasmota-enriched plug hosts, sorted by family (au, us) then number."""
     plugs = [h for h in hosts if h.tasmota_data is not None and _is_plug(h.machine_name)]
-    fam = {"au": 0, "us": 1}
-    return sorted(
-        plugs,
-        key=lambda h: (
-            fam[_PLUG_RE.fullmatch(h.machine_name).group(1)],
-            int(_PLUG_RE.fullmatch(h.machine_name).group(2)),
-        ),
-    )
+
+    def _key(h):
+        m = _PLUG_RE.fullmatch(h.machine_name)
+        return (_PLUG_FAMILY_ORDER[m.group(1)], int(m.group(2)))
+
+    return sorted(plugs, key=_key)
 
 
 def _build_plug_data(host, domain: str) -> dict:
@@ -584,6 +583,19 @@ def _fetch_ha_states(config) -> list[dict]:
         return json.loads(resp.read())
 
 
+async def _recv_result(ws, expected_id: int, timeout: float = 30.0) -> dict:
+    """Read WS messages until the one matching expected_id (skipping others)."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        remaining = deadline - asyncio.get_event_loop().time()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"No WS response for id={expected_id} within {timeout}s")
+        msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
+        if msg.get("id") == expected_id:
+            return msg
+
+
 async def _ensure_iframe_dashboard(config) -> None:
     """Create or update the Lovelace iframe dashboard in HA."""
     import time
@@ -598,25 +610,6 @@ async def _ensure_iframe_dashboard(config) -> None:
     )
 
     async with websockets.connect(ws_url, max_size=10 * 1024 * 1024) as ws:
-        # Read responses matching on id, skipping any interleaved
-        # server-initiated messages (pings, events, etc.).
-        async def recv_result(
-            expected_id: int, timeout: float = 30.0,
-        ) -> dict:
-            deadline = asyncio.get_event_loop().time() + timeout
-            while True:
-                remaining = deadline - asyncio.get_event_loop().time()
-                if remaining <= 0:
-                    raise TimeoutError(
-                        f"No WS response for id={expected_id} "
-                        f"within {timeout}s",
-                    )
-                msg = json.loads(
-                    await asyncio.wait_for(ws.recv(), timeout=remaining),
-                )
-                if msg.get("id") == expected_id:
-                    return msg
-
         await ws.recv()  # auth_required
         await ws.send(json.dumps({
             "type": "auth",
@@ -630,7 +623,7 @@ async def _ensure_iframe_dashboard(config) -> None:
         await ws.send(json.dumps({
             "id": msg_id, "type": "lovelace/dashboards/list",
         }))
-        resp = await recv_result(msg_id)
+        resp = await _recv_result(ws, msg_id)
         msg_id += 1
         if not resp.get("success"):
             raise RuntimeError(
@@ -652,7 +645,7 @@ async def _ensure_iframe_dashboard(config) -> None:
                 "require_admin": False,
                 "show_in_sidebar": True,
             }))
-            resp = await recv_result(msg_id)
+            resp = await _recv_result(ws, msg_id)
             msg_id += 1
             if not resp.get("success"):
                 raise RuntimeError(
@@ -692,7 +685,7 @@ async def _ensure_iframe_dashboard(config) -> None:
                 ],
             },
         }))
-        resp = await recv_result(msg_id)
+        resp = await _recv_result(ws, msg_id)
         msg_id += 1
         if not resp.get("success"):
             raise RuntimeError(
@@ -716,16 +709,6 @@ async def _ensure_plug_dashboard(config) -> None:
         + "/api/websocket"
     )
     async with websockets.connect(ws_url, max_size=10 * 1024 * 1024) as ws:
-        async def recv_result(expected_id: int, timeout: float = 30.0) -> dict:
-            deadline = asyncio.get_event_loop().time() + timeout
-            while True:
-                remaining = deadline - asyncio.get_event_loop().time()
-                if remaining <= 0:
-                    raise TimeoutError(f"No WS response for id={expected_id}")
-                msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
-                if msg.get("id") == expected_id:
-                    return msg
-
         await ws.recv()  # auth_required
         await ws.send(json.dumps({"type": "auth", "access_token": config.homeassistant.token}))
         if json.loads(await ws.recv()).get("type") != "auth_ok":
@@ -733,7 +716,7 @@ async def _ensure_plug_dashboard(config) -> None:
 
         msg_id = 1
         await ws.send(json.dumps({"id": msg_id, "type": "lovelace/dashboards/list"}))
-        resp = await recv_result(msg_id)
+        resp = await _recv_result(ws, msg_id)
         msg_id += 1
         if not resp.get("success"):
             raise RuntimeError(f"Failed to list dashboards: {resp.get('error')}")
@@ -745,7 +728,7 @@ async def _ensure_plug_dashboard(config) -> None:
                 "url_path": "power-plugs", "title": "Power Plugs",
                 "icon": "mdi:power-plug", "require_admin": False, "show_in_sidebar": True,
             }))
-            resp = await recv_result(msg_id)
+            resp = await _recv_result(ws, msg_id)
             msg_id += 1
             if not resp.get("success"):
                 raise RuntimeError(f"Failed to create dashboard: {resp.get('error')}")
@@ -764,7 +747,7 @@ async def _ensure_plug_dashboard(config) -> None:
                 }],
             }]},
         }))
-        resp = await recv_result(msg_id)
+        resp = await _recv_result(ws, msg_id)
         msg_id += 1
         if not resp.get("success"):
             raise RuntimeError(f"Failed to save dashboard config: {resp.get('error')}")

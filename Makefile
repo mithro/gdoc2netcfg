@@ -72,17 +72,24 @@ lint: $(VENV)/.stamp ## Run linter
 INSTALL_DIR := /opt/gdoc2netcfg
 DNSMASQ_CONF_DIR := /etc/dnsmasq.d
 
+# gdoc2netcfg version that produced the deployed /etc state (for etckeeper commits)
+GDOC2NETCFG_VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo unknown)
+# Path-scoped etckeeper commit of a deploy. Usage: $(ETCKEEPER_COMMIT) "<msg>" <path>
+ETCKEEPER_COMMIT := $(VENV_BIN)/python scripts/etckeeper_commit.py --message
+
 .PHONY: deploy-dnsmasq-internal
 deploy-dnsmasq-internal: generate ## Generate and deploy internal dnsmasq configs (run with sudo)
 	rm $(DNSMASQ_CONF_DIR)/internal/generated/*.conf
 	cp $(OUTPUT_DIR)/internal/*.conf $(DNSMASQ_CONF_DIR)/internal/generated/
 	systemctl restart dnsmasq@internal
+	$(ETCKEEPER_COMMIT) "gdoc2netcfg deploy dnsmasq-internal: $(GDOC2NETCFG_VERSION)" $(DNSMASQ_CONF_DIR)/internal/generated
 
 .PHONY: deploy-dnsmasq-external
 deploy-dnsmasq-external: generate ## Generate and deploy external dnsmasq configs (run with sudo)
 	rm $(DNSMASQ_CONF_DIR)/external/generated/*.conf
 	cp $(OUTPUT_DIR)/external/*.conf $(DNSMASQ_CONF_DIR)/external/generated/
 	systemctl restart dnsmasq@external
+	$(ETCKEEPER_COMMIT) "gdoc2netcfg deploy dnsmasq-external: $(GDOC2NETCFG_VERSION)" $(DNSMASQ_CONF_DIR)/external/generated
 
 .PHONY: deploy-dnsmasq
 deploy-dnsmasq: deploy-dnsmasq-internal deploy-dnsmasq-external ## Deploy both internal and external dnsmasq configs (run with sudo)
@@ -98,12 +105,14 @@ deploy-nginx: generate ## Generate and deploy nginx configs (run with sudo)
 	touch $(NGINX_GEN_DIR)/status.txt && chown www-data:www-data $(NGINX_GEN_DIR)/status.txt
 	nginx -t
 	systemctl reload nginx
+	$(ETCKEEPER_COMMIT) "gdoc2netcfg deploy nginx: $(GDOC2NETCFG_VERSION)" $(NGINX_GEN_DIR)
 
 SSH_KNOWN_HOSTS := /etc/ssh/ssh_known_hosts
 
 .PHONY: deploy-known-hosts
 deploy-known-hosts: generate ## Generate and deploy system-wide SSH known_hosts (run with sudo)
 	cp $(OUTPUT_DIR)/known_hosts $(SSH_KNOWN_HOSTS)
+	$(ETCKEEPER_COMMIT) "gdoc2netcfg deploy known-hosts: $(GDOC2NETCFG_VERSION)" $(SSH_KNOWN_HOSTS)
 
 .PHONY: deploy
 deploy: deploy-dnsmasq deploy-nginx deploy-known-hosts ## Run all deploy steps (run with sudo)

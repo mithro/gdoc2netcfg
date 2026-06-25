@@ -225,7 +225,9 @@ Key external behaviours:
 ### When external is disabled
 
 `generate_dnsmasq_external()` returns an empty dict if no `public_ipv4` is
-configured. Monarto runs internal only.
+configured. Both current production sites (welland and monarto) set
+`public_ipv4`, so both generate external configs; a site that leaves
+`public_ipv4` unset runs internal only.
 
 
 ## Other record types

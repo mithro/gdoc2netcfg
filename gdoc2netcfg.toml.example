@@ -51,7 +51,8 @@ disabled_prefixes = [
 # VLANs and network_subdomains are now derived from the
 # VLAN Allocations spreadsheet sheet, not configured here.
 
-# ── Site-specific: Monarto only enables ["dnsmasq_internal"] ─────
+# ── Site-specific: each site customizes this list. This template shows
+# ── welland's set; monarto omits "nagios" (runs internal, external, nginx). ─────
 [generators]
 # Which generators to enable
 enabled = ["dnsmasq_internal", "dnsmasq_external", "nagios", "nginx"]

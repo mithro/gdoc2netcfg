@@ -239,9 +239,11 @@ Deployed on two sites, both at `/opt/gdoc2netcfg/`:
 | Site | Host | IP scheme | IPv6 prefix | Generators |
 |------|------|-----------|-------------|------------|
 | welland | `ten64.welland.mithis.com` (10.1.10.1) | `10.1.X.X` | `2404:e80:a137:1XX::` | internal, external, nagios, nginx |
-| monarto | `ten64.monarto.mithis.com` (10.2.10.1) | `10.2.X.X` | `2404:e80:a137:2XX::` | internal only |
+| monarto | `ten64.monarto.mithis.com` (10.2.10.1) | `10.2.X.X` | `2404:e80:a137:2XX::` | internal, external, nginx |
 
 Both sites share the same Google Spreadsheet. The spreadsheet uses `10.X.Y.Z` (literal `X` in the second octet) for devices that exist at multiple sites, and a "Site" column to restrict records to a specific site. The `site_octet` in each site's `gdoc2netcfg.toml` replaces the `X` placeholder.
+
+Both sites are externally accessible (each sets its own `public_ipv4`) and run split-horizon DNS (internal **and** external dnsmasq) plus an nginx reverse proxy. The differences: welland additionally enables the `nagios` and `letsencrypt` generators, whereas monarto omits `nagios` and manages its TLS certs with **certbot directly** (its `letsencrypt` generator is not enabled — see *Let's Encrypt* below).
 
 ### Deploying code changes
 
@@ -290,7 +292,7 @@ dnsmasq instances run via systemd template units (`dnsmasq@internal`, `dnsmasq@e
 ```
 /etc/dnsmasq.d/
   dnsmasq.internal.conf          # conf-dir=shared, internal, internal/generated
-  dnsmasq.external.conf          # conf-dir=shared, external, external/generated (welland only)
+  dnsmasq.external.conf          # conf-dir=shared, external, external/generated (both sites)
   shared/                        # Shared config (base, upstream, logging, edns)
   internal/
     00-listen.conf               # Listen addresses, bind-dynamic
@@ -303,7 +305,7 @@ dnsmasq instances run via systemd template units (`dnsmasq@internal`, `dnsmasq@e
       ten64.conf
       desktop.conf
       ...
-  external/                      # Welland only
+  external/                      # both sites
     00-listen.conf
     03-auth-dns.conf
     dnsmasq.acme.*.conf          # ACME challenge records
@@ -326,7 +328,7 @@ sudo rm -f /etc/dnsmasq.d/internal/generated/*.conf
 sudo cp internal/*.conf /etc/dnsmasq.d/internal/generated/
 sudo systemctl restart dnsmasq@internal
 
-# Welland also has external:
+# Both sites also have external:
 sudo rm -f /etc/dnsmasq.d/external/generated/*.conf
 sudo cp external/*.conf /etc/dnsmasq.d/external/generated/
 sudo systemctl restart dnsmasq@external
@@ -338,11 +340,11 @@ The two sites forward DNS queries to each other via WireGuard tunnel (`10.255.0.
 
 ### nginx
 
-Generated nginx configs are deployed to `/etc/nginx/gdoc2netcfg/` (per-host directories under `sites-available/`, plus `scripts/`, `conf.d/`, `stream.d/` for healthcheck infrastructure). Hosts are activated via symlinks: `ln -s /etc/nginx/gdoc2netcfg/sites-available/{fqdn} /etc/nginx/sites-enabled/{fqdn}`. Welland only.
+Generated nginx configs are deployed to `/etc/nginx/gdoc2netcfg/` (per-host directories under `sites-available/`, plus `scripts/`, `conf.d/`, `stream.d/` for healthcheck infrastructure). Hosts are activated via symlinks: `ln -s /etc/nginx/gdoc2netcfg/sites-available/{fqdn} /etc/nginx/sites-enabled/{fqdn}`. Deployed on **both sites** (welland and monarto).
 
 ### Let's Encrypt
 
-Certbot scripts are generated to `/opt/gdoc2netcfg/letsencrypt/`. Welland only.
+Certbot scripts are generated to `/opt/gdoc2netcfg/letsencrypt/`. The `letsencrypt` **generator** is Welland only — monarto does not enable it; monarto's TLS certs (`/etc/letsencrypt/live/ten64.monarto.mithis.com`, `ipv6-ten64.monarto`) are managed by **certbot directly** (a single host cert that nginx terminates with), not by this per-host DNS-01 generator.
 
 ```bash
 sudo uv run gdoc2netcfg generate --output-dir /opt/gdoc2netcfg letsencrypt

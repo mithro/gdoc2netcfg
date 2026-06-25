@@ -2,10 +2,17 @@ VENV := .venv
 VENV_BIN := $(VENV)/bin
 OUTPUT_DIR := out
 
+# uv builds/syncs the venv. Resolve it to an absolute path: root's
+# non-interactive PATH frequently omits uv's install dir (/usr/local/bin,
+# ~/.local/bin), which would otherwise break `sudo make deploy` with
+# "uv: No such file or directory". Falls back to bare `uv`; override with
+# `make UV=/path/to/uv`.
+UV ?= $(firstword $(shell command -v uv) $(wildcard /usr/local/bin/uv) $(wildcard $(HOME)/.local/bin/uv) uv)
+
 # Create venv and install project with dev dependencies.
 # Re-runs when pyproject.toml or uv.lock change.
 $(VENV)/.stamp: pyproject.toml uv.lock
-	uv sync --dev
+	$(UV) sync --dev
 	touch $@
 
 .PHONY: help
@@ -103,8 +110,8 @@ deploy: deploy-dnsmasq deploy-nginx deploy-known-hosts ## Run all deploy steps (
 
 .PHONY: install
 install: ## Install into /opt/gdoc2netcfg
-	uv venv $(INSTALL_DIR)
-	uv pip install --python $(INSTALL_DIR)/bin/python .
+	$(UV) venv $(INSTALL_DIR)
+	$(UV) pip install --python $(INSTALL_DIR)/bin/python .
 
 .PHONY: clean
 clean: ## Remove generated output

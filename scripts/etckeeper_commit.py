@@ -34,12 +34,17 @@ def main(argv=None):
     for p in args.paths:
         abs_p = Path(p).resolve()
         try:
-            rel_paths.append(str(abs_p.relative_to(repo)))
+            rel = abs_p.relative_to(repo)
         except ValueError:
+            print(f"etckeeper_commit: {p!r} is not under repo {repo}", file=sys.stderr)
+            return 2
+        if str(rel) == ".":
             print(
-                f"etckeeper_commit: {p!r} is not under repo {repo}", file=sys.stderr
+                f"etckeeper_commit: refusing to commit the repo root {repo} itself",
+                file=sys.stderr,
             )
             return 2
+        rel_paths.append(str(rel))
 
     add = _git(repo, "add", "--", *rel_paths)
     if add.returncode != 0:
@@ -55,7 +60,7 @@ def main(argv=None):
         )
         return 0
 
-    commit = _git(repo, "commit", "-m", args.message)
+    commit = _git(repo, "commit", "-m", args.message, "--", *rel_paths)
     if commit.returncode != 0:
         print(
             f"etckeeper_commit: git commit failed:\n{commit.stdout}\n{commit.stderr}",

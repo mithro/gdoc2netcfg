@@ -84,3 +84,26 @@ def test_hard_fail_on_commit_failure(repo):
     (repo / "sub" / "a.conf").write_text("changed\n")
     rc = etckeeper_commit.main(["--repo", str(repo), "--message", "msg", str(repo / "sub")])
     assert rc != 0
+
+
+def test_does_not_bundle_pre_staged_unrelated(repo):
+    (repo / "other").mkdir()
+    (repo / "other" / "b.conf").write_text("b\n")
+    _git(repo, "add", "--", "other/b.conf")  # pre-staged, unrelated
+    (repo / "sub" / "a.conf").write_text("changed\n")
+    rc = etckeeper_commit.main(
+        ["--repo", str(repo), "--message", "only sub", str(repo / "sub")]
+    )
+    assert rc == 0
+    committed = _git(repo, "show", "--name-only", "--format=", "HEAD").stdout.split()
+    assert "sub/a.conf" in committed
+    assert "other/b.conf" not in committed  # not bundled despite being pre-staged
+    staged = _git(repo, "diff", "--cached", "--name-only").stdout
+    assert "other/b.conf" in staged  # still staged, untouched
+
+
+def test_rejects_repo_root_path(repo):
+    before = _count(repo)
+    rc = etckeeper_commit.main(["--repo", str(repo), "--message", "msg", str(repo)])
+    assert rc != 0
+    assert _count(repo) == before

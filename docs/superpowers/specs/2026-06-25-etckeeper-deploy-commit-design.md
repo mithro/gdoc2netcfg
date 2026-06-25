@@ -67,31 +67,35 @@ etckeeper_commit.py --message MSG [--repo REPO] PATH [PATH ...]
 
 1. Normalize each `PATH` to a path relative to `REPO` (so an absolute
    `/etc/nginx/gdoc2netcfg` becomes `nginx/gdoc2netcfg`). Reject a path that is
-   not under `REPO` (fail loud).
+   not under `REPO`, and reject a path that *is* `REPO` itself (relative `"."`,
+   which would stage everything) — both fail loud (exit non-zero).
 2. `git -C REPO add -- <rel-paths>`. On non-zero exit → print the git error to
    stderr, exit non-zero (hard fail).
 3. Check whether those paths have staged changes:
    `git -C REPO diff --cached --quiet -- <rel-paths>` (exit 0 = no changes).
    - No changes → print `etckeeper_commit: no changes under <paths>, skipping`
      to stderr, **exit 0**.
-4. `git -C REPO commit -m MSG`. On non-zero exit → print git output to stderr,
-   **exit non-zero** (hard fail). On success → print the new commit's short
-   hash + subject, exit 0.
+4. `git -C REPO commit -m MSG -- <rel-paths>` — a **path-scoped (partial)
+   commit**, so anything *unrelated* that happens to already be staged in the
+   index is NOT bundled into the deploy commit. On non-zero exit → print git
+   output to stderr, **exit non-zero** (hard fail).
+5. Reconcile etckeeper metadata: if `REPO/.etckeeper` exists, run
+   `git -C REPO add -- .etckeeper`. The partial commit committed the pre-commit
+   hook's regenerated `.etckeeper` to HEAD but restored the pre-commit index,
+   which would otherwise leave `.etckeeper` showing as uncommitted; re-staging
+   it (working tree == HEAD after the hook) leaves the repo clean. Then print
+   the new commit's short hash + subject and **exit 0**.
 
 **Notes:**
 - The git invocations use `subprocess.run` with explicit arg lists (no shell).
-- The etckeeper pre-commit hook fires on the real `git commit` and stages its
-  own `.etckeeper` metadata file; that is expected and desirable (it is the
-  only thing beyond the named paths that the commit captures, as verified by
-  the 2026-06-25 manual commits).
-- **Clean-index assumption:** `git commit` commits the whole index, so the
-  path-scoping holds only when nothing *unrelated* is already staged when the
-  helper runs. That is etckeeper's normal state — its own commits clear the
-  index, and operator work-in-progress is unstaged (working-tree) edits, not
-  staged ones. This is the exact condition verified by the 2026-06-25 manual
-  commits (welland's unstaged libvirt edits were not bundled). The helper does
-  not attempt to reset or stash a dirty index; it commits what `git add --
-  <paths>` plus the hook stage.
+- **Path-scoped commit — no clean-index assumption.** Because step 4 commits
+  with `-- <rel-paths>`, a dirty index (e.g. the operator's unrelated *staged*
+  `/etc` edits) cannot be swept into the deploy commit; the path-scoping is a
+  hard guarantee, verified by `test_does_not_bundle_pre_staged_unrelated`.
+- **etckeeper `.etckeeper` metadata.** The pre-commit hook regenerates and
+  `git add`s `.etckeeper` on every commit; the partial commit *does* capture it
+  in the deploy commit (verified), and step 5's reconcile leaves the repo clean
+  afterward — verified by `test_etckeeper_metadata_committed_and_clean`.
 - Assumes it runs as root (the deploy targets are "run with sudo"), so it can
   read/write `REPO/.git`. No privilege handling in the script itself.
 

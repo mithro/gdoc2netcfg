@@ -238,12 +238,12 @@ Deployed on two sites, both at `/opt/gdoc2netcfg/`:
 
 | Site | Host | IP scheme | IPv6 prefix | Generators |
 |------|------|-----------|-------------|------------|
-| welland | `ten64.welland.mithis.com` (10.1.10.1) | `10.1.X.X` | `2404:e80:a137:1XX::` | internal, external, nagios, nginx |
+| welland | `ten64.welland.mithis.com` (10.1.10.1) | `10.1.X.X` | `2404:e80:a137:1XX::` | internal, external, nginx, known_hosts (+ nagios, currently unused) |
 | monarto | `ten64.monarto.mithis.com` (10.2.10.1) | `10.2.X.X` | `2404:e80:a137:2XX::` | internal, external, nginx |
 
 Both sites share the same Google Spreadsheet. The spreadsheet uses `10.X.Y.Z` (literal `X` in the second octet) for devices that exist at multiple sites, and a "Site" column to restrict records to a specific site. The `site_octet` in each site's `gdoc2netcfg.toml` replaces the `X` placeholder.
 
-Both sites are externally accessible (each sets its own `public_ipv4`) and run split-horizon DNS (internal **and** external dnsmasq) plus an nginx reverse proxy. The differences: welland additionally enables the `nagios` and `letsencrypt` generators, whereas monarto omits `nagios` and manages its TLS certs with **certbot directly** (its `letsencrypt` generator is not enabled — see *Let's Encrypt* below).
+Both sites are externally accessible (each sets its own `public_ipv4`) and run split-horizon DNS (internal **and** external dnsmasq) plus an nginx reverse proxy. The differences: welland additionally enables the `letsencrypt` generator (per-host DNS-01 certs) and `known_hosts`, whereas monarto manages its TLS certs with **certbot directly** (its `letsencrypt` generator is not enabled — see *Let's Encrypt* below). Welland's config also lists the `nagios` generator, but it is **currently unused** — nothing consumes its `nagios-switches.cfg` output.
 
 ### Deploying code changes
 

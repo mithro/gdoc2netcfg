@@ -107,3 +107,23 @@ def test_rejects_repo_root_path(repo):
     rc = etckeeper_commit.main(["--repo", str(repo), "--message", "msg", str(repo)])
     assert rc != 0
     assert _count(repo) == before
+
+
+def test_etckeeper_metadata_committed_and_clean(repo):
+    # .etckeeper already tracked, like a real etckeeper /etc repo
+    (repo / ".etckeeper").write_text("metadata v0\n")
+    _git(repo, "add", "--", ".etckeeper")
+    _git(repo, "commit", "-q", "-m", "add etckeeper")
+    # etckeeper-style pre-commit hook: regenerate + stage .etckeeper
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\necho metadata-new > .etckeeper\ngit add .etckeeper\n")
+    hook.chmod(0o755)
+    (repo / "sub" / "a.conf").write_text("changed\n")
+    rc = etckeeper_commit.main(
+        ["--repo", str(repo), "--message", "deploy", str(repo / "sub")]
+    )
+    assert rc == 0
+    committed = _git(repo, "show", "--name-status", "--format=", "HEAD").stdout
+    assert ".etckeeper" in committed  # hook metadata captured in the deploy commit
+    status = _git(repo, "status", "--porcelain").stdout.strip()
+    assert status == "", f"expected clean repo, got: {status!r}"

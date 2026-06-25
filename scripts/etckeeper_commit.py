@@ -68,6 +68,14 @@ def main(argv=None):
         )
         return commit.returncode or 1
 
+    # The path-scoped (partial) commit committed the etckeeper pre-commit hook's
+    # regenerated .etckeeper metadata to HEAD, but restored the pre-commit index,
+    # which leaves .etckeeper showing as uncommitted. Re-stage it so the index
+    # matches HEAD (working tree == HEAD after the hook), leaving the repo clean.
+    # No-op when there is no etckeeper metadata file (e.g. a non-etckeeper repo).
+    if (repo / ".etckeeper").exists():
+        _git(repo, "add", "--", ".etckeeper")
+
     print(commit.stdout.strip())
     return 0
 

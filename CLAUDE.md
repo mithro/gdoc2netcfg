@@ -334,6 +334,13 @@ sudo cp external/*.conf /etc/dnsmasq.d/external/generated/
 sudo systemctl restart dnsmasq@external
 ```
 
+Each `make deploy-*` target also records its `/etc` change in etckeeper's git
+via `scripts/etckeeper_commit.py` — a **path-scoped** commit (only that
+target's `/etc` path, never `etckeeper commit`/`git add -A`, so unrelated
+in-flight `/etc` edits are not bundled) with message
+`gdoc2netcfg deploy <component>: <git-describe>`. A path with no changes is a
+no-op; a failed commit aborts the deploy.
+
 #### Cross-site DNS forwarding
 
 The two sites forward DNS queries to each other via WireGuard tunnel (`10.255.0.1` welland, `10.255.0.2` monarto). Each site's `02-cross-site.conf` contains `server=` directives to forward the other site's domains, reverse IPv4 zones (`X.10.in-addr.arpa`), and reverse IPv6 zones through the tunnel.

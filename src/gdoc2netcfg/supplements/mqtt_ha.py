@@ -27,6 +27,9 @@ import paho.mqtt.client as mqtt
 from gdoc2netcfg.utils.mqtt import node_id
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from types import FrameType
+
     from gdoc2netcfg.config import MqttBrokerConfig, PipelineConfig
     from gdoc2netcfg.models.host import Host, VirtualInterface
     from gdoc2netcfg.supplements.reachability import (
@@ -785,7 +788,7 @@ def _rebuild_hosts(config: PipelineConfig, previous_hosts, cycle: int):
 
 def _make_signal_handler(
     stop_event: threading.Event, caught: dict[str, int]
-):
+) -> Callable[[int, FrameType | None], None]:
     """Build an async-signal-safe SIGTERM/SIGINT handler.
 
     A signal handler runs on the main thread between bytecodes; doing
@@ -796,7 +799,7 @@ def _make_signal_handler(
     is printed by the main loop once it observes the event.
     """
 
-    def signal_handler(signum, frame):
+    def signal_handler(signum: int, frame: FrameType | None) -> None:
         caught["signum"] = signum
         stop_event.set()
 

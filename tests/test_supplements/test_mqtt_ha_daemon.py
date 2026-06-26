@@ -61,6 +61,7 @@ def test_signal_handler_sets_event_records_signum_silently(capsys):
 
 
 def test_aborted_cycle_does_not_save_or_publish():
+    import signal
     from unittest.mock import MagicMock, patch
 
     from gdoc2netcfg.supplements.mqtt_ha import run_daemon
@@ -88,7 +89,13 @@ def test_aborted_cycle_does_not_save_or_publish():
     ) as mock_publish:
         mock_client_cls.return_value = MagicMock()
         mock_opendb.return_value = MagicMock()
-        run_daemon(cfg, interval=300, verbose=False)
+        old_term = signal.getsignal(signal.SIGTERM)
+        old_int = signal.getsignal(signal.SIGINT)
+        try:
+            run_daemon(cfg, interval=300, verbose=False)
+        finally:
+            signal.signal(signal.SIGTERM, old_term)
+            signal.signal(signal.SIGINT, old_int)
 
     mock_save.assert_not_called()
     mock_publish.assert_not_called()

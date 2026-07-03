@@ -312,9 +312,16 @@ def scan_zigbee_site(
             devices_event.set()
             info_event.set()
             return
-        client.subscribe("zigbee2mqtt/bridge/devices")
+        # Subscribe to bridge/devices LAST.  Its retained payload is
+        # huge (hundreds of KB on a 60-device mesh) and while it drains,
+        # Mosquitto DROPS the retained deliveries for any subscription
+        # made after it on the same connection — observed on welland:
+        # devices arrived but bridge/info and every availability topic
+        # were silently missing (regardless of QoS).  The small topics
+        # drain instantly, so subscribing to them first is safe.
         client.subscribe("zigbee2mqtt/bridge/info")
         client.subscribe("zigbee2mqtt/+/availability")
+        client.subscribe("zigbee2mqtt/bridge/devices")
         if verbose:
             print(
                 f"  [{site_name}] Connected to {mqtt_config.host}:{mqtt_config.port}",

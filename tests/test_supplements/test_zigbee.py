@@ -160,3 +160,111 @@ class TestRaiseForZigbeeErrors:
     def test_errors_raise(self):
         with pytest.raises(ZigbeeScanError, match="1 zigbee site scan error"):
             raise_for_zigbee_errors(["welland: timeout"])
+
+
+class FakeMqttMessage:
+    def __init__(self, topic: str, payload: bytes):
+        self.topic = topic
+        self.payload = payload
+
+
+class FakeMqttClient:
+    """Minimal paho stand-in: records subscription order and delivers
+    retained messages per subscription, in subscription order — like a
+    broker whose retained deliveries all succeed."""
+
+    retained: dict[str, bytes] = {}
+    last_instance = None
+
+    def __init__(self, api_version):
+        self.subscriptions: list[str] = []
+        self.on_connect = None
+        self.on_message = None
+        FakeMqttClient.last_instance = self
+
+    def username_pw_set(self, user, password):
+        pass
+
+    def connect(self, host, port, keepalive=30):
+        pass
+
+    def loop_start(self):
+        self.on_connect(self, None, None, 0, None)
+        for pattern in list(self.subscriptions):
+            for topic, payload in self.retained.items():
+                if self._matches(pattern, topic):
+                    self.on_message(self, None, FakeMqttMessage(topic, payload))
+
+    @staticmethod
+    def _matches(pattern: str, topic: str) -> bool:
+        p_parts = pattern.split("/")
+        t_parts = topic.split("/")
+        if len(p_parts) != len(t_parts):
+            return False
+        return all(p in ("+", t) for p, t in zip(p_parts, t_parts))
+
+    def subscribe(self, topic, qos=0):
+        self.subscriptions.append(topic)
+
+    def publish(self, topic, payload):
+        pass
+
+    def loop_stop(self):
+        pass
+
+    def disconnect(self):
+        pass
+
+
+class TestScanZigbeeSiteSubscribeOrder:
+    """bridge/devices must be subscribed LAST: its huge retained payload
+    chokes the connection, and Mosquitto drops retained deliveries for
+    any subscription made after it (observed on welland — devices
+    arrived, bridge/info and all availability silently missing)."""
+
+    def _run_scan(self, monkeypatch):
+        import json as _json
+
+        import paho.mqtt.client as paho_mqtt
+
+        FakeMqttClient.retained = {
+            "zigbee2mqtt/bridge/info": _json.dumps({
+                "version": "2.9.2",
+                "coordinator": {"ieee_address": "0x00aa", "type": "EmberZNet"},
+                "network": {"channel": 11, "pan_id": 0x189E},
+            }).encode(),
+            "zigbee2mqtt/kitchen_temp/availability": _json.dumps(
+                {"state": "online"}
+            ).encode(),
+            "zigbee2mqtt/bridge/devices": _json.dumps([
+                {
+                    "type": "EndDevice",
+                    "ieee_address": "0x01",
+                    "friendly_name": "kitchen_temp",
+                },
+            ]).encode(),
+        }
+        monkeypatch.setattr(paho_mqtt, "Client", FakeMqttClient)
+        monkeypatch.setattr(
+            zigbee, "_request_networkmap", lambda *a, **kw: None,
+        )
+        devices, bridge = zigbee.scan_zigbee_site(
+            "welland", _MQTT, availability_collect_s=0.0,
+        )
+        return devices, bridge, FakeMqttClient.last_instance
+
+    def test_devices_subscription_is_last(self, monkeypatch):
+        _devices, _bridge, client = self._run_scan(monkeypatch)
+        assert client.subscriptions[-1] == "zigbee2mqtt/bridge/devices"
+        assert set(client.subscriptions) == {
+            "zigbee2mqtt/bridge/info",
+            "zigbee2mqtt/+/availability",
+            "zigbee2mqtt/bridge/devices",
+        }
+
+    def test_bridge_info_and_availability_are_captured(self, monkeypatch):
+        devices, bridge, _client = self._run_scan(monkeypatch)
+        assert bridge is not None
+        assert bridge.z2m_version == "2.9.2"
+        assert len(devices) == 1
+        assert devices[0].availability == "online"

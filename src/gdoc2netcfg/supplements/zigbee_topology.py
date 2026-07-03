@@ -358,7 +358,12 @@ def _walk(
 
 def _format_node(device: ZigbeeDevice, use_color: bool) -> str:
     """Format one device as
-    ``<marker> [<role>] <signal bars> <name> (<model>) "<desc>"``."""
+    ``<marker> [<role>] <signal bars> <name> <desc> (<model>)``.
+
+    The name is padded to a minimum of 3 characters so short names
+    (Z7) and long names (Z17) start their description/model at the
+    same column.
+    """
     if device.availability == "online":
         marker = colorize("●", _ANSI_ONLINE, use_color)
     elif device.availability == "offline":
@@ -373,20 +378,19 @@ def _format_node(device: ZigbeeDevice, use_color: bool) -> str:
         # No reading (e.g. no networkmap parent): blank spacer keeps
         # sibling names aligned.
         bar = " " * len(_LQI_BARS)
-    parts = [f"{marker} [{role}] {bar} {device.friendly_name}"]
+    parts = [f"{marker} [{role}] {bar} {device.friendly_name:<3}"]
 
+    if device.description:
+        # Z2M descriptions can span multiple lines; render the newline
+        # as a visible ↵ so the tree layout stays one line per device.
+        parts.append("↵".join(
+            line.strip() for line in device.description.splitlines()
+            if line.strip()
+        ))
     model = device.model or device.model_id
     if model:
         parts.append(f"({model})")
-    if device.description:
-        # Z2M descriptions can span multiple lines; a raw newline would
-        # break the tree layout, so collapse to a single line.
-        description = " / ".join(
-            line.strip() for line in device.description.splitlines()
-            if line.strip()
-        )
-        parts.append(f'"{description}"')
-    return " ".join(parts)
+    return " ".join(parts).rstrip()
 
 
 def _format_lqi(lqi: int, use_color: bool) -> str:

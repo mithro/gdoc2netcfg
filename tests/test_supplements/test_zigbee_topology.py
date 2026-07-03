@@ -67,11 +67,11 @@ def test_coord_rooted_tree() -> None:
     assert "Devices: 3" in out
     # Coordinator-rooted shape
     assert "Coordinator" in out
-    assert "├─ ● [E]      B1 (TS0601)" in out
-    assert "└─ ● [R]      Z1 (TS0601)" in out
+    assert "├─ ● [E]      B1  (TS0601)" in out
+    assert "└─ ● [R]      Z1  (TS0601)" in out
     # Nested under Z1 — Z1 is the *last* child of Coordinator so the
     # continuation prefix is three spaces (no vertical bar).
-    assert "   └─ ● [E]      T2 (TS0601)" in out
+    assert "   └─ ● [E]      T2  (TS0601)" in out
     # No orphan / hidden footers
     assert "Orphan sub-trees" not in out
     assert "no known parent" not in out
@@ -90,7 +90,7 @@ def test_offline_orphan_is_excluded_but_offline_with_parent_is_kept() -> None:
     assert "B1" in out
     assert "B2" in out
     assert "● [E]      B2" not in out           # B2 is offline → open circle
-    assert "○ [E]      B2 (TS0601)" in out
+    assert "○ [E]      B2  (TS0601)" in out
     assert "B3" not in out
     assert "B4" not in out
     assert "(2 offline+orphan device(s) hidden)" in out
@@ -108,10 +108,10 @@ def test_orphan_router_with_children_renders_as_subtree() -> None:
     out = generate_zigbee_text_tree(devices, _bridge(), "welland")
     assert "Orphan sub-trees (router with no known uplink):" in out
     # Z8 is the orphan root, listed indented (no branch char)
-    assert "  ● [R]      Z8 (TS0601)" in out
+    assert "  ● [R]      Z8  (TS0601)" in out
     # B15 hangs off Z8, Z9 also hangs off Z8 with a deeper child
     assert "  ├─ ● [E]      B15 (TS0601)" in out or "  └─ ● [E]      B15 (TS0601)" in out
-    assert "  └─ ● [R]      Z9 (TS0601)" in out
+    assert "  └─ ● [R]      Z9  (TS0601)" in out
     # Coord-rooted side still rendered
     assert "└─ ● [E]      Coord-Child" in out
 
@@ -129,7 +129,7 @@ def test_true_orphan_listed_separately() -> None:
     assert "Orphan sub-trees" not in out
 
 
-def test_description_is_quoted_when_present() -> None:
+def test_description_shown_before_model() -> None:
     devices = [
         _device(
             "T1",
@@ -139,7 +139,19 @@ def test_description_is_quoted_when_present() -> None:
         ),
     ]
     out = generate_zigbee_text_tree(devices, _bridge(), "welland")
-    assert '● [E]      T1 (SNZB-02D) "Lounge temp"' in out
+    assert "● [E]      T1  Lounge temp (SNZB-02D)" in out
+
+
+def test_short_names_pad_to_three_characters() -> None:
+    """Z7 and Z17 occupy the same width so their models align."""
+    devices = [
+        _device("Z7", parent="Coordinator", device_type="Router"),
+        _device("Z17", parent="Coordinator", device_type="Router"),
+    ]
+    out = generate_zigbee_text_tree(devices, _bridge(), "welland")
+    z7_line = next(line for line in out.splitlines() if " Z7 " in line)
+    z17_line = next(line for line in out.splitlines() if " Z17 " in line)
+    assert z7_line.index("(TS0601)") == z17_line.index("(TS0601)")
 
 
 def test_multiline_description_is_collapsed() -> None:
@@ -154,7 +166,7 @@ def test_multiline_description_is_collapsed() -> None:
         ),
     ]
     out = generate_zigbee_text_tree(devices, _bridge(), "welland")
-    assert '"rpi4-ups / Back Shed, Soundproof Rack"' in out
+    assert "rpi4-ups↵Back Shed, Soundproof Rack (E22x4)" in out
     # No output line may be a bare description fragment.
     assert "\nBack Shed" not in out
 
@@ -171,13 +183,13 @@ def test_link_quality_bar_levels() -> None:
         _device("B5", parent="Coordinator"),  # link_quality=None
     ]
     out = generate_zigbee_text_tree(devices, _bridge(), "welland")
-    assert "● [E] ▂▄▆█ B1 (TS0601)" in out
-    assert "● [E] ▂▄▆_ B2 (TS0601)" in out
-    assert "● [E] ▂▄__ B3 (TS0601)" in out
-    assert "● [E] ▂___ B4 (TS0601)" in out
+    assert "● [E] ▂▄▆█ B1  (TS0601)" in out
+    assert "● [E] ▂▄▆_ B2  (TS0601)" in out
+    assert "● [E] ▂▄__ B3  (TS0601)" in out
+    assert "● [E] ▂___ B4  (TS0601)" in out
     # No bar at all when the scan captured no reading.
     b5_line = next(line for line in out.splitlines() if "B5" in line)
-    assert "● [E]      B5 (TS0601)" in b5_line
+    assert "● [E]      B5  (TS0601)" in b5_line
 
 
 def test_link_quality_colour_grading() -> None:

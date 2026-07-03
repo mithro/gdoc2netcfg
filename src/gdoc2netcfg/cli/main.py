@@ -2493,32 +2493,44 @@ def cmd_zigbee_topology(args: argparse.Namespace) -> int:
     """Generate Zigbee mesh topology diagrams with fresh networkmap data."""
     config = _load_config(args)
 
-    from gdoc2netcfg.supplements.zigbee import scan_all_sites
-    from gdoc2netcfg.supplements.zigbee_topology import generate_zigbee_topology, render_dot
-
-    if not config.zigbee.sites:
+    if not config.zigbee.enabled:
         print(
-            "Error: No zigbee sites configured. Add [[zigbee.sites]] entries "
-            "to gdoc2netcfg.toml",
+            "Error: No [zigbee] section configured in gdoc2netcfg.toml",
             file=sys.stderr,
         )
         return 1
 
-    cache_dir = Path(config.cache.directory)
+    from gdoc2netcfg.supplements.zigbee import (
+        ZigbeeBridgeInfo,
+        ZigbeeDevice,
+        raise_for_zigbee_errors,
+        scan_zigbee,
+    )
+    from gdoc2netcfg.supplements.zigbee_topology import generate_zigbee_topology, render_dot
+
     output_dir = Path(getattr(args, "output_dir", None) or ".")
     fmt = getattr(args, "format", "svg")
 
     # Always scan fresh to get up-to-date networkmap parent relationships
     try:
-        results = scan_all_sites(
-            config.zigbee, cache_dir, force=True, verbose=True,
+        zigbee_data, errors = scan_zigbee(
+            config.site.name,
+            config.homeassistant.mqtt,
+            _load_latest_from_db(config, "load_latest_zigbee"),
+            verbose=True,
         )
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
+    # Persist the fresh scan so other commands see the same data.
+    if zigbee_data:
+        _save_to_discovery_db(config, "zigbee", "save_zigbee", zigbee_data)
 
     wrote_any = False
-    for site_name, (devices, bridge) in results.items():
+    for site_name, doc in sorted(zigbee_data.items()):
+        bridge = ZigbeeBridgeInfo(**doc["bridge"]) if doc["bridge"] else None
+        devices = [ZigbeeDevice(**d) for d in doc["devices"].values()]
+
         dot = generate_zigbee_topology(devices, bridge, site_name)
 
         out_path = output_dir / f"zigbee_{site_name}.{fmt}"
@@ -2533,6 +2545,7 @@ def cmd_zigbee_topology(args: argparse.Namespace) -> int:
         print(f"  Wrote {out_path}")
         wrote_any = True
 
+    raise_for_zigbee_errors(errors)
     if not wrote_any:
         return 1
     return 0

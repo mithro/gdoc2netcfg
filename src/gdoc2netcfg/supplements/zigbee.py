@@ -140,7 +140,7 @@ def _parse_bridge_info(site: str, info: dict) -> ZigbeeBridgeInfo:
 
 
 def _request_networkmap(
-    mqtt_config: ZigbeeSiteConfig,
+    mqtt_config: MqttBrokerConfig,
     site_name: str,
     timeout: float = 120.0,
     verbose: bool = False,
@@ -183,10 +183,10 @@ def _request_networkmap(
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     client.on_connect = on_connect
     client.on_message = on_message
-    if mqtt_config.mqtt_user:
-        client.username_pw_set(mqtt_config.mqtt_user, mqtt_config.mqtt_password)
+    if mqtt_config.user:
+        client.username_pw_set(mqtt_config.user, mqtt_config.password)
 
-    client.connect(mqtt_config.mqtt_host, mqtt_config.mqtt_port, keepalive=30)
+    client.connect(mqtt_config.host, mqtt_config.port, keepalive=30)
     client.loop_start()
 
     try:

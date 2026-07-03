@@ -22,11 +22,12 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
-import re
 import sqlite3
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from gdoc2netcfg.utils.sort import natural_sort_key as _natural_sort_key
 
 if TYPE_CHECKING:
     from gdoc2netcfg.config import PipelineConfig
@@ -1514,14 +1515,6 @@ def _is_physical_port(port_id: int, port_name: str | None) -> bool:
             return False
     # VLAN SVIs on Cisco use ifIndex >= 100000
     return port_id < 100000
-
-
-def _natural_sort_key(name: str) -> list:
-    """Sort key for names with embedded numbers (gi2 before gi10)."""
-    return [
-        int(part) if part.isdigit() else part.lower()
-        for part in re.split(r"(\d+)", name)
-    ]
 
 
 def _print_switch_data(data: SwitchData) -> None:

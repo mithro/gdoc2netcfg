@@ -34,6 +34,10 @@ _ANSI_HEADER = "1"    # bold
 # Zigbee LQI is 0-255; Z2M itself calls <30 "poor" and >100 "good".
 _LQI_GOOD = 100
 _LQI_POOR = 30
+_LQI_STRONG = 180
+
+# Signal-strength bar: one ascending segment per quality level.
+_LQI_BARS = "▂▄▆█"
 
 
 def render_dot(dot_source: str, output_path: Path, fmt: str = "svg") -> None:
@@ -354,7 +358,7 @@ def _walk(
 
 def _format_node(device: ZigbeeDevice, use_color: bool) -> str:
     """Format one device as
-    ``<marker> [<role>] <name> (<model>) "<desc>" lqi=NN``."""
+    ``<marker> [<role>] <name> (<model>) "<desc>" <signal bars>``."""
     if device.availability == "online":
         marker = colorize("●", _ANSI_ONLINE, use_color)
     elif device.availability == "offline":
@@ -382,11 +386,34 @@ def _format_node(device: ZigbeeDevice, use_color: bool) -> str:
 
 
 def _format_lqi(lqi: int, use_color: bool) -> str:
-    """Format a link quality indicator, colour-graded by signal strength."""
+    """Format link quality as a 4-segment signal-strength bar.
+
+    Lit segments are colour-graded by Z2M's thresholds (green good,
+    yellow workable, red poor); unlit segments render dim grey on a
+    colour terminal and as ``·`` placeholders on plain output, so the
+    bar is always exactly 4 columns wide.
+    """
     if lqi >= _LQI_GOOD:
         code = _ANSI_ONLINE   # green: good signal
     elif lqi >= _LQI_POOR:
         code = "33"           # yellow: workable signal
     else:
         code = _ANSI_OFFLINE  # red: poor signal
-    return colorize(f"lqi={lqi}", code, use_color)
+
+    if lqi >= _LQI_STRONG:
+        level = 4
+    elif lqi >= _LQI_GOOD:
+        level = 3
+    elif lqi >= _LQI_POOR:
+        level = 2
+    else:
+        level = 1
+
+    lit = _LQI_BARS[:level]
+    unlit = _LQI_BARS[level:]
+    if use_color:
+        out = colorize(lit, code, True)
+        if unlit:
+            out += colorize(unlit, _ANSI_UNKNOWN, True)
+        return out
+    return lit + "·" * len(unlit)

@@ -159,15 +159,24 @@ def test_multiline_description_is_collapsed() -> None:
     assert "\nBack Shed" not in out
 
 
-def test_link_quality_shown_when_present() -> None:
+def test_link_quality_bar_levels() -> None:
+    """The signal bar has one lit segment per quality level, padded with
+    '·' to a fixed 4-column width on plain output."""
     devices = [
-        _device("B1", parent="Coordinator", link_quality=120),
-        _device("B2", parent="Coordinator"),  # link_quality=None
+        _device("B1", parent="Coordinator", link_quality=200),  # strong
+        _device("B2", parent="Coordinator", link_quality=120),  # good
+        _device("B3", parent="Coordinator", link_quality=50),   # workable
+        _device("B4", parent="Coordinator", link_quality=10),   # poor
+        _device("B5", parent="Coordinator"),  # link_quality=None
     ]
     out = generate_zigbee_text_tree(devices, _bridge(), "welland")
-    assert "● [E] B1 (TS0601) lqi=120" in out
-    assert "● [E] B2 (TS0601)\n" in out or out.endswith("● [E] B2 (TS0601)")
-    assert "lqi=None" not in out
+    assert "● [E] B1 (TS0601) ▂▄▆█" in out
+    assert "● [E] B2 (TS0601) ▂▄▆·" in out
+    assert "● [E] B3 (TS0601) ▂▄··" in out
+    assert "● [E] B4 (TS0601) ▂···" in out
+    # No bar at all when the scan captured no reading.
+    b5_line = next(line for line in out.splitlines() if "B5" in line)
+    assert b5_line.endswith("● [E] B5 (TS0601)")
 
 
 def test_link_quality_colour_grading() -> None:
@@ -179,9 +188,10 @@ def test_link_quality_colour_grading() -> None:
     out = generate_zigbee_text_tree(
         devices, _bridge(), "welland", use_color=True,
     )
-    assert "\033[32mlqi=150\033[0m" in out  # green
-    assert "\033[33mlqi=50\033[0m" in out   # yellow
-    assert "\033[31mlqi=10\033[0m" in out   # red
+    # Lit segments graded green/yellow/red; unlit segments dim grey.
+    assert "\033[32m▂▄▆\033[0m\033[90m█\033[0m" in out   # good: 3 lit
+    assert "\033[33m▂▄\033[0m\033[90m▆█\033[0m" in out   # workable: 2 lit
+    assert "\033[31m▂\033[0m\033[90m▄▆█\033[0m" in out   # poor: 1 lit
 
 
 def test_children_use_natural_sort() -> None:

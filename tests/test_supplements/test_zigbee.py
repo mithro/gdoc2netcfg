@@ -268,3 +268,123 @@ class TestScanZigbeeSiteSubscribeOrder:
         assert bridge.z2m_version == "2.9.2"
         assert len(devices) == 1
         assert devices[0].availability == "online"
+
+    def test_networkmap_supplies_parent_and_link_quality(self, monkeypatch):
+        """bridge/devices no longer reports link_quality in Z2M 2.x —
+        the parent link's LQI from the networkmap fills it."""
+        import json as _json
+
+        import paho.mqtt.client as paho_mqtt
+
+        FakeMqttClient.retained = {
+            "zigbee2mqtt/bridge/devices": _json.dumps([
+                {
+                    "type": "EndDevice",
+                    "ieee_address": "0x01",
+                    "friendly_name": "kitchen_temp",
+                },
+            ]).encode(),
+        }
+        monkeypatch.setattr(paho_mqtt, "Client", FakeMqttClient)
+        monkeypatch.setattr(
+            zigbee, "_request_networkmap",
+            lambda *a, **kw: {
+                "data": {
+                    "value": {
+                        "nodes": [
+                            {"ieeeAddr": "0xc0", "friendlyName": "Coordinator"},
+                            {"ieeeAddr": "0x01", "friendlyName": "kitchen_temp"},
+                        ],
+                        "links": [
+                            {
+                                "relationship": 1,
+                                "sourceIeeeAddr": "0x01",
+                                "targetIeeeAddr": "0xc0",
+                                "linkquality": 237,
+                            },
+                        ],
+                    },
+                },
+            },
+        )
+        devices, _bridge = zigbee.scan_zigbee_site(
+            "welland", _MQTT, availability_collect_s=0.0,
+        )
+        assert devices[0].connected_via == "Coordinator"
+        assert devices[0].link_quality == 237
+
+
+class TestBuildParentMap:
+    """Parent + link-LQI extraction from the raw Z2M networkmap."""
+
+    def _networkmap(self, links: list) -> dict:
+        return {
+            "data": {
+                "value": {
+                    "nodes": [
+                        {"ieeeAddr": "0xc0", "friendlyName": "Coordinator"},
+                        {"ieeeAddr": "0x01", "friendlyName": "Z1"},
+                        {"ieeeAddr": "0x02", "friendlyName": "T1"},
+                    ],
+                    "links": links,
+                },
+            },
+        }
+
+    def test_is_child_link_maps_parent_and_lqi(self):
+        nm = self._networkmap([
+            {
+                "relationship": 1,
+                "sourceIeeeAddr": "0x02",
+                "targetIeeeAddr": "0x01",
+                "linkquality": 237,
+            },
+        ])
+        assert zigbee._build_parent_map(nm) == {"0x02": ("Z1", 237)}
+
+    def test_is_parent_link_fills_gaps_only(self):
+        nm = self._networkmap([
+            {
+                "relationship": 1,
+                "sourceIeeeAddr": "0x02",
+                "targetIeeeAddr": "0xc0",
+                "linkquality": 200,
+            },
+            {   # rel=0: source parent of target — must not override rel=1
+                "relationship": 0,
+                "sourceIeeeAddr": "0x01",
+                "targetIeeeAddr": "0x02",
+                "linkquality": 40,
+            },
+            {   # rel=0 for a device with no rel=1 link — fills the gap
+                "relationship": 0,
+                "sourceIeeeAddr": "0xc0",
+                "targetIeeeAddr": "0x01",
+                "linkquality": 150,
+            },
+        ])
+        assert zigbee._build_parent_map(nm) == {
+            "0x02": ("Coordinator", 200),
+            "0x01": ("Coordinator", 150),
+        }
+
+    def test_sibling_links_ignored(self):
+        nm = self._networkmap([
+            {
+                "relationship": 2,
+                "sourceIeeeAddr": "0x01",
+                "targetIeeeAddr": "0x02",
+                "linkquality": 99,
+            },
+        ])
+        assert zigbee._build_parent_map(nm) == {}
+
+    def test_missing_linkquality_is_none(self):
+        nm = self._networkmap([
+            {
+                "relationship": 1,
+                "sourceIeeeAddr": "0x02",
+                "targetIeeeAddr": "0x01",
+            },
+        ])
+        assert zigbee._build_parent_map(nm) == {"0x02": ("Z1", None)}

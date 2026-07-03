@@ -227,8 +227,8 @@ def _request_networkmap(
     return result.get("data")
 
 
-def _build_parent_map(networkmap: dict) -> dict[str, str]:
-    """Build a mapping of ieee_address -> parent friendly_name from a networkmap.
+def _build_parent_map(networkmap: dict) -> dict[str, tuple[str, int | None]]:
+    """Map ieee_address -> (parent friendly_name, link LQI) from a networkmap.
 
     Uses Zigbee neighbor table relationship types:
       - relationship=1 (IS_CHILD): source's parent is target — most reliable
@@ -236,6 +236,10 @@ def _build_parent_map(networkmap: dict) -> dict[str, str]:
 
     Relationship=2 (IS_SIBLING) is ignored as it only indicates neighbor
     awareness, not routing.
+
+    The LQI is the quality of the child<->parent link itself (raw
+    networkmap ``linkquality`` field), which is the meaningful signal
+    number for a routing topology.
     """
     data = networkmap.get("data", {})
     value = data.get("value", {})
@@ -247,8 +251,8 @@ def _build_parent_map(networkmap: dict) -> dict[str, str]:
     for node in nodes:
         ieee_to_name[node["ieeeAddr"]] = node.get("friendlyName", node["ieeeAddr"])
 
-    # Build parent map: device_ieee -> parent_friendly_name
-    parent_map: dict[str, str] = {}
+    # Build parent map: device_ieee -> (parent_friendly_name, link_lqi)
+    parent_map: dict[str, tuple[str, int | None]] = {}
 
     # Pass 1: rel=1 links (source is child of target) — most reliable
     for link in links:
@@ -257,7 +261,10 @@ def _build_parent_map(networkmap: dict) -> dict[str, str]:
         source_ieee = link.get("sourceIeeeAddr") or link.get("source", {}).get("ieeeAddr", "")
         target_ieee = link.get("targetIeeeAddr") or link.get("target", {}).get("ieeeAddr", "")
         if source_ieee and target_ieee:
-            parent_map[source_ieee] = ieee_to_name.get(target_ieee, target_ieee)
+            parent_map[source_ieee] = (
+                ieee_to_name.get(target_ieee, target_ieee),
+                link.get("linkquality"),
+            )
 
     # Pass 2: rel=0 links (source is parent of target) — fill gaps only
     for link in links:
@@ -266,7 +273,10 @@ def _build_parent_map(networkmap: dict) -> dict[str, str]:
         source_ieee = link.get("sourceIeeeAddr") or link.get("source", {}).get("ieeeAddr", "")
         target_ieee = link.get("targetIeeeAddr") or link.get("target", {}).get("ieeeAddr", "")
         if source_ieee and target_ieee and target_ieee not in parent_map:
-            parent_map[target_ieee] = ieee_to_name.get(source_ieee, source_ieee)
+            parent_map[target_ieee] = (
+                ieee_to_name.get(source_ieee, source_ieee),
+                link.get("linkquality"),
+            )
 
     return parent_map
 
@@ -425,10 +435,16 @@ def scan_zigbee_site(
     )
     if networkmap is not None:
         parent_map = _build_parent_map(networkmap)
-        devices = [
-            replace(d, connected_via=parent_map.get(d.ieee_address, ""))
-            for d in devices
-        ]
+        updated = []
+        for d in devices:
+            parent, link_lqi = parent_map.get(d.ieee_address, ("", None))
+            # Z2M 2.x bridge/devices no longer reports link_quality, so
+            # the parent link's LQI from the networkmap is usually the
+            # only signal reading available.  A device-reported value
+            # still wins when present.
+            lqi = d.link_quality if d.link_quality is not None else link_lqi
+            updated.append(replace(d, connected_via=parent, link_quality=lqi))
+        devices = updated
         assigned = sum(1 for d in devices if d.connected_via)
         if verbose:
             print(

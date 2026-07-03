@@ -60,6 +60,9 @@ def _device(site: str, ieee: str, **overrides) -> dict:
         "link_quality": 80,
         "availability": "online",
         "network_address": 1234,
+        "description": "",
+        "definition_description": "",
+        "connected_via": "",
     }
     d.update(overrides)
     return d

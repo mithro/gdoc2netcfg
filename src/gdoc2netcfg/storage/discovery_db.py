@@ -204,6 +204,9 @@ _ZIGBEE_DEVICE_FIELDS = (
     ("link_quality", (int, type(None))),
     ("availability", str),
     ("network_address", (int, type(None))),
+    ("description", str),             # user-set description in Z2M
+    ("definition_description", str),  # Z2M model description
+    ("connected_via", str),           # parent friendly_name from networkmap
 )
 
 _ZIGBEE_BRIDGE_FIELDS = (
@@ -673,6 +676,26 @@ def _validate_zigbee_doc(site: str, doc: dict) -> None:
         raise ValueError(f"zigbee[{site}].devices: expected a dict")
 
 
+def _upgrade_v9_zigbee_networkmap(conn: sqlite3.Connection) -> None:
+    """Schema v9: zigbee devices gained description, definition
+    description, and networkmap-based connected_via.
+
+    Pre-v9 rows default the new columns to "" (the ZigbeeDevice
+    dataclass defaults).  Column-existence is checked first so the
+    step is idempotent — fresh schemas already carry the columns via
+    _ZIGBEE_DEVICE_FIELDS.
+    """
+    existing = {
+        row[1] for row in conn.execute("PRAGMA table_info(zigbee_devices)")
+    }
+    for column in ("description", "definition_description", "connected_via"):
+        if column not in existing:
+            conn.execute(
+                f"ALTER TABLE zigbee_devices ADD COLUMN "  # noqa: S608
+                f"{column} TEXT NOT NULL DEFAULT ''"
+            )
+
+
 def _upgrade_v6_port_aliases(conn: sqlite3.Connection) -> None:
     """Schema v6: bridge scans gained per-port ifAlias capture.
 
@@ -755,13 +778,16 @@ class DiscoveryDB(BaseDatabase):
     # v7: nullable traffic counters; vendor PoE power, box sensors,
     #     bridge MAC, LLDP port descriptions.
     # v8: tasmota_devices.is_tombstone (sheet-MAC identity tombstones).
-    SCHEMA_VERSION = 8
+    # v9: zigbee_devices description, definition_description,
+    #     connected_via (networkmap parent routing).
+    SCHEMA_VERSION = 9
     SCHEMA_UPGRADES = {
         5: ["ALTER TABLE tasmota_devices ADD COLUMN mqtt_count INTEGER"],
         6: [_upgrade_v6_port_aliases],
         7: [_upgrade_v7_extended_bridge_data],
         8: ["ALTER TABLE tasmota_devices "
             "ADD COLUMN is_tombstone INTEGER NOT NULL DEFAULT 0"],
+        9: [_upgrade_v9_zigbee_networkmap],
     }
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:

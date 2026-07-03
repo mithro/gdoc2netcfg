@@ -281,6 +281,36 @@ def _build_parent_map(networkmap: dict) -> dict[str, tuple[str, int | None]]:
     return parent_map
 
 
+def _validate_parents(site_name: str, devices: list[ZigbeeDevice]) -> None:
+    """Reject parent links that point at a non-routing device.
+
+    Only Routers and the Coordinator can have children in a Zigbee
+    mesh; a networkmap link claiming an EndDevice as someone's parent
+    is corrupt neighbor-table data.  Fail loud rather than render a
+    topology that cannot exist.
+    """
+    by_name = {d.friendly_name: d for d in devices}
+    violations = []
+    for d in devices:
+        if not d.connected_via or d.connected_via == "Coordinator":
+            continue
+        parent = by_name.get(d.connected_via)
+        # A parent name not in the device list (e.g. a renamed or
+        # removed device) has no type to check — leave it be; the
+        # topology renderer shows it as "(no record)".
+        if parent is not None and parent.device_type != "Router":
+            violations.append(
+                f"{d.friendly_name} claims parent {parent.friendly_name} "
+                f"which is a {parent.device_type}, not a Router"
+            )
+    if violations:
+        raise RuntimeError(
+            f"[{site_name}] Networkmap reports non-router parent(s) — "
+            "corrupt neighbor-table data:\n"
+            + "\n".join(f"  - {v}" for v in violations)
+        )
+
+
 def scan_zigbee_site(
     site_name: str,
     mqtt_config: MqttBrokerConfig,
@@ -445,6 +475,7 @@ def scan_zigbee_site(
             lqi = d.link_quality if d.link_quality is not None else link_lqi
             updated.append(replace(d, connected_via=parent, link_quality=lqi))
         devices = updated
+        _validate_parents(site_name, devices)
         assigned = sum(1 for d in devices if d.connected_via)
         if verbose:
             print(

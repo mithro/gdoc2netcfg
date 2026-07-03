@@ -388,3 +388,64 @@ class TestBuildParentMap:
             },
         ])
         assert zigbee._build_parent_map(nm) == {"0x02": ("Z1", None)}
+
+
+class TestValidateParents:
+    """EndDevices can only hang under Routers or the Coordinator."""
+
+    def test_router_and_coordinator_parents_pass(self):
+        devices = [
+            _device("welland", "0x01", friendly_name="Z1",
+                    device_type="Router", connected_via="Coordinator"),
+            _device("welland", "0x02", friendly_name="T1",
+                    connected_via="Z1"),
+        ]
+        zigbee._validate_parents("welland", devices)  # must not raise
+
+    def test_end_device_parent_fails_loud(self):
+        devices = [
+            _device("welland", "0x01", friendly_name="T1",
+                    connected_via="Coordinator"),
+            _device("welland", "0x02", friendly_name="T2",
+                    connected_via="T1"),
+        ]
+        with pytest.raises(RuntimeError, match=(
+            r"T2 claims parent T1 which is a EndDevice"
+        )):
+            zigbee._validate_parents("welland", devices)
+
+    def test_unknown_parent_name_is_left_alone(self):
+        devices = [
+            _device("welland", "0x01", friendly_name="T1",
+                    connected_via="RenamedRouter"),
+        ]
+        zigbee._validate_parents("welland", devices)  # must not raise
+
+    def test_all_violations_reported(self):
+        devices = [
+            _device("welland", "0x01", friendly_name="T1"),
+            _device("welland", "0x02", friendly_name="T2",
+                    connected_via="T1"),
+            _device("welland", "0x03", friendly_name="T3",
+                    connected_via="T1"),
+        ]
+        with pytest.raises(RuntimeError) as excinfo:
+            zigbee._validate_parents("welland", devices)
+        message = str(excinfo.value)
+        assert "T2 claims parent T1" in message
+        assert "T3 claims parent T1" in message
+
+    def test_scan_collects_corrupt_networkmap_as_site_error(self, monkeypatch):
+        """The validation error keeps the baseline and surfaces through
+        scan_zigbee's per-site error contract."""
+        def fake_scan(name, cfg, verbose=False):
+            raise RuntimeError(
+                f"[{name}] Networkmap reports non-router parent(s)"
+            )
+
+        monkeypatch.setattr(zigbee, "scan_zigbee_site", fake_scan)
+        baseline = {"welland": _site_doc("welland", _device("welland", "0x01"))}
+        data, errors = scan_zigbee("welland", _MQTT, baseline)
+        assert data == baseline  # baseline document kept
+        assert len(errors) == 1
+        assert "non-router parent" in errors[0]

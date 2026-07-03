@@ -141,6 +141,23 @@ def test_description_is_quoted_when_present() -> None:
     assert '● [E] T1 (SNZB-02D) "Lounge temp"' in out
 
 
+def test_multiline_description_is_collapsed() -> None:
+    """A raw newline in a Z2M description must not break the tree layout."""
+    devices = [
+        _device(
+            "Z7",
+            parent="Coordinator",
+            device_type="Router",
+            model="E22x4",
+            description="rpi4-ups\nBack Shed, Soundproof Rack",
+        ),
+    ]
+    out = generate_zigbee_text_tree(devices, _bridge(), "welland")
+    assert '"rpi4-ups / Back Shed, Soundproof Rack"' in out
+    # No output line may be a bare description fragment.
+    assert "\nBack Shed" not in out
+
+
 def test_color_off_emits_no_ansi_escapes() -> None:
     devices = [_device("B1", parent="Coordinator")]
     out = generate_zigbee_text_tree(devices, _bridge(), "welland", use_color=False)

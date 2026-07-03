@@ -357,5 +357,11 @@ def _format_node(device: ZigbeeDevice, use_color: bool) -> str:
     if model:
         parts.append(f"({model})")
     if device.description:
-        parts.append(f'"{device.description}"')
+        # Z2M descriptions can span multiple lines; a raw newline would
+        # break the tree layout, so collapse to a single line.
+        description = " / ".join(
+            line.strip() for line in device.description.splitlines()
+            if line.strip()
+        )
+        parts.append(f'"{description}"')
     return " ".join(parts)

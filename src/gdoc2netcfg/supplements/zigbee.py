@@ -142,7 +142,7 @@ def _parse_bridge_info(site: str, info: dict) -> ZigbeeBridgeInfo:
 def _request_networkmap(
     mqtt_config: MqttBrokerConfig,
     site_name: str,
-    timeout: float = 120.0,
+    timeout: float = 600.0,
     verbose: bool = False,
 ) -> dict | None:
     """Request the Z2M network map via MQTT.
@@ -200,7 +200,8 @@ def _request_networkmap(
 
         if verbose:
             print(
-                f"  [{site_name}] Requesting network map (this may take 1-2 min)...",
+                f"  [{site_name}] Requesting network map "
+                f"(timeout {timeout:.0f}s)...",
                 file=sys.stderr,
             )
 
@@ -274,7 +275,7 @@ def scan_zigbee_site(
     site_name: str,
     mqtt_config: MqttBrokerConfig,
     timeout: float = 15.0,
-    networkmap_timeout: float = 120.0,
+    networkmap_timeout: float = 600.0,
     availability_collect_s: float = 2.0,
     verbose: bool = False,
 ) -> tuple[list[ZigbeeDevice], ZigbeeBridgeInfo | None]:

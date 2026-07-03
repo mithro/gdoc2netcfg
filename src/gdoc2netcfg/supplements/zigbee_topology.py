@@ -358,7 +358,7 @@ def _walk(
 
 def _format_node(device: ZigbeeDevice, use_color: bool) -> str:
     """Format one device as
-    ``<marker> [<role>] <name> (<model>) "<desc>" <signal bars>``."""
+    ``<marker> [<role>] <signal bars> <name> (<model>) "<desc>"``."""
     if device.availability == "online":
         marker = colorize("●", _ANSI_ONLINE, use_color)
     elif device.availability == "offline":
@@ -367,7 +367,13 @@ def _format_node(device: ZigbeeDevice, use_color: bool) -> str:
         marker = colorize("?", _ANSI_UNKNOWN, use_color)
 
     role = "R" if device.device_type == "Router" else "E"
-    parts = [f"{marker} [{role}] {device.friendly_name}"]
+    if device.link_quality is not None:
+        bar = _format_lqi(device.link_quality, use_color)
+    else:
+        # No reading (e.g. no networkmap parent): blank spacer keeps
+        # sibling names aligned.
+        bar = " " * len(_LQI_BARS)
+    parts = [f"{marker} [{role}] {bar} {device.friendly_name}"]
 
     model = device.model or device.model_id
     if model:
@@ -380,8 +386,6 @@ def _format_node(device: ZigbeeDevice, use_color: bool) -> str:
             if line.strip()
         )
         parts.append(f'"{description}"')
-    if device.link_quality is not None:
-        parts.append(_format_lqi(device.link_quality, use_color))
     return " ".join(parts)
 
 
@@ -389,9 +393,9 @@ def _format_lqi(lqi: int, use_color: bool) -> str:
     """Format link quality as a 4-segment signal-strength bar.
 
     Lit segments are colour-graded by Z2M's thresholds (green good,
-    yellow workable, red poor); unlit segments render dim grey on a
-    colour terminal and as ``·`` placeholders on plain output, so the
-    bar is always exactly 4 columns wide.
+    yellow workable, red poor); unlit segments render as ``_``
+    placeholders (dim grey on a colour terminal), so the bar is
+    always exactly 4 columns wide.
     """
     if lqi >= _LQI_GOOD:
         code = _ANSI_ONLINE   # green: good signal
@@ -410,10 +414,10 @@ def _format_lqi(lqi: int, use_color: bool) -> str:
         level = 1
 
     lit = _LQI_BARS[:level]
-    unlit = _LQI_BARS[level:]
+    unlit = "_" * (len(_LQI_BARS) - level)
     if use_color:
         out = colorize(lit, code, True)
         if unlit:
             out += colorize(unlit, _ANSI_UNKNOWN, True)
         return out
-    return lit + "·" * len(unlit)
+    return lit + unlit

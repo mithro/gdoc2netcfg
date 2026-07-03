@@ -15,11 +15,20 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from gdoc2netcfg.utils.terminal import colorize
+
 if TYPE_CHECKING:
     from gdoc2netcfg.supplements.zigbee import ZigbeeBridgeInfo, ZigbeeDevice
+
+
+_ANSI_ONLINE = "32"   # green
+_ANSI_OFFLINE = "31"  # red
+_ANSI_UNKNOWN = "90"  # bright black / grey
+_ANSI_HEADER = "1"    # bold
 
 
 def render_dot(dot_source: str, output_path: Path, fmt: str = "svg") -> None:
@@ -190,3 +199,163 @@ def _avail_fill(device: ZigbeeDevice) -> str:
     elif device.availability == "offline":
         return "#ffcdd2"  # light red
     return "#e0e0e0"      # grey for unknown
+
+
+def generate_zigbee_text_tree(
+    devices: list[ZigbeeDevice],
+    bridge: ZigbeeBridgeInfo | None,
+    site_name: str,
+    *,
+    use_color: bool = False,
+) -> str:
+    """Generate a console-friendly text tree of the Zigbee mesh for a site.
+
+    Applies the same filter as ``generate_zigbee_topology``: drops devices
+    that are both offline AND have no known parent.
+
+    Renders three sections:
+      1. The Coordinator-rooted sub-tree (devices reachable from
+         ``"Coordinator"`` via parent chains).
+      2. Orphan sub-trees — routers with no known uplink but with their
+         own children.  This is a real-world networkmap quirk where
+         child→router routes are published but the router's own uplink
+         is missed.
+      3. True orphans — devices with no parent and no children.
+
+    Args:
+        devices: All ``ZigbeeDevice`` records for the site.
+        bridge: Coordinator/bridge info (used for the header).
+        site_name: Site name for the header.
+        use_color: Wrap status markers in ANSI escapes when True.
+
+    Returns:
+        Multi-line string (no trailing newline) ready to print.
+    """
+    total = len(devices)
+    excluded = sum(
+        1 for d in devices
+        if not d.connected_via and d.availability == "offline"
+    )
+    kept = [
+        d for d in devices
+        if d.connected_via or d.availability != "offline"
+    ]
+
+    lookup = {d.friendly_name: d for d in kept}
+    children: dict[str, list[str]] = defaultdict(list)
+    for d in kept:
+        if d.connected_via:
+            children[d.connected_via].append(d.friendly_name)
+    for kids in children.values():
+        kids.sort()
+
+    online = sum(1 for d in devices if d.availability == "online")
+    offline = sum(1 for d in devices if d.availability == "offline")
+    with_parent = sum(1 for d in devices if d.connected_via)
+
+    sep = "=" * 60
+    lines: list[str] = [
+        sep,
+        colorize(f"Zigbee Mesh - {site_name}", _ANSI_HEADER, use_color),
+        sep,
+    ]
+    if bridge:
+        lines.append(
+            f"Z2M {bridge.z2m_version}  |  "
+            f"{bridge.coordinator_type} {bridge.coordinator_ieee}  |  "
+            f"Ch {bridge.channel}  PAN {bridge.pan_id}"
+        )
+    lines.append(
+        f"Devices: {total}  (online {online}, offline {offline})  "
+        f"with parent info: {with_parent}/{total}"
+    )
+    lines.append("")
+
+    coord_children = children.get("Coordinator", [])
+    if coord_children:
+        lines.append("Coordinator")
+        _walk(
+            "Coordinator", children, lookup, "", lines, use_color=use_color,
+        )
+    else:
+        lines.append("Coordinator  (no children in networkmap)")
+
+    # Orphan sub-trees: kept devices with no parent that *do* have children.
+    orphan_roots = sorted(
+        d.friendly_name for d in kept
+        if not d.connected_via and children.get(d.friendly_name)
+    )
+    if orphan_roots:
+        lines.append("")
+        lines.append("Orphan sub-trees (router with no known uplink):")
+        for root in orphan_roots:
+            lines.append("  " + _format_node(lookup[root], use_color))
+            _walk(
+                root, children, lookup, "  ", lines, use_color=use_color,
+            )
+
+    # True orphans: no parent, no children.
+    true_orphans = sorted(
+        d.friendly_name for d in kept
+        if not d.connected_via and not children.get(d.friendly_name)
+    )
+    if true_orphans:
+        lines.append("")
+        lines.append(
+            "Devices with no known parent (likely sleepy end-devices):"
+        )
+        for name in true_orphans:
+            lines.append("  " + _format_node(lookup[name], use_color))
+
+    if excluded:
+        lines.append("")
+        lines.append(f"({excluded} offline+orphan device(s) hidden)")
+
+    return "\n".join(lines)
+
+
+def _walk(
+    parent: str,
+    children: dict[str, list[str]],
+    lookup: dict[str, ZigbeeDevice],
+    prefix: str,
+    lines: list[str],
+    *,
+    use_color: bool,
+) -> None:
+    """Recursively append rendered child rows under ``parent``."""
+    kids = children.get(parent, [])
+    for i, name in enumerate(kids):
+        last = i == len(kids) - 1
+        branch = "└─ " if last else "├─ "
+        cont = "   " if last else "│  "
+        device = lookup.get(name)
+        if device is None:
+            # Parent points at a friendly_name we don't have a record for
+            # (e.g. the device was filtered out).  Render the name plain.
+            lines.append(prefix + branch + name + "  (no record)")
+            continue
+        lines.append(prefix + branch + _format_node(device, use_color))
+        _walk(
+            name, children, lookup, prefix + cont, lines, use_color=use_color,
+        )
+
+
+def _format_node(device: ZigbeeDevice, use_color: bool) -> str:
+    """Format one device as ``<marker> [<role>] <name> (<model>) "<desc>"``."""
+    if device.availability == "online":
+        marker = colorize("●", _ANSI_ONLINE, use_color)
+    elif device.availability == "offline":
+        marker = colorize("○", _ANSI_OFFLINE, use_color)
+    else:
+        marker = colorize("?", _ANSI_UNKNOWN, use_color)
+
+    role = "R" if device.device_type == "Router" else "E"
+    parts = [f"{marker} [{role}] {device.friendly_name}"]
+
+    model = device.model or device.model_id
+    if model:
+        parts.append(f"({model})")
+    if device.description:
+        parts.append(f'"{device.description}"')
+    return " ".join(parts)

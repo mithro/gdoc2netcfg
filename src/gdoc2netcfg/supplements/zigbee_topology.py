@@ -381,9 +381,9 @@ def _format_node(device: ZigbeeDevice, use_color: bool) -> str:
     parts = [f"{marker} [{role}] {bar} {device.friendly_name:<3}"]
 
     if device.description:
-        # Z2M descriptions can span multiple lines; render the newline
-        # as a visible ↵ so the tree layout stays one line per device.
-        parts.append("↵".join(
+        # Z2M descriptions can span multiple lines; join with " / " so
+        # the tree layout stays one line per device.
+        parts.append(" / ".join(
             line.strip() for line in device.description.splitlines()
             if line.strip()
         ))

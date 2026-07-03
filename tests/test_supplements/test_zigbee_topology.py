@@ -166,7 +166,7 @@ def test_multiline_description_is_collapsed() -> None:
         ),
     ]
     out = generate_zigbee_text_tree(devices, _bridge(), "welland")
-    assert "rpi4-ups↵Back Shed, Soundproof Rack (E22x4)" in out
+    assert "rpi4-ups / Back Shed, Soundproof Rack (E22x4)" in out
     # No output line may be a bare description fragment.
     assert "\nBack Shed" not in out
 

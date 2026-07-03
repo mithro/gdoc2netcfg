@@ -2506,7 +2506,12 @@ def cmd_zigbee_topology(args: argparse.Namespace) -> int:
         raise_for_zigbee_errors,
         scan_zigbee,
     )
-    from gdoc2netcfg.supplements.zigbee_topology import generate_zigbee_topology, render_dot
+    from gdoc2netcfg.supplements.zigbee_topology import (
+        generate_zigbee_text_tree,
+        generate_zigbee_topology,
+        render_dot,
+    )
+    from gdoc2netcfg.utils.terminal import use_color
 
     output_dir = Path(getattr(args, "output_dir", None) or ".")
     fmt = getattr(args, "format", "svg")
@@ -2525,6 +2530,23 @@ def cmd_zigbee_topology(args: argparse.Namespace) -> int:
     # Persist the fresh scan so other commands see the same data.
     if zigbee_data:
         _save_to_discovery_db(config, "zigbee", "save_zigbee", zigbee_data)
+
+    if fmt == "text":
+        colour = use_color(sys.stdout)
+        first = True
+        for site_name, doc in sorted(zigbee_data.items()):
+            bridge = ZigbeeBridgeInfo(**doc["bridge"]) if doc["bridge"] else None
+            devices = [ZigbeeDevice(**d) for d in doc["devices"].values()]
+            if not first:
+                print()
+            print(
+                generate_zigbee_text_tree(
+                    devices, bridge, site_name, use_color=colour,
+                ),
+            )
+            first = False
+        raise_for_zigbee_errors(errors)
+        return 0 if zigbee_data else 1
 
     wrote_any = False
     for site_name, doc in sorted(zigbee_data.items()):
@@ -3060,15 +3082,19 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     zigbee_topo_parser = zigbee_subparsers.add_parser(
-        "topology", help="Generate Zigbee mesh diagram per site (SVG/PNG)",
+        "topology",
+        help="Generate Zigbee mesh diagram per site (SVG/PNG or text tree)",
     )
     zigbee_topo_parser.add_argument(
         "--output-dir", default=".",
-        help="Directory for output files (default: current directory)",
+        help="Directory for output files (svg/png only; default: current "
+             "directory). Ignored for --format=text.",
     )
     zigbee_topo_parser.add_argument(
-        "--format", choices=["svg", "png"], default="svg",
-        help="Output format (default: svg)",
+        "--format", choices=["svg", "png", "text"], default="svg",
+        help="Output format. 'svg'/'png' render an image file per site via "
+             "graphviz; 'text' prints a console-friendly tree to stdout. "
+             "(default: svg)",
     )
 
     # db (database management and history)

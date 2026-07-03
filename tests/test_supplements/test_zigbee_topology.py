@@ -17,6 +17,7 @@ def _device(
     description: str = "",
     ieee: str | None = None,
     site: str = "welland",
+    link_quality: int | None = None,
 ) -> ZigbeeDevice:
     """Build a ZigbeeDevice with only the fields the renderer cares about."""
     return ZigbeeDevice(
@@ -32,7 +33,7 @@ def _device(
         software_build_id="",
         date_code="",
         last_seen=None,
-        link_quality=None,
+        link_quality=link_quality,
         availability=availability,
         network_address=None,
         description=description,
@@ -156,6 +157,52 @@ def test_multiline_description_is_collapsed() -> None:
     assert '"rpi4-ups / Back Shed, Soundproof Rack"' in out
     # No output line may be a bare description fragment.
     assert "\nBack Shed" not in out
+
+
+def test_link_quality_shown_when_present() -> None:
+    devices = [
+        _device("B1", parent="Coordinator", link_quality=120),
+        _device("B2", parent="Coordinator"),  # link_quality=None
+    ]
+    out = generate_zigbee_text_tree(devices, _bridge(), "welland")
+    assert "● [E] B1 (TS0601) lqi=120" in out
+    assert "● [E] B2 (TS0601)\n" in out or out.endswith("● [E] B2 (TS0601)")
+    assert "lqi=None" not in out
+
+
+def test_link_quality_colour_grading() -> None:
+    devices = [
+        _device("B1", parent="Coordinator", link_quality=150),  # good
+        _device("B2", parent="Coordinator", link_quality=50),   # workable
+        _device("B3", parent="Coordinator", link_quality=10),   # poor
+    ]
+    out = generate_zigbee_text_tree(
+        devices, _bridge(), "welland", use_color=True,
+    )
+    assert "\033[32mlqi=150\033[0m" in out  # green
+    assert "\033[33mlqi=50\033[0m" in out   # yellow
+    assert "\033[31mlqi=10\033[0m" in out   # red
+
+
+def test_children_use_natural_sort() -> None:
+    """B2 sorts before B10 (numeric-aware), not after (lexicographic)."""
+    devices = [
+        _device("B10", parent="Z1"),
+        _device("B2", parent="Z1"),
+        _device("B1", parent="Z1"),
+        _device("Z1", parent="Coordinator", device_type="Router"),
+    ]
+    out = generate_zigbee_text_tree(devices, _bridge(), "welland")
+    assert out.index("B1 ") < out.index("B2 ") < out.index("B10 ")
+
+
+def test_orphans_use_natural_sort() -> None:
+    devices = [
+        _device("W10"),
+        _device("W2"),
+    ]
+    out = generate_zigbee_text_tree(devices, _bridge(), "welland")
+    assert out.index("W2 ") < out.index("W10 ")
 
 
 def test_color_off_emits_no_ansi_escapes() -> None:

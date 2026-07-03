@@ -19,6 +19,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from gdoc2netcfg.utils.sort import natural_sort_key
 from gdoc2netcfg.utils.terminal import colorize
 
 if TYPE_CHECKING:
@@ -29,6 +30,10 @@ _ANSI_ONLINE = "32"   # green
 _ANSI_OFFLINE = "31"  # red
 _ANSI_UNKNOWN = "90"  # bright black / grey
 _ANSI_HEADER = "1"    # bold
+
+# Zigbee LQI is 0-255; Z2M itself calls <30 "poor" and >100 "good".
+_LQI_GOOD = 100
+_LQI_POOR = 30
 
 
 def render_dot(dot_source: str, output_path: Path, fmt: str = "svg") -> None:
@@ -247,7 +252,7 @@ def generate_zigbee_text_tree(
         if d.connected_via:
             children[d.connected_via].append(d.friendly_name)
     for kids in children.values():
-        kids.sort()
+        kids.sort(key=natural_sort_key)
 
     online = sum(1 for d in devices if d.availability == "online")
     offline = sum(1 for d in devices if d.availability == "offline")
@@ -282,8 +287,11 @@ def generate_zigbee_text_tree(
 
     # Orphan sub-trees: kept devices with no parent that *do* have children.
     orphan_roots = sorted(
-        d.friendly_name for d in kept
-        if not d.connected_via and children.get(d.friendly_name)
+        (
+            d.friendly_name for d in kept
+            if not d.connected_via and children.get(d.friendly_name)
+        ),
+        key=natural_sort_key,
     )
     if orphan_roots:
         lines.append("")
@@ -296,8 +304,11 @@ def generate_zigbee_text_tree(
 
     # True orphans: no parent, no children.
     true_orphans = sorted(
-        d.friendly_name for d in kept
-        if not d.connected_via and not children.get(d.friendly_name)
+        (
+            d.friendly_name for d in kept
+            if not d.connected_via and not children.get(d.friendly_name)
+        ),
+        key=natural_sort_key,
     )
     if true_orphans:
         lines.append("")
@@ -342,7 +353,8 @@ def _walk(
 
 
 def _format_node(device: ZigbeeDevice, use_color: bool) -> str:
-    """Format one device as ``<marker> [<role>] <name> (<model>) "<desc>"``."""
+    """Format one device as
+    ``<marker> [<role>] <name> (<model>) "<desc>" lqi=NN``."""
     if device.availability == "online":
         marker = colorize("●", _ANSI_ONLINE, use_color)
     elif device.availability == "offline":
@@ -364,4 +376,17 @@ def _format_node(device: ZigbeeDevice, use_color: bool) -> str:
             if line.strip()
         )
         parts.append(f'"{description}"')
+    if device.link_quality is not None:
+        parts.append(_format_lqi(device.link_quality, use_color))
     return " ".join(parts)
+
+
+def _format_lqi(lqi: int, use_color: bool) -> str:
+    """Format a link quality indicator, colour-graded by signal strength."""
+    if lqi >= _LQI_GOOD:
+        code = _ANSI_ONLINE   # green: good signal
+    elif lqi >= _LQI_POOR:
+        code = "33"           # yellow: workable signal
+    else:
+        code = _ANSI_OFFLINE  # red: poor signal
+    return colorize(f"lqi={lqi}", code, use_color)

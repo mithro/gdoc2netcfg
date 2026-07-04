@@ -144,12 +144,18 @@ def _request_networkmap(
     site_name: str,
     timeout: float = 600.0,
     verbose: bool = False,
-) -> dict | None:
+) -> dict:
     """Request the Z2M network map via MQTT.
 
     Publishes to zigbee2mqtt/bridge/request/networkmap and waits for the
-    response on zigbee2mqtt/bridge/response/networkmap.  Returns the raw
-    response dict, or None if the request times out.
+    response on zigbee2mqtt/bridge/response/networkmap.  Returns the full
+    response envelope (``{"data": ..., "status": "ok"}``).
+
+    Raises RuntimeError on connection failure, timeout, an undecodable
+    payload, or a non-ok response status.  Callers must NOT treat a
+    failed networkmap as "no parents" — that would silently erase
+    previously-recorded parent data (the site keeps its baseline via
+    scan_zigbee's error contract instead).
     """
     import paho.mqtt.client as mqtt
 
@@ -175,9 +181,9 @@ def _request_networkmap(
     ) -> None:
         if msg.topic == "zigbee2mqtt/bridge/response/networkmap":
             try:
-                result["data"] = json.loads(msg.payload.decode())
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                pass
+                result["response"] = json.loads(msg.payload.decode())
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                result["decode_error"] = f"{type(e).__name__}: {e}"
             done.set()
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
@@ -191,12 +197,9 @@ def _request_networkmap(
 
     try:
         if not connected.wait(timeout=10.0):
-            if verbose:
-                print(
-                    f"  [{site_name}] Networkmap: connection timeout",
-                    file=sys.stderr,
-                )
-            return None
+            raise RuntimeError(
+                f"Networkmap: connection timeout for {site_name}"
+            )
 
         if verbose:
             print(
@@ -214,17 +217,32 @@ def _request_networkmap(
         )
 
         if not done.wait(timeout=timeout):
-            if verbose:
-                print(
-                    f"  [{site_name}] Networkmap timed out after {timeout:.0f}s",
-                    file=sys.stderr,
-                )
-            return None
+            raise RuntimeError(
+                f"Networkmap timed out after {timeout:.0f}s for {site_name}"
+            )
     finally:
         client.loop_stop()
         client.disconnect()
 
-    return result.get("data")
+    if "decode_error" in result:
+        raise RuntimeError(
+            f"Networkmap response from {site_name} was not valid JSON: "
+            f"{result['decode_error']}"
+        )
+
+    response = result["response"]
+    if not isinstance(response, dict):
+        raise RuntimeError(
+            f"Networkmap response from {site_name} has unexpected type "
+            f"{type(response).__name__}"
+        )
+    status = response.get("status")
+    if status != "ok":
+        raise RuntimeError(
+            f"Networkmap request failed for {site_name}: "
+            f"status={status!r} error={response.get('error')!r}"
+        )
+    return response
 
 
 def _build_parent_map(networkmap: dict) -> dict[str, tuple[str, int | None]]:
@@ -240,11 +258,30 @@ def _build_parent_map(networkmap: dict) -> dict[str, tuple[str, int | None]]:
     The LQI is the quality of the child<->parent link itself (raw
     networkmap ``linkquality`` field), which is the meaningful signal
     number for a routing topology.
+
+    Raises RuntimeError if the response is not shaped like a raw
+    networkmap — an unexpected shape must not silently reduce to "no
+    parents" (indistinguishable from an empty mesh).  A real raw map
+    always contains at least the coordinator node.
     """
-    data = networkmap.get("data", {})
-    value = data.get("value", {})
-    nodes = value.get("nodes", [])
-    links = value.get("links", [])
+    value = networkmap.get("data", {}).get("value")
+    if not isinstance(value, dict):
+        raise RuntimeError(
+            "Networkmap response is missing data.value — "
+            f"got keys {sorted(networkmap)}"
+        )
+    nodes = value.get("nodes")
+    links = value.get("links")
+    if not isinstance(nodes, list) or not isinstance(links, list):
+        raise RuntimeError(
+            "Networkmap data.value is missing nodes/links lists — "
+            f"got keys {sorted(value)}"
+        )
+    if not nodes:
+        raise RuntimeError(
+            "Networkmap contains no nodes — a raw map always includes "
+            "at least the coordinator"
+        )
 
     # ieee -> friendly_name lookup (includes Coordinator)
     ieee_to_name: dict[str, str] = {}
@@ -297,7 +334,7 @@ def _validate_parents(site_name: str, devices: list[ZigbeeDevice]) -> None:
         parent = by_name.get(d.connected_via)
         # A parent name not in the device list (e.g. a renamed or
         # removed device) has no type to check — leave it be; the
-        # topology renderer shows it as "(no record)".
+        # topology renderer lists the device under "parent not shown".
         if parent is not None and parent.device_type != "Router":
             violations.append(
                 f"{d.friendly_name} claims parent {parent.friendly_name} "
@@ -459,33 +496,31 @@ def scan_zigbee_site(
             file=sys.stderr,
         )
 
-    # Request network map to determine parent routing relationships
+    # Request network map to determine parent routing relationships.
+    # A failed networkmap raises: treating it as "no parents" would
+    # persist connected_via="" for every device, silently erasing the
+    # previously-recorded topology (scan_zigbee keeps the site's
+    # baseline document on error instead).
     networkmap = _request_networkmap(
         mqtt_config, site_name, timeout=networkmap_timeout, verbose=verbose,
     )
-    if networkmap is not None:
-        parent_map = _build_parent_map(networkmap)
-        updated = []
-        for d in devices:
-            parent, link_lqi = parent_map.get(d.ieee_address, ("", None))
-            # Z2M 2.x bridge/devices no longer reports link_quality, so
-            # the parent link's LQI from the networkmap is usually the
-            # only signal reading available.  A device-reported value
-            # still wins when present.
-            lqi = d.link_quality if d.link_quality is not None else link_lqi
-            updated.append(replace(d, connected_via=parent, link_quality=lqi))
-        devices = updated
-        _validate_parents(site_name, devices)
-        assigned = sum(1 for d in devices if d.connected_via)
-        if verbose:
-            print(
-                f"  [{site_name}] Network map: {assigned}/{len(devices)} "
-                f"device(s) have parent info",
-                file=sys.stderr,
-            )
-    elif verbose:
+    parent_map = _build_parent_map(networkmap)
+    updated = []
+    for d in devices:
+        parent, link_lqi = parent_map.get(d.ieee_address, ("", None))
+        # Z2M 2.x bridge/devices no longer reports link_quality, so
+        # the parent link's LQI from the networkmap is usually the
+        # only signal reading available.  A device-reported value
+        # still wins when present.
+        lqi = d.link_quality if d.link_quality is not None else link_lqi
+        updated.append(replace(d, connected_via=parent, link_quality=lqi))
+    devices = updated
+    _validate_parents(site_name, devices)
+    assigned = sum(1 for d in devices if d.connected_via)
+    if verbose:
         print(
-            f"  [{site_name}] Continuing without network map (connected_via will be empty)",
+            f"  [{site_name}] Network map: {assigned}/{len(devices)} "
+            f"device(s) have parent info",
             file=sys.stderr,
         )
 

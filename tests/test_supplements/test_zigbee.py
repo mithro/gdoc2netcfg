@@ -216,6 +216,18 @@ class FakeMqttClient:
         pass
 
 
+def _networkmap_response(
+    nodes: list | None = None, links: list | None = None,
+) -> dict:
+    """A minimal valid raw-networkmap response envelope."""
+    if nodes is None:
+        nodes = [{"ieeeAddr": "0xc0", "friendlyName": "Coordinator"}]
+    return {
+        "status": "ok",
+        "data": {"value": {"nodes": nodes, "links": links or []}},
+    }
+
+
 class TestScanZigbeeSiteSubscribeOrder:
     """bridge/devices must be subscribed LAST: its huge retained payload
     chokes the connection, and Mosquitto drops retained deliveries for
@@ -246,7 +258,8 @@ class TestScanZigbeeSiteSubscribeOrder:
         }
         monkeypatch.setattr(paho_mqtt, "Client", FakeMqttClient)
         monkeypatch.setattr(
-            zigbee, "_request_networkmap", lambda *a, **kw: None,
+            zigbee, "_request_networkmap",
+            lambda *a, **kw: _networkmap_response(),
         )
         devices, bridge = zigbee.scan_zigbee_site(
             "welland", _MQTT, availability_collect_s=0.0,
@@ -288,24 +301,20 @@ class TestScanZigbeeSiteSubscribeOrder:
         monkeypatch.setattr(paho_mqtt, "Client", FakeMqttClient)
         monkeypatch.setattr(
             zigbee, "_request_networkmap",
-            lambda *a, **kw: {
-                "data": {
-                    "value": {
-                        "nodes": [
-                            {"ieeeAddr": "0xc0", "friendlyName": "Coordinator"},
-                            {"ieeeAddr": "0x01", "friendlyName": "kitchen_temp"},
-                        ],
-                        "links": [
-                            {
-                                "relationship": 1,
-                                "sourceIeeeAddr": "0x01",
-                                "targetIeeeAddr": "0xc0",
-                                "linkquality": 237,
-                            },
-                        ],
+            lambda *a, **kw: _networkmap_response(
+                nodes=[
+                    {"ieeeAddr": "0xc0", "friendlyName": "Coordinator"},
+                    {"ieeeAddr": "0x01", "friendlyName": "kitchen_temp"},
+                ],
+                links=[
+                    {
+                        "relationship": 1,
+                        "sourceIeeeAddr": "0x01",
+                        "targetIeeeAddr": "0xc0",
+                        "linkquality": 237,
                     },
-                },
-            },
+                ],
+            ),
         )
         devices, _bridge = zigbee.scan_zigbee_site(
             "welland", _MQTT, availability_collect_s=0.0,
@@ -313,9 +322,91 @@ class TestScanZigbeeSiteSubscribeOrder:
         assert devices[0].connected_via == "Coordinator"
         assert devices[0].link_quality == 237
 
+    def test_networkmap_failure_propagates(self, monkeypatch):
+        """A failed networkmap must fail the site scan — continuing with
+        empty connected_via would erase previously-recorded parents."""
+        import paho.mqtt.client as paho_mqtt
+
+        monkeypatch.setattr(paho_mqtt, "Client", FakeMqttClient)
+
+        def raise_timeout(*a, **kw):
+            raise RuntimeError("Networkmap timed out after 600s for welland")
+
+        monkeypatch.setattr(zigbee, "_request_networkmap", raise_timeout)
+        with pytest.raises(RuntimeError, match="Networkmap timed out"):
+            zigbee.scan_zigbee_site(
+                "welland", _MQTT, availability_collect_s=0.0,
+            )
+
+
+class TestRequestNetworkmap:
+    """_request_networkmap fails loud on error responses — a failed
+    networkmap must never reduce to "no parents"."""
+
+    def _request(self, monkeypatch, payload: bytes):
+        import paho.mqtt.client as paho_mqtt
+
+        FakeMqttClient.retained = {
+            "zigbee2mqtt/bridge/response/networkmap": payload,
+        }
+        monkeypatch.setattr(paho_mqtt, "Client", FakeMqttClient)
+        return zigbee._request_networkmap(_MQTT, "welland", timeout=1.0)
+
+    def test_ok_response_returns_envelope(self, monkeypatch):
+        import json as _json
+
+        response = _networkmap_response()
+        envelope = self._request(
+            monkeypatch, _json.dumps(response).encode(),
+        )
+        assert envelope == response
+
+    def test_error_status_raises(self, monkeypatch):
+        import json as _json
+
+        payload = _json.dumps(
+            {"status": "error", "error": "Failed to generate network map"}
+        ).encode()
+        with pytest.raises(RuntimeError, match="status='error'"):
+            self._request(monkeypatch, payload)
+
+    def test_undecodable_payload_raises(self, monkeypatch):
+        with pytest.raises(RuntimeError, match="not valid JSON"):
+            self._request(monkeypatch, b"\xff\xfe not json")
+
+    def test_non_dict_response_raises(self, monkeypatch):
+        with pytest.raises(RuntimeError, match="unexpected type"):
+            self._request(monkeypatch, b"[1, 2, 3]")
+
+    def test_timeout_raises(self, monkeypatch):
+        import paho.mqtt.client as paho_mqtt
+
+        FakeMqttClient.retained = {}  # no response ever arrives
+        monkeypatch.setattr(paho_mqtt, "Client", FakeMqttClient)
+        with pytest.raises(RuntimeError, match="timed out"):
+            zigbee._request_networkmap(_MQTT, "welland", timeout=0.1)
+
 
 class TestBuildParentMap:
     """Parent + link-LQI extraction from the raw Z2M networkmap."""
+
+    def test_missing_value_raises(self):
+        with pytest.raises(RuntimeError, match="missing data.value"):
+            zigbee._build_parent_map({"status": "ok", "data": {}})
+
+    def test_missing_nodes_raises(self):
+        with pytest.raises(RuntimeError, match="missing nodes/links"):
+            zigbee._build_parent_map(
+                {"data": {"value": {"links": []}}},
+            )
+
+    def test_empty_nodes_raises(self):
+        """A raw map always includes the coordinator — an empty node
+        list is an invalid response, not an empty mesh."""
+        with pytest.raises(RuntimeError, match="no nodes"):
+            zigbee._build_parent_map(
+                {"data": {"value": {"nodes": [], "links": []}}},
+            )
 
     def _networkmap(self, links: list) -> dict:
         return {

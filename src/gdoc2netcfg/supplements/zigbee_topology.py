@@ -216,29 +216,43 @@ def generate_zigbee_text_tree(
     site_name: str,
     *,
     use_color: bool = False,
+    note: str = "",
 ) -> str:
     """Generate a console-friendly text tree of the Zigbee mesh for a site.
 
     Applies the same filter as ``generate_zigbee_topology``: drops devices
     that are both offline AND have no known parent.
 
-    Renders three sections:
+    Renders four sections:
       1. The Coordinator-rooted sub-tree (devices reachable from
          ``"Coordinator"`` via parent chains).
       2. Orphan sub-trees — routers with no known uplink but with their
          own children.  This is a real-world networkmap quirk where
          child→router routes are published but the router's own uplink
          is missed.
-      3. True orphans — devices with no parent and no children.
+      3. Sub-trees whose root's parent is not shown — the parent was
+         filtered out (offline with no known uplink) or isn't in the
+         device list at all (renamed/removed device, raw IEEE address).
+      4. True orphans — devices with no parent and no children.
+
+    Every kept device is rendered exactly once; if corrupt parent data
+    (e.g. a routing loop) leaves any device unreachable, this raises
+    rather than silently omitting it.
 
     Args:
         devices: All ``ZigbeeDevice`` records for the site.
         bridge: Coordinator/bridge info (used for the header).
         site_name: Site name for the header.
         use_color: Wrap status markers in ANSI escapes when True.
+        note: Optional warning line shown under the header (e.g. a
+            staleness marker when rendering baseline data).
 
     Returns:
         Multi-line string (no trailing newline) ready to print.
+
+    Raises:
+        RuntimeError: If any kept device could not be rendered (corrupt
+            parent data such as a routing loop).
     """
     total = len(devices)
     excluded = sum(
@@ -268,6 +282,8 @@ def generate_zigbee_text_tree(
         colorize(f"Zigbee Mesh - {site_name}", _ANSI_HEADER, use_color),
         sep,
     ]
+    if note:
+        lines.append(colorize(note, _ANSI_OFFLINE, use_color))
     if bridge:
         lines.append(
             f"Z2M {bridge.z2m_version}  |  "
@@ -280,11 +296,14 @@ def generate_zigbee_text_tree(
     )
     lines.append("")
 
+    rendered: set[str] = set()
+
     coord_children = children.get("Coordinator", [])
     if coord_children:
         lines.append("Coordinator")
         _walk(
-            "Coordinator", children, lookup, "", lines, use_color=use_color,
+            "Coordinator", children, lookup, "", lines, rendered,
+            use_color=use_color,
         )
     else:
         lines.append("Coordinator  (no children in networkmap)")
@@ -302,8 +321,39 @@ def generate_zigbee_text_tree(
         lines.append("Orphan sub-trees (router with no known uplink):")
         for root in orphan_roots:
             lines.append("  " + _format_node(lookup[root], use_color))
+            rendered.add(root)
             _walk(
-                root, children, lookup, "  ", lines, use_color=use_color,
+                root, children, lookup, "  ", lines, rendered,
+                use_color=use_color,
+            )
+
+    # Sub-trees whose root's claimed parent is not a rendered device:
+    # the parent was dropped by the offline+orphan filter, or isn't in
+    # the device list at all (renamed/removed, or a raw IEEE address
+    # from a networkmap node the registry doesn't know).  These MUST
+    # still be rendered — silently omitting them would hide devices.
+    detached_roots = sorted(
+        (
+            d.friendly_name for d in kept
+            if d.connected_via
+            and d.connected_via != "Coordinator"
+            and d.connected_via not in lookup
+        ),
+        key=natural_sort_key,
+    )
+    if detached_roots:
+        lines.append("")
+        lines.append("Sub-trees under a parent that is not shown:")
+        for root in detached_roots:
+            device = lookup[root]
+            lines.append(
+                f"  {_format_node(device, use_color)}"
+                f"  [parent: {device.connected_via}]"
+            )
+            rendered.add(root)
+            _walk(
+                root, children, lookup, "  ", lines, rendered,
+                use_color=use_color,
             )
 
     # True orphans: no parent, no children.
@@ -321,6 +371,21 @@ def generate_zigbee_text_tree(
         )
         for name in true_orphans:
             lines.append("  " + _format_node(lookup[name], use_color))
+            rendered.add(name)
+
+    # Completeness check: every kept device must have been rendered.
+    # Anything left over means corrupt parent data (e.g. a routing
+    # loop) — fail loud rather than silently omit devices.
+    unrendered = sorted(set(lookup) - rendered, key=natural_sort_key)
+    if unrendered:
+        raise RuntimeError(
+            f"[{site_name}] {len(unrendered)} device(s) unreachable from "
+            "any rendered root — corrupt parent data (routing loop?): "
+            + ", ".join(
+                f"{name} (parent: {lookup[name].connected_via})"
+                for name in unrendered
+            )
+        )
 
     if excluded:
         lines.append("")
@@ -335,24 +400,26 @@ def _walk(
     lookup: dict[str, ZigbeeDevice],
     prefix: str,
     lines: list[str],
+    rendered: set[str],
     *,
     use_color: bool,
 ) -> None:
-    """Recursively append rendered child rows under ``parent``."""
+    """Recursively append rendered child rows under ``parent``.
+
+    Every walked name is a kept device: ``children`` values are built
+    exclusively from kept devices' friendly names, so ``lookup[name]``
+    cannot fail.
+    """
     kids = children.get(parent, [])
     for i, name in enumerate(kids):
         last = i == len(kids) - 1
         branch = "└─ " if last else "├─ "
         cont = "   " if last else "│  "
-        device = lookup.get(name)
-        if device is None:
-            # Parent points at a friendly_name we don't have a record for
-            # (e.g. the device was filtered out).  Render the name plain.
-            lines.append(prefix + branch + name + "  (no record)")
-            continue
-        lines.append(prefix + branch + _format_node(device, use_color))
+        lines.append(prefix + branch + _format_node(lookup[name], use_color))
+        rendered.add(name)
         _walk(
-            name, children, lookup, prefix + cont, lines, use_color=use_color,
+            name, children, lookup, prefix + cont, lines, rendered,
+            use_color=use_color,
         )
 
 

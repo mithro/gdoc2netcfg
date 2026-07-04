@@ -1,5 +1,7 @@
 """Tests for the Zigbee topology renderers (DOT + text tree)."""
 
+import pytest
+
 from gdoc2netcfg.supplements.zigbee import ZigbeeBridgeInfo, ZigbeeDevice
 from gdoc2netcfg.supplements.zigbee_topology import (
     generate_zigbee_text_tree,
@@ -169,6 +171,79 @@ def test_multiline_description_is_collapsed() -> None:
     assert "rpi4-ups / Back Shed, Soundproof Rack (E22x4)" in out
     # No output line may be a bare description fragment.
     assert "\nBack Shed" not in out
+
+
+def test_child_of_filtered_parent_is_still_rendered() -> None:
+    """An online child whose router parent was dropped by the
+    offline+orphan filter must appear under 'parent that is not shown'
+    — never silently vanish."""
+    devices = [
+        _device("B1", parent="Coordinator"),
+        # Z8 is offline with no known uplink -> filtered out entirely.
+        _device("Z8", device_type="Router", availability="offline"),
+        # ...but its online child survives the filter.
+        _device("B22", parent="Z8"),
+        # And the child can have its own children.
+        _device("B23", parent="B22"),
+    ]
+    out = generate_zigbee_text_tree(devices, _bridge(), "welland")
+    assert "Sub-trees under a parent that is not shown:" in out
+    assert "B22 (TS0601)  [parent: Z8]" in out
+    assert "└─ ● [E]      B23" in out          # walked under B22
+    assert "(1 offline+orphan device(s) hidden)" in out
+
+
+def test_parent_as_raw_ieee_is_still_rendered() -> None:
+    """_build_parent_map falls back to the raw IEEE when the networkmap
+    node list lacks the target — the child must still render."""
+    devices = [
+        _device("B1", parent="0x00124b0012345678"),
+    ]
+    out = generate_zigbee_text_tree(devices, _bridge(), "welland")
+    assert "Sub-trees under a parent that is not shown:" in out
+    assert "B1  (TS0601)  [parent: 0x00124b0012345678]" in out
+
+
+def test_routing_loop_fails_loud() -> None:
+    """Two routers claiming each other as parent are unreachable from
+    any root — corrupt data must raise, not silently disappear."""
+    devices = [
+        _device("Z1", parent="Z2", device_type="Router"),
+        _device("Z2", parent="Z1", device_type="Router"),
+    ]
+    with pytest.raises(RuntimeError, match="unreachable from any rendered root"):
+        generate_zigbee_text_tree(devices, _bridge(), "welland")
+
+
+def test_note_renders_under_header() -> None:
+    devices = [_device("B1", parent="Coordinator")]
+    out = generate_zigbee_text_tree(
+        devices, _bridge(), "welland",
+        note="WARNING: scan failed; showing last saved data",
+    )
+    header_idx = out.splitlines().index("Zigbee Mesh - welland")
+    assert (
+        out.splitlines()[header_idx + 2]
+        == "WARNING: scan failed; showing last saved data"
+    )
+
+
+def test_every_kept_device_is_rendered() -> None:
+    """Completeness: the union of all sections covers every kept device."""
+    devices = [
+        _device("B1", parent="Coordinator"),
+        _device("Z1", parent="Coordinator", device_type="Router"),
+        _device("T2", parent="Z1"),
+        _device("Z8", device_type="Router"),          # orphan root
+        _device("B15", parent="Z8"),
+        _device("B17"),                                # true orphan
+        _device("B22", parent="Gone"),                 # detached root
+        _device("B99", availability="offline"),        # filtered
+    ]
+    out = generate_zigbee_text_tree(devices, _bridge(), "welland")
+    for name in ("B1", "Z1", "T2", "Z8", "B15", "B17", "B22"):
+        assert f" {name} " in out or f" {name}\n" in out or out.endswith(name)
+    assert "B99" not in out
 
 
 def test_link_quality_bar_levels() -> None:

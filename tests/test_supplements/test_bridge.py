@@ -89,6 +89,16 @@ class TestParseMacTable:
         result = parse_mac_table(walk, {}, {})
         assert len(result) == 0
 
+    def test_raises_on_non_integer_port_value(self):
+        """A non-integer value in the dot1qTpFdbPort column means the
+        table layout drifted — fail loud rather than silently dropping
+        the switch's MAC table."""
+        walk = [
+            ("1.3.6.1.2.1.17.7.1.2.2.1.2.5.170.187.204.221.238.255", "bogus"),
+        ]
+        with pytest.raises(ValueError, match="non-integer bridge port"):
+            parse_mac_table(walk, {}, {})
+
     def test_multiple_vlans_same_mac(self):
         """Same MAC can appear on different VLANs."""
         walk = [
@@ -99,6 +109,24 @@ class TestParseMacTable:
         assert len(result) == 2
         assert result[0][1] == 5   # VLAN 5
         assert result[1][1] == 10  # VLAN 10
+
+    def test_skips_sibling_status_column(self):
+        """The bulk walk covers the whole dot1qTpFdbTable, so sibling
+        columns arrive too. dot1qTpFdbStatus (…1.2.2.1.3) rows have the
+        same 7-component suffix and INTEGER values (3 = learned,
+        5 = mgmt) that previously parsed as phantom bridge ports 3/5 on
+        every switch (observed fleet-wide 2026-07-04). Only the
+        dot1qTpFdbPort (…1.2.2.1.2) column may produce entries."""
+        walk = [
+            # real port entry: MAC on VLAN 90, bridge port 24
+            ("1.3.6.1.2.1.17.7.1.2.2.1.2.90.220.166.50.5.160.28", "24"),
+            # same MAC's status row: learned(3) — must NOT become port 3
+            ("1.3.6.1.2.1.17.7.1.2.2.1.3.90.220.166.50.5.160.28", "3"),
+            # a mgmt(5) status row for the switch's own MAC on VLAN 5
+            ("1.3.6.1.2.1.17.7.1.2.2.1.3.5.224.145.245.12.214.219", "5"),
+        ]
+        result = parse_mac_table(walk, {24: 24}, {24: "1/0/24"})
+        assert result == [("DC:A6:32:05:A0:1C", 90, 24, "1/0/24")]
 
 
 class TestParseIfNames:

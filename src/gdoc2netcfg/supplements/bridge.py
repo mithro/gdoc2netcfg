@@ -44,8 +44,12 @@ BRIDGE_CAPABLE_HARDWARE: frozenset[str] = frozenset({
 # Bridge-specific OID constants
 # ---------------------------------------------------------------------------
 
-# Q-BRIDGE-MIB: dot1qTpFdbTable -- MAC address table
-_DOT1Q_TP_FDB_TABLE = "1.3.6.1.2.1.17.7.1.2.2"
+# Q-BRIDGE-MIB: dot1qTpFdbPort -- MAC address table (MAC -> bridge port).
+# Deliberately the port COLUMN, not the whole dot1qTpFdbTable: nothing
+# consumes the sibling dot1qTpFdbStatus column, and walking the full
+# table both doubles the scan's largest walk and once let status rows
+# parse as phantom bridge ports 3/5 fleet-wide (issue #10).
+_DOT1Q_TP_FDB_PORT = "1.3.6.1.2.1.17.7.1.2.2.1.2"
 
 # BRIDGE-MIB: dot1dBasePortIfIndex -- bridge port -> ifIndex mapping
 _DOT1D_BASE_PORT_IF_INDEX = "1.3.6.1.2.1.17.1.4.1.2"
@@ -117,7 +121,7 @@ _IF_IN_ERRORS = "1.3.6.1.2.1.2.2.1.14"
 
 # All bridge table OIDs for bulk walk
 _BRIDGE_TABLE_OIDS: dict[str, str] = {
-    "dot1q_tp_fdb": _DOT1Q_TP_FDB_TABLE,
+    "dot1q_tp_fdb": _DOT1Q_TP_FDB_PORT,
     "dot1d_base_port": _DOT1D_BASE_PORT_IF_INDEX,
     "vlan_names": _DOT1Q_VLAN_STATIC_NAME,
     "pvid": _DOT1Q_PVID,
@@ -137,11 +141,6 @@ _BRIDGE_TABLE_OIDS: dict[str, str] = {
     "poe_power_smp": _NETGEAR_POE_POWER_SMP,
     **{key: oid for _kind, key, oid in _BOX_SENSOR_WALKS},
 }
-
-# The base OID prefix for dot1qTpFdbPort entries:
-# 1.3.6.1.2.1.17.7.1.2.2.1.2.<VLAN>.<M1>.<M2>.<M3>.<M4>.<M5>.<M6>
-_DOT1Q_TP_FDB_PORT_PREFIX = "1.3.6.1.2.1.17.7.1.2.2.1.2"
-_DOT1Q_TP_FDB_PORT_PREFIX_LEN = len(_DOT1Q_TP_FDB_PORT_PREFIX.split("."))
 
 
 # ---------------------------------------------------------------------------
@@ -202,13 +201,17 @@ def parse_mac_table(
     bridge_to_if: dict[int, int],
     if_names: dict[int, str],
 ) -> list[tuple[str, int, int, str]]:
-    """Parse dot1qTpFdbTable walk results into (mac, vlan, port, name) tuples.
+    """Parse dot1qTpFdbPort walk results into (mac, vlan, port, name) tuples.
 
     OID format:
         1.3.6.1.2.1.17.7.1.2.2.1.2.<VLAN>.<M1>.<M2>.<M3>.<M4>.<M5>.<M6> = INTEGER: <bridge_port>
 
-    The suffix after the base prefix encodes the VLAN ID followed by
+    The suffix after the column prefix encodes the VLAN ID followed by
     the 6 MAC address bytes as decimal integers.
+
+    Raises ValueError on a non-integer port value — the walk is pinned
+    to the dot1qTpFdbPort column, so a value that isn't a bridge port
+    means the table layout has drifted from what we expect.
 
     Args:
         walk: Raw (oid_string, value_string) pairs from bulk walk.
@@ -219,21 +222,35 @@ def parse_mac_table(
         List of (mac_str, vlan_id, bridge_port, port_name) tuples.
     """
     results = []
+    # The walk targets the dot1qTpFdbPort column, but keep this guard
+    # as defence in depth: an agent that overruns the base OID would
+    # leak sibling columns — notably dot1qTpFdbStatus (…1.2.2.1.3),
+    # whose INTEGER values (3 = learned, 5 = mgmt) parse identically
+    # to a bridge port and once produced phantom "port 3"/"port 5"
+    # FDB entries on every switch (issue #10).
+    prefix = _DOT1Q_TP_FDB_PORT + "."
     for oid, value in walk:
-        parts = oid.split(".")
+        if not oid.startswith(prefix):
+            continue
 
-        # After the base prefix, we expect: <VLAN>.<M1>.<M2>.<M3>.<M4>.<M5>.<M6>
-        # That's 7 additional components
-        suffix_parts = parts[_DOT1Q_TP_FDB_PORT_PREFIX_LEN:]
+        # After the prefix, we expect: <VLAN>.<M1>.<M2>.<M3>.<M4>.<M5>.<M6>
+        # That's 7 components
+        suffix_parts = oid[len(prefix) :].split(".")
         if len(suffix_parts) != 7:
             continue
 
         try:
             vlan_id = int(suffix_parts[0])
             mac_bytes = [int(b) for b in suffix_parts[1:7]]
-            bridge_port = int(value)
-        except (ValueError, IndexError):
+        except ValueError:
             continue
+
+        try:
+            bridge_port = int(value)
+        except ValueError as exc:
+            raise ValueError(
+                f"non-integer bridge port {value!r} at {oid}"
+            ) from exc
 
         mac_str = _format_mac_bytes(mac_bytes)
 

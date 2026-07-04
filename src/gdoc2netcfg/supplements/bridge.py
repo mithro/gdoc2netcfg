@@ -220,6 +220,13 @@ def parse_mac_table(
     """
     results = []
     for oid, value in walk:
+        # The walk covers the whole dot1qTpFdbTable, so it also returns
+        # sibling columns — notably dot1qTpFdbStatus (…1.2.2.1.3), whose
+        # INTEGER values (3 = learned, 5 = mgmt) parse identically to a
+        # bridge port and produced phantom "port 3"/"port 5" FDB entries
+        # on every switch. Only the dot1qTpFdbPort column is wanted here.
+        if not oid.startswith(_DOT1Q_TP_FDB_PORT_PREFIX + "."):
+            continue
         parts = oid.split(".")
 
         # After the base prefix, we expect: <VLAN>.<M1>.<M2>.<M3>.<M4>.<M5>.<M6>

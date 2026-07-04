@@ -142,10 +142,6 @@ _BRIDGE_TABLE_OIDS: dict[str, str] = {
     **{key: oid for _kind, key, oid in _BOX_SENSOR_WALKS},
 }
 
-# Component count of the dot1qTpFdbPort column OID; entries append
-# <VLAN>.<M1>.<M2>.<M3>.<M4>.<M5>.<M6> (7 more components).
-_DOT1Q_TP_FDB_PORT_PREFIX_LEN = len(_DOT1Q_TP_FDB_PORT.split("."))
-
 
 # ---------------------------------------------------------------------------
 # Parsing functions for raw SNMP walk results
@@ -205,12 +201,12 @@ def parse_mac_table(
     bridge_to_if: dict[int, int],
     if_names: dict[int, str],
 ) -> list[tuple[str, int, int, str]]:
-    """Parse dot1qTpFdbTable walk results into (mac, vlan, port, name) tuples.
+    """Parse dot1qTpFdbPort walk results into (mac, vlan, port, name) tuples.
 
     OID format:
         1.3.6.1.2.1.17.7.1.2.2.1.2.<VLAN>.<M1>.<M2>.<M3>.<M4>.<M5>.<M6> = INTEGER: <bridge_port>
 
-    The suffix after the base prefix encodes the VLAN ID followed by
+    The suffix after the column prefix encodes the VLAN ID followed by
     the 6 MAC address bytes as decimal integers.
 
     Args:
@@ -222,20 +218,20 @@ def parse_mac_table(
         List of (mac_str, vlan_id, bridge_port, port_name) tuples.
     """
     results = []
+    # The walk targets the dot1qTpFdbPort column, but keep this guard
+    # as defence in depth: an agent that overruns the base OID would
+    # leak sibling columns — notably dot1qTpFdbStatus (…1.2.2.1.3),
+    # whose INTEGER values (3 = learned, 5 = mgmt) parse identically
+    # to a bridge port and once produced phantom "port 3"/"port 5"
+    # FDB entries on every switch (issue #10).
+    prefix = _DOT1Q_TP_FDB_PORT + "."
     for oid, value in walk:
-        # The walk targets the dot1qTpFdbPort column, but keep this guard
-        # as defence in depth: an agent that overruns the base OID would
-        # leak sibling columns — notably dot1qTpFdbStatus (…1.2.2.1.3),
-        # whose INTEGER values (3 = learned, 5 = mgmt) parse identically
-        # to a bridge port and once produced phantom "port 3"/"port 5"
-        # FDB entries on every switch (issue #10).
-        if not oid.startswith(_DOT1Q_TP_FDB_PORT + "."):
+        if not oid.startswith(prefix):
             continue
-        parts = oid.split(".")
 
-        # After the base prefix, we expect: <VLAN>.<M1>.<M2>.<M3>.<M4>.<M5>.<M6>
-        # That's 7 additional components
-        suffix_parts = parts[_DOT1Q_TP_FDB_PORT_PREFIX_LEN:]
+        # After the prefix, we expect: <VLAN>.<M1>.<M2>.<M3>.<M4>.<M5>.<M6>
+        # That's 7 components
+        suffix_parts = oid[len(prefix) :].split(".")
         if len(suffix_parts) != 7:
             continue
 

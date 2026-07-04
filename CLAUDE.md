@@ -253,8 +253,9 @@ Use SSH agent forwarding and `sudo -E` so that `git pull` can authenticate via t
 # Welland
 ssh -A ten64.welland.mithis.com "cd /opt/gdoc2netcfg && sudo -E git pull"
 
-# Monarto (via WireGuard tunnel)
-ssh -o ControlPath=none -o ForwardAgent=yes tim@10.255.0.2 \
+# Monarto (via WireGuard tunnel; resolves to 10.2.x, routed through the
+# tunnel — the tunnel endpoint 10.98.2.2 also works)
+ssh -o ControlPath=none -o ForwardAgent=yes tim@ten64.monarto.mithis.com \
   "cd /opt/gdoc2netcfg && sudo -E git pull"
 ```
 
@@ -296,8 +297,9 @@ dnsmasq instances run via systemd template units (`dnsmasq@internal`, `dnsmasq@e
   shared/                        # Shared config (base, upstream, logging, edns)
   internal/
     00-listen.conf               # Listen addresses, bind-dynamic
-    02-cross-site.conf           # Cross-site DNS forwarding via WireGuard
     03-auth-server.conf          # Auth DNS server config
+    03-zone-forwarders.conf      # Cross-site DNS forwarding via WireGuard
+                                 #   (monarto's copy is named 02-cross-site.conf)
     04-dhcp-global.conf          # DHCP global settings
     network-*.conf               # Per-VLAN DHCP ranges and domains
     override-*.conf              # Manual per-device overrides
@@ -343,7 +345,7 @@ no-op; a failed commit aborts the deploy.
 
 #### Cross-site DNS forwarding
 
-The two sites forward DNS queries to each other via WireGuard tunnel (`10.255.0.1` welland, `10.255.0.2` monarto). Each site's `02-cross-site.conf` contains `server=` directives to forward the other site's domains, reverse IPv4 zones (`X.10.in-addr.arpa`), and reverse IPv6 zones through the tunnel.
+The two sites forward DNS queries to each other via WireGuard tunnel (`10.98.2.1` welland, `10.98.2.2` monarto, a `10.98.2.0/30`). Each site's zone-forwarder file (`03-zone-forwarders.conf` on welland, `02-cross-site.conf` on monarto) contains `server=` directives to forward the other site's domains, reverse IPv4 zones (`X.10.in-addr.arpa`), and reverse IPv6 zones through the tunnel.
 
 ### nginx
 

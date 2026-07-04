@@ -209,6 +209,10 @@ def parse_mac_table(
     The suffix after the column prefix encodes the VLAN ID followed by
     the 6 MAC address bytes as decimal integers.
 
+    Raises ValueError on a non-integer port value — the walk is pinned
+    to the dot1qTpFdbPort column, so a value that isn't a bridge port
+    means the table layout has drifted from what we expect.
+
     Args:
         walk: Raw (oid_string, value_string) pairs from bulk walk.
         bridge_to_if: Bridge port number -> ifIndex mapping.
@@ -238,9 +242,15 @@ def parse_mac_table(
         try:
             vlan_id = int(suffix_parts[0])
             mac_bytes = [int(b) for b in suffix_parts[1:7]]
-            bridge_port = int(value)
-        except (ValueError, IndexError):
+        except ValueError:
             continue
+
+        try:
+            bridge_port = int(value)
+        except ValueError as exc:
+            raise ValueError(
+                f"non-integer bridge port {value!r} at {oid}"
+            ) from exc
 
         mac_str = _format_mac_bytes(mac_bytes)
 

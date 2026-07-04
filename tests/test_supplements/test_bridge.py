@@ -89,6 +89,16 @@ class TestParseMacTable:
         result = parse_mac_table(walk, {}, {})
         assert len(result) == 0
 
+    def test_raises_on_non_integer_port_value(self):
+        """A non-integer value in the dot1qTpFdbPort column means the
+        table layout drifted — fail loud rather than silently dropping
+        the switch's MAC table."""
+        walk = [
+            ("1.3.6.1.2.1.17.7.1.2.2.1.2.5.170.187.204.221.238.255", "bogus"),
+        ]
+        with pytest.raises(ValueError, match="non-integer bridge port"):
+            parse_mac_table(walk, {}, {})
+
     def test_multiple_vlans_same_mac(self):
         """Same MAC can appear on different VLANs."""
         walk = [

@@ -299,7 +299,6 @@ dnsmasq instances run via systemd template units (`dnsmasq@internal`, `dnsmasq@e
     00-listen.conf               # Listen addresses, bind-dynamic
     03-auth-server.conf          # Auth DNS server config
     03-zone-forwarders.conf      # Cross-site DNS forwarding via WireGuard
-                                 #   (monarto's copy is named 02-cross-site.conf)
     04-dhcp-global.conf          # DHCP global settings
     network-*.conf               # Per-VLAN DHCP ranges and domains
     override-*.conf              # Manual per-device overrides
@@ -345,7 +344,7 @@ no-op; a failed commit aborts the deploy.
 
 #### Cross-site DNS forwarding
 
-The two sites forward DNS queries to each other via WireGuard tunnel (`10.98.2.1` welland, `10.98.2.2` monarto, a `10.98.2.0/30`). Each site's zone-forwarder file (`03-zone-forwarders.conf` on welland, `02-cross-site.conf` on monarto) contains `server=` directives to forward the other site's domains, reverse IPv4 zones (`X.10.in-addr.arpa`), and reverse IPv6 zones through the tunnel.
+The two sites forward DNS queries to each other via WireGuard tunnel (`10.98.2.1` welland, `10.98.2.2` monarto, a `10.98.2.0/30`). Each site's `03-zone-forwarders.conf` contains `server=` directives to forward the other site's domains, reverse IPv4 zones (`X.10.in-addr.arpa`), and reverse IPv6 zones through the tunnel.
 
 ### nginx
 

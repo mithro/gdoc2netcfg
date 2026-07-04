@@ -44,8 +44,12 @@ BRIDGE_CAPABLE_HARDWARE: frozenset[str] = frozenset({
 # Bridge-specific OID constants
 # ---------------------------------------------------------------------------
 
-# Q-BRIDGE-MIB: dot1qTpFdbTable -- MAC address table
-_DOT1Q_TP_FDB_TABLE = "1.3.6.1.2.1.17.7.1.2.2"
+# Q-BRIDGE-MIB: dot1qTpFdbPort -- MAC address table (MAC -> bridge port).
+# Deliberately the port COLUMN, not the whole dot1qTpFdbTable: nothing
+# consumes the sibling dot1qTpFdbStatus column, and walking the full
+# table both doubles the scan's largest walk and once let status rows
+# parse as phantom bridge ports 3/5 fleet-wide (issue #10).
+_DOT1Q_TP_FDB_PORT = "1.3.6.1.2.1.17.7.1.2.2.1.2"
 
 # BRIDGE-MIB: dot1dBasePortIfIndex -- bridge port -> ifIndex mapping
 _DOT1D_BASE_PORT_IF_INDEX = "1.3.6.1.2.1.17.1.4.1.2"
@@ -117,7 +121,7 @@ _IF_IN_ERRORS = "1.3.6.1.2.1.2.2.1.14"
 
 # All bridge table OIDs for bulk walk
 _BRIDGE_TABLE_OIDS: dict[str, str] = {
-    "dot1q_tp_fdb": _DOT1Q_TP_FDB_TABLE,
+    "dot1q_tp_fdb": _DOT1Q_TP_FDB_PORT,
     "dot1d_base_port": _DOT1D_BASE_PORT_IF_INDEX,
     "vlan_names": _DOT1Q_VLAN_STATIC_NAME,
     "pvid": _DOT1Q_PVID,
@@ -138,10 +142,9 @@ _BRIDGE_TABLE_OIDS: dict[str, str] = {
     **{key: oid for _kind, key, oid in _BOX_SENSOR_WALKS},
 }
 
-# The base OID prefix for dot1qTpFdbPort entries:
-# 1.3.6.1.2.1.17.7.1.2.2.1.2.<VLAN>.<M1>.<M2>.<M3>.<M4>.<M5>.<M6>
-_DOT1Q_TP_FDB_PORT_PREFIX = "1.3.6.1.2.1.17.7.1.2.2.1.2"
-_DOT1Q_TP_FDB_PORT_PREFIX_LEN = len(_DOT1Q_TP_FDB_PORT_PREFIX.split("."))
+# Component count of the dot1qTpFdbPort column OID; entries append
+# <VLAN>.<M1>.<M2>.<M3>.<M4>.<M5>.<M6> (7 more components).
+_DOT1Q_TP_FDB_PORT_PREFIX_LEN = len(_DOT1Q_TP_FDB_PORT.split("."))
 
 
 # ---------------------------------------------------------------------------
@@ -220,12 +223,13 @@ def parse_mac_table(
     """
     results = []
     for oid, value in walk:
-        # The walk covers the whole dot1qTpFdbTable, so it also returns
-        # sibling columns — notably dot1qTpFdbStatus (…1.2.2.1.3), whose
-        # INTEGER values (3 = learned, 5 = mgmt) parse identically to a
-        # bridge port and produced phantom "port 3"/"port 5" FDB entries
-        # on every switch. Only the dot1qTpFdbPort column is wanted here.
-        if not oid.startswith(_DOT1Q_TP_FDB_PORT_PREFIX + "."):
+        # The walk targets the dot1qTpFdbPort column, but keep this guard
+        # as defence in depth: an agent that overruns the base OID would
+        # leak sibling columns — notably dot1qTpFdbStatus (…1.2.2.1.3),
+        # whose INTEGER values (3 = learned, 5 = mgmt) parse identically
+        # to a bridge port and once produced phantom "port 3"/"port 5"
+        # FDB entries on every switch (issue #10).
+        if not oid.startswith(_DOT1Q_TP_FDB_PORT + "."):
             continue
         parts = oid.split(".")
 

@@ -336,6 +336,33 @@ def test_empty_devices_lists_no_children_message() -> None:
     assert "Coordinator  (no children in networkmap)" in out
 
 
+def test_dot_escapes_quotes_and_newlines() -> None:
+    """A description with quotes/newlines must produce valid DOT."""
+    devices = [
+        _device(
+            "Z1",
+            parent="Coordinator",
+            device_type="Router",
+            description='The "good" plug\nsecond line',
+        ),
+    ]
+    dot = generate_zigbee_topology(devices, _bridge(), "welland")
+    # The quote is escaped inside the label; no raw newline survives.
+    assert '\\"good\\"' in dot
+    assert "\nsecond line" not in dot
+    assert "second line" in dot
+    # Every line must have balanced unescaped quotes (cheap validity check).
+    for line in dot.splitlines():
+        unescaped = line.replace('\\"', "")
+        assert unescaped.count('"') % 2 == 0, line
+
+
+def test_dot_graph_id_is_quoted() -> None:
+    """A site name with a hyphen is not a bare DOT identifier."""
+    dot = generate_zigbee_topology([], _bridge(), "my-site")
+    assert 'digraph "zigbee_my-site" {' in dot
+
+
 def test_dot_renderer_still_works_alongside_text() -> None:
     """Sanity check that the DOT generator wasn't broken by the additions."""
     devices = [
@@ -344,6 +371,6 @@ def test_dot_renderer_still_works_alongside_text() -> None:
         _device("T2", parent="Z1"),
     ]
     dot = generate_zigbee_topology(devices, _bridge(), "welland")
-    assert "digraph zigbee_welland" in dot
+    assert 'digraph "zigbee_welland"' in dot
     assert '"B1" -> "Coordinator"' in dot
     assert '"T2" -> "Z1"' in dot

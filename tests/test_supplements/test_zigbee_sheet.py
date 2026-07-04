@@ -86,8 +86,7 @@ def _run(config, devices, rows, dry_run=False):
         return_value=FakeClient(ws),
     ):
         written = update_zigbee_sheet(
-            config, devices, {config.site.name: None},
-            dry_run=dry_run, verbose=True,
+            config, devices, dry_run=dry_run, verbose=True,
         )
     return written, ws
 

@@ -121,8 +121,8 @@ def generate_zigbee_topology(
             unconnected.append(d)
 
     lines: list[str] = []
-    lines.append(f'digraph zigbee_{site_name} {{')
-    lines.append(f'    label="Zigbee Mesh — {site_name}";')
+    lines.append(f'digraph {_dot_quote(f"zigbee_{site_name}")} {{')
+    lines.append(f'    label={_dot_quote(f"Zigbee Mesh — {site_name}")};')
     lines.append("    labelloc=t;")
     lines.append("    rankdir=TB;")
     lines.append("    nodesep=0.4;")
@@ -133,44 +133,46 @@ def generate_zigbee_topology(
     lines.append(
         f'    "Coordinator" '
         f'[shape=doublecircle, style=filled, fillcolor="#4a90d9", '
-        f'fontcolor=white, label="{coord_label}"];'
+        f'fontcolor=white, label={_dot_quote(coord_label, raw=True)}];'
     )
     lines.append("")
 
     # Router nodes
     if routers:
         lines.append("    // Routers")
-        for d in sorted(routers, key=lambda x: x.friendly_name):
+        for d in sorted(routers, key=lambda x: natural_sort_key(x.friendly_name)):
             label = _node_label(d)
             avail_color = _avail_fill(d)
             lines.append(
-                f'    "{d.friendly_name}" '
+                f'    {_dot_quote(d.friendly_name)} '
                 f'[shape=box, style=filled, fillcolor="{avail_color}", '
-                f'label="{label}"];'
+                f'label={_dot_quote(label, raw=True)}];'
             )
         lines.append("")
 
     # EndDevice nodes
     if end_devices:
         lines.append("    // End Devices")
-        for d in sorted(end_devices, key=lambda x: x.friendly_name):
+        for d in sorted(end_devices, key=lambda x: natural_sort_key(x.friendly_name)):
             label = _node_label(d)
             avail_color = _avail_fill(d)
             lines.append(
-                f'    "{d.friendly_name}" '
+                f'    {_dot_quote(d.friendly_name)} '
                 f'[shape=ellipse, style=filled, fillcolor="{avail_color}", '
-                f'label="{label}"];'
+                f'label={_dot_quote(label, raw=True)}];'
             )
         lines.append("")
 
     # Edges: child -> parent (connected_via)
     if connected:
         lines.append("    // Parent links (from networkmap)")
-        for d in sorted(connected, key=lambda x: x.friendly_name):
+        for d in sorted(connected, key=lambda x: natural_sort_key(x.friendly_name)):
             parent = d.connected_via
             # connected_via is a friendly_name; it could be "Coordinator"
             # or another device's friendly_name
-            lines.append(f'    "{d.friendly_name}" -> "{parent}";')
+            lines.append(
+                f'    {_dot_quote(d.friendly_name)} -> {_dot_quote(parent)};'
+            )
         lines.append("")
 
     # Unconnected devices cluster
@@ -181,8 +183,8 @@ def generate_zigbee_topology(
         lines.append("        style=dashed;")
         lines.append('        color="#999999";')
         lines.append('        fontcolor="#999999";')
-        for d in sorted(unconnected, key=lambda x: x.friendly_name):
-            lines.append(f'        "{d.friendly_name}";')
+        for d in sorted(unconnected, key=lambda x: natural_sort_key(x.friendly_name)):
+            lines.append(f'        {_dot_quote(d.friendly_name)};')
         lines.append("    }")
         lines.append("")
 
@@ -190,15 +192,36 @@ def generate_zigbee_topology(
     return "\n".join(lines)
 
 
+def _dot_quote(text: str, raw: bool = False) -> str:
+    """Return *text* as a double-quoted DOT string.
+
+    Escapes backslashes and double quotes, and converts raw newlines to
+    DOT's literal ``\\n`` — a friendly name or description containing a
+    quote must not produce invalid DOT.  With ``raw=True``, existing
+    ``\\n`` sequences are kept as label line breaks (backslashes are not
+    re-escaped); the caller guarantees the text contains no other
+    backslash sequences.
+    """
+    if not raw:
+        text = text.replace("\\", "\\\\")
+    text = text.replace('"', '\\"').replace("\n", "\\n")
+    return f'"{text}"'
+
+
 def _node_label(device: ZigbeeDevice) -> str:
-    """Build a multi-line DOT node label for a device."""
+    """Build a multi-line DOT node label for a device.
+
+    Backslashes in device data are escaped here (before the label parts
+    are joined with literal ``\\n`` line breaks), so the result is safe
+    to pass through ``_dot_quote(..., raw=True)``.
+    """
     parts = [device.friendly_name]
     if device.description:
         parts.append(device.description)
     model = device.model or device.model_id
     if model:
         parts.append(model)
-    return "\\n".join(parts)
+    return "\\n".join(part.replace("\\", "\\\\") for part in parts)
 
 
 def _avail_fill(device: ZigbeeDevice) -> str:

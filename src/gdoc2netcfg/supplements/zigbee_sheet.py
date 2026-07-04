@@ -28,7 +28,7 @@ from gdoc2netcfg.utils.gsheets import get_gspread_client
 
 if TYPE_CHECKING:
     from gdoc2netcfg.config import PipelineConfig
-    from gdoc2netcfg.supplements.zigbee import ZigbeeBridgeInfo, ZigbeeDevice
+    from gdoc2netcfg.supplements.zigbee import ZigbeeDevice
 
 # Expected column header for the primary key.  Must exist in the sheet.
 _IEEE_COL = "IEEE Address"
@@ -93,7 +93,6 @@ def _device_type_label(device: ZigbeeDevice) -> str:
 
 def _device_to_row(
     device: ZigbeeDevice,
-    bridge: ZigbeeBridgeInfo | None,
     col_g_value: str,
     existing_type: str,
     existing_connected_via: str,
@@ -130,7 +129,6 @@ def _device_to_row(
 def update_zigbee_sheet(
     config: PipelineConfig,
     devices: list[ZigbeeDevice],
-    bridge_infos: dict[str, ZigbeeBridgeInfo | None],
     dry_run: bool = False,
     verbose: bool = False,
 ) -> int:
@@ -214,7 +212,6 @@ def update_zigbee_sheet(
                 f"'{device.site}', not in this run's configured sites "
                 f"{sorted(site_scope)}"
             )
-        bridge = bridge_infos.get(device.site)
         ieee = device.ieee_address
 
         if ieee in blank_site_ieees:
@@ -245,7 +242,7 @@ def update_zigbee_sheet(
                 else ""
             )
             new_row = _device_to_row(
-                device, bridge, col_g_val, existing_type, existing_connected_via,
+                device, col_g_val, existing_type, existing_connected_via,
             )
 
             padded_existing = [
@@ -269,7 +266,7 @@ def update_zigbee_sheet(
                     file=sys.stderr,
                 )
         else:
-            new_row = _device_to_row(device, bridge, "", "", "")
+            new_row = _device_to_row(device, "", "", "")
             appends.append(new_row)
             if verbose:
                 print(

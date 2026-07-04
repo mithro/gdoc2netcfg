@@ -2422,7 +2422,7 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
         )
         return 1
 
-    from gdoc2netcfg.supplements.zigbee import ZigbeeBridgeInfo, ZigbeeDevice
+    from gdoc2netcfg.supplements.zigbee import ZigbeeDevice
     from gdoc2netcfg.supplements.zigbee_sheet import update_zigbee_sheet
 
     zigbee_data = _load_latest_from_db(config, "load_latest_zigbee") or {}
@@ -2433,7 +2433,6 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
     # scan tombstones it) is skipped loudly.
     this_site = config.site.name
     configured = {this_site.strip().lower()}
-    bridge_infos: dict[str, ZigbeeBridgeInfo | None] = {}
     all_devices: list[ZigbeeDevice] = []
     for site_name, doc in sorted(zigbee_data.items()):
         if site_name.strip().lower() not in configured:
@@ -2443,9 +2442,6 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             continue
-        bridge_infos[site_name] = (
-            ZigbeeBridgeInfo(**doc["bridge"]) if doc["bridge"] else None
-        )
         all_devices.extend(
             ZigbeeDevice(**device)
             for _ieee, device in sorted(doc["devices"].items())
@@ -2457,7 +2453,6 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
             "Run 'gdoc2netcfg zigbee scan' first.",
             file=sys.stderr,
         )
-    bridge_infos.setdefault(this_site, None)
 
     if not all_devices:
         print("No Zigbee data to write. Run 'gdoc2netcfg zigbee scan' first.")
@@ -2469,7 +2464,6 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
         written = update_zigbee_sheet(
             config,
             all_devices,
-            bridge_infos,
             dry_run=dry_run,
             verbose=True,
         )
@@ -2524,17 +2518,28 @@ def cmd_zigbee_topology(args: argparse.Namespace) -> int:
     if zigbee_data:
         _save_to_discovery_db(config, "zigbee", "save_zigbee", zigbee_data)
 
+    # A failed site keeps its baseline document (scan_zigbee's error
+    # contract) — label its rendered tree as stale, not current.
+    # Error strings are "<site_name>: <reason>".
+    failed_sites = {e.split(":", 1)[0] for e in errors}
+
     if fmt == "text":
         colour = use_color(sys.stdout)
         first = True
         for site_name, doc in sorted(zigbee_data.items()):
             bridge = ZigbeeBridgeInfo(**doc["bridge"]) if doc["bridge"] else None
             devices = [ZigbeeDevice(**d) for d in doc["devices"].values()]
+            note = ""
+            if site_name in failed_sites:
+                note = (
+                    "WARNING: this scan failed — showing the last "
+                    "successfully saved data"
+                )
             if not first:
                 print()
             print(
                 generate_zigbee_text_tree(
-                    devices, bridge, site_name, use_color=colour,
+                    devices, bridge, site_name, use_color=colour, note=note,
                 ),
             )
             first = False

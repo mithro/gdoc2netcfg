@@ -86,8 +86,7 @@ def _run(config, devices, rows, dry_run=False):
         return_value=FakeClient(ws),
     ):
         written = update_zigbee_sheet(
-            config, devices, {config.site.name: None},
-            dry_run=dry_run, verbose=True,
+            config, devices, dry_run=dry_run, verbose=True,
         )
     return written, ws
 
@@ -176,26 +175,38 @@ class TestPerSiteKeying:
         assert new_row[1] == "Custom Type"     # Type fallback to sheet value
         assert new_row[7] == "MG3000"          # model_id written
 
-    def test_connected_via_uses_bridge_info(self):
-        """A real bridge info renders 'coordinator (site)' in column K."""
-        from gdoc2netcfg.supplements.zigbee import ZigbeeBridgeInfo
-
-        bridge = ZigbeeBridgeInfo(
-            site="welland", z2m_version="1.38.0",
-            coordinator_ieee="0x00aa", coordinator_type="ConBee II",
-            channel=15, pan_id="0x1a62",
+    def test_connected_via_from_networkmap(self):
+        """device.connected_via (the networkmap parent) renders in column K."""
+        written, ws = _run(
+            _config("welland"),
+            [_device("welland", "0x01", connected_via="Z5")],
+            [HEADER],
         )
-        ws = FakeWorksheet([HEADER])
-        with patch(
-            "gdoc2netcfg.supplements.zigbee_sheet.get_gspread_client",
-            return_value=FakeClient(ws),
-        ):
-            written = update_zigbee_sheet(
-                _config("welland"), [_device("welland", "0x01")],
-                {"welland": bridge}, verbose=False,
-            )
         assert written == 1
-        assert ws.appended[0][10] == "ConBee II (welland)"
+        assert ws.appended[0][10] == "Z5"
+
+    def test_connected_via_preserved_when_networkmap_missing(self):
+        """An existing Connected Via cell survives a scan that captured
+        no parent for the device (networkmap misses sleepy devices)."""
+        row = _row("welland", "0x01", cells={10: "Z5"})
+        device = _device(
+            "welland", "0x01",
+            description="Kitchen bench",  # force a row rewrite
+        )
+        written, ws = _run(_config("welland"), [device], [HEADER, row])
+        assert written == 1
+        new_row = ws.batch_updates[0]["values"][0]
+        assert new_row[3] == "Kitchen bench"
+        assert new_row[10] == "Z5"             # Connected Via preserved
+
+    def test_connected_via_networkmap_overwrites_existing(self):
+        """A freshly captured parent replaces the stale sheet value."""
+        row = _row("welland", "0x01", cells={10: "Z5"})
+        device = _device("welland", "0x01", connected_via="Z9")
+        written, ws = _run(_config("welland"), [device], [HEADER, row])
+        assert written == 1
+        new_row = ws.batch_updates[0]["values"][0]
+        assert new_row[10] == "Z9"
 
 
 class TestWarnings:

@@ -22,11 +22,12 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
-import re
 import sqlite3
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from gdoc2netcfg.utils.sort import natural_sort_key as _natural_sort_key
 
 if TYPE_CHECKING:
     from gdoc2netcfg.config import PipelineConfig
@@ -1516,14 +1517,6 @@ def _is_physical_port(port_id: int, port_name: str | None) -> bool:
     return port_id < 100000
 
 
-def _natural_sort_key(name: str) -> list:
-    """Sort key for names with embedded numbers (gi2 before gi10)."""
-    return [
-        int(part) if part.isdigit() else part.lower()
-        for part in re.split(r"(\d+)", name)
-    ]
-
-
 def _print_switch_data(data: SwitchData) -> None:
     """Print unified switch data, grouped per-port."""
     _POE_ADMIN = {1: "enabled", 2: "disabled"}
@@ -2299,7 +2292,7 @@ def cmd_sensors2mqtt_status(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Subcommands: zigbee scan / show / update-sheet
+# Subcommands: zigbee scan / show / update-sheet / topology
 # ---------------------------------------------------------------------------
 
 
@@ -2429,7 +2422,7 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
         )
         return 1
 
-    from gdoc2netcfg.supplements.zigbee import ZigbeeBridgeInfo, ZigbeeDevice
+    from gdoc2netcfg.supplements.zigbee import ZigbeeDevice
     from gdoc2netcfg.supplements.zigbee_sheet import update_zigbee_sheet
 
     zigbee_data = _load_latest_from_db(config, "load_latest_zigbee") or {}
@@ -2440,7 +2433,6 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
     # scan tombstones it) is skipped loudly.
     this_site = config.site.name
     configured = {this_site.strip().lower()}
-    bridge_infos: dict[str, ZigbeeBridgeInfo | None] = {}
     all_devices: list[ZigbeeDevice] = []
     for site_name, doc in sorted(zigbee_data.items()):
         if site_name.strip().lower() not in configured:
@@ -2450,9 +2442,6 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             continue
-        bridge_infos[site_name] = (
-            ZigbeeBridgeInfo(**doc["bridge"]) if doc["bridge"] else None
-        )
         all_devices.extend(
             ZigbeeDevice(**device)
             for _ieee, device in sorted(doc["devices"].items())
@@ -2464,7 +2453,6 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
             "Run 'gdoc2netcfg zigbee scan' first.",
             file=sys.stderr,
         )
-    bridge_infos.setdefault(this_site, None)
 
     if not all_devices:
         print("No Zigbee data to write. Run 'gdoc2netcfg zigbee scan' first.")
@@ -2476,7 +2464,6 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
         written = update_zigbee_sheet(
             config,
             all_devices,
-            bridge_infos,
             dry_run=dry_run,
             verbose=True,
         )
@@ -2486,6 +2473,106 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
 
     action = "Would write" if dry_run else "Wrote"
     print(f"\n{action} {written} row(s) to '{config.zigbee.sheet_name}'.")
+    return 0
+
+
+def cmd_zigbee_topology(args: argparse.Namespace) -> int:
+    """Generate Zigbee mesh topology diagrams with fresh networkmap data."""
+    config = _load_config(args)
+
+    if not config.zigbee.enabled:
+        print(
+            "Error: No [zigbee] section configured in gdoc2netcfg.toml",
+            file=sys.stderr,
+        )
+        return 1
+
+    from gdoc2netcfg.supplements.zigbee import (
+        ZigbeeBridgeInfo,
+        ZigbeeDevice,
+        raise_for_zigbee_errors,
+        scan_zigbee,
+    )
+    from gdoc2netcfg.supplements.zigbee_topology import (
+        generate_zigbee_text_tree,
+        generate_zigbee_topology,
+        render_dot,
+    )
+    from gdoc2netcfg.utils.terminal import use_color
+
+    output_dir = Path(getattr(args, "output_dir", None) or ".")
+    fmt = getattr(args, "format", "svg")
+
+    # Always scan fresh to get up-to-date networkmap parent relationships
+    try:
+        zigbee_data, errors = scan_zigbee(
+            config.site.name,
+            config.homeassistant.mqtt,
+            _load_latest_from_db(config, "load_latest_zigbee"),
+            verbose=True,
+        )
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    # Persist the fresh scan so other commands see the same data.
+    if zigbee_data:
+        _save_to_discovery_db(config, "zigbee", "save_zigbee", zigbee_data)
+
+    # A failed site keeps its baseline document (scan_zigbee's error
+    # contract) — label its rendered tree as stale, not current.
+    # Error strings are "<site_name>: <reason>".
+    failed_sites = {e.split(":", 1)[0] for e in errors}
+
+    _STALE_NOTE = (
+        "WARNING: this scan failed — showing the last successfully saved data"
+    )
+
+    if fmt == "text":
+        colour = use_color(sys.stdout)
+        first = True
+        for site_name, doc in sorted(zigbee_data.items()):
+            bridge = ZigbeeBridgeInfo(**doc["bridge"]) if doc["bridge"] else None
+            devices = [ZigbeeDevice(**d) for d in doc["devices"].values()]
+            note = _STALE_NOTE if site_name in failed_sites else ""
+            if not first:
+                print()
+            try:
+                tree = generate_zigbee_text_tree(
+                    devices, bridge, site_name, use_color=colour, note=note,
+                )
+            except RuntimeError as e:
+                # e.g. corrupt parent data (routing loop) — the scan was
+                # already persisted; fail the render cleanly.
+                print(f"Error: {e}", file=sys.stderr)
+                return 1
+            print(tree)
+            first = False
+        raise_for_zigbee_errors(errors)
+        return 0 if zigbee_data else 1
+
+    wrote_any = False
+    for site_name, doc in sorted(zigbee_data.items()):
+        bridge = ZigbeeBridgeInfo(**doc["bridge"]) if doc["bridge"] else None
+        devices = [ZigbeeDevice(**d) for d in doc["devices"].values()]
+        note = _STALE_NOTE if site_name in failed_sites else ""
+
+        dot = generate_zigbee_topology(devices, bridge, site_name, note=note)
+
+        out_path = output_dir / f"zigbee_{site_name}.{fmt}"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            render_dot(dot, out_path, fmt=fmt)
+        except RuntimeError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+
+        print(f"  Wrote {out_path}")
+        wrote_any = True
+
+    raise_for_zigbee_errors(errors)
+    if not wrote_any:
+        return 1
     return 0
 
 
@@ -2997,6 +3084,22 @@ def main(argv: list[str] | None = None) -> int:
         help="Show what would be written without updating the sheet",
     )
 
+    zigbee_topo_parser = zigbee_subparsers.add_parser(
+        "topology",
+        help="Generate Zigbee mesh diagram per site (SVG/PNG or text tree)",
+    )
+    zigbee_topo_parser.add_argument(
+        "--output-dir", default=".",
+        help="Directory for output files (svg/png only; default: current "
+             "directory). Ignored for --format=text.",
+    )
+    zigbee_topo_parser.add_argument(
+        "--format", choices=["svg", "png", "text"], default="svg",
+        help="Output format. 'svg'/'png' render an image file per site via "
+             "graphviz; 'text' prints a console-friendly tree to stdout. "
+             "(default: svg)",
+    )
+
     # db (database management and history)
     db_parser = subparsers.add_parser(
         "db", help="Database management and history queries",
@@ -3091,6 +3194,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_zigbee_show(args)
         elif args.zigbee_command == "update-sheet":
             return cmd_zigbee_update_sheet(args)
+        elif args.zigbee_command == "topology":
+            return cmd_zigbee_topology(args)
         else:
             zigbee_parser.print_help()
             return 0

@@ -28,7 +28,7 @@ from gdoc2netcfg.utils.gsheets import get_gspread_client
 
 if TYPE_CHECKING:
     from gdoc2netcfg.config import PipelineConfig
-    from gdoc2netcfg.supplements.zigbee import ZigbeeBridgeInfo, ZigbeeDevice
+    from gdoc2netcfg.supplements.zigbee import ZigbeeDevice
 
 # Expected column header for the primary key.  Must exist in the sheet.
 _IEEE_COL = "IEEE Address"
@@ -48,13 +48,35 @@ _EXPECTED_HEADER = [
     "State", "", "Model", "IEEE Address", "Power Source", "Connected Via",
 ]
 
+# Index of the Connected Via column K (0-based).  Populated from the Z2M
+# networkmap; preserved when the current scan didn't capture a parent.
+_CONNECTED_VIA_COL_IDX = 10
+
 
 def _device_type_label(device: ZigbeeDevice) -> str:
-    """Derive a human-readable device type from Z2M model information.
+    """Derive a human-readable device type from Z2M model/description information.
 
-    Returns an empty string when the model is unrecognised so that
-    existing values in the sheet are preserved (see update logic below).
+    Uses definition.description as the primary signal (more reliable than model
+    string matching); falls back to model/model_id string matching.
+    Returns an empty string when unrecognised so existing sheet values are
+    preserved (see update logic below).
     """
+    # Use Z2M's model description (definition.description) as primary signal
+    desc = device.definition_description.lower()
+    if "soil" in desc or "moisture" in desc:
+        return "Soil Sensor"
+    if "temperature" in desc or "humidity" in desc:
+        return "Temp Sensor"
+    if "motion" in desc or "occupancy" in desc or "presence" in desc:
+        return "Motion Sensor"
+    if "contact" in desc or "door" in desc or "window" in desc:
+        return "Door Sensor"
+    if "plug" in desc or "socket" in desc or "outlet" in desc:
+        return "Smart Plug"
+    if "relay" in desc or "switch" in desc:
+        return "Smart Switch"
+
+    # Fall back to model string matching
     text = (device.model or device.model_id or "").lower()
     if "soil" in text or "moisture" in text:
         return "Soil Sensor"
@@ -71,44 +93,42 @@ def _device_type_label(device: ZigbeeDevice) -> str:
 
 def _device_to_row(
     device: ZigbeeDevice,
-    bridge: ZigbeeBridgeInfo | None,
     col_g_value: str,
     existing_type: str,
+    existing_connected_via: str,
 ) -> list[str]:
     """Build a sheet row from a ZigbeeDevice.
 
     col_g_value: preserved from the existing row (or "" for new rows).
     existing_type: existing Type cell value; used when we can't determine
                    the type ourselves.
+    existing_connected_via: existing Connected Via cell value; preserved when
+                            the networkmap didn't capture this device's parent.
     """
     derived_type = _device_type_label(device)
     row_type = derived_type or existing_type  # prefer derived; fall back to sheet value
-
-    connected_via = ""
-    if bridge:
-        connected_via = f"{bridge.coordinator_type} ({device.site})"
+    connected_via = device.connected_via or existing_connected_via
 
     avail = device.availability.capitalize() if device.availability else ""
 
     return [
-        device.site,                        # A: Site
-        row_type,                           # B: Type
-        device.object_id,                   # C: Entity Name
-        "",                                 # D: Description (not in Z2M data)
-        device.friendly_name,               # E: Friendly Name
-        avail,                              # F: State
-        col_g_value,                        # G: unnamed — preserved or blank
-        device.model_id or device.model,    # H: Model
-        device.ieee_address,                # I: IEEE Address
-        device.power_source,                # J: Power Source
-        connected_via,                      # K: Connected Via
+        device.site,                             # A: Site
+        row_type,                                # B: Type
+        device.object_id or device.friendly_name,  # C: Entity Name (fallback to friendly_name)
+        device.description,                      # D: Description
+        device.friendly_name,                    # E: Friendly Name
+        avail,                                   # F: State
+        col_g_value,                             # G: unnamed — preserved or blank
+        device.model_id or device.model,         # H: Model
+        device.ieee_address,                     # I: IEEE Address
+        device.power_source,                     # J: Power Source
+        connected_via,                           # K: Connected Via (from networkmap)
     ]
 
 
 def update_zigbee_sheet(
     config: PipelineConfig,
     devices: list[ZigbeeDevice],
-    bridge_infos: dict[str, ZigbeeBridgeInfo | None],
     dry_run: bool = False,
     verbose: bool = False,
 ) -> int:
@@ -192,7 +212,6 @@ def update_zigbee_sheet(
                 f"'{device.site}', not in this run's configured sites "
                 f"{sorted(site_scope)}"
             )
-        bridge = bridge_infos.get(device.site)
         ieee = device.ieee_address
 
         if ieee in blank_site_ieees:
@@ -217,7 +236,14 @@ def update_zigbee_sheet(
                 if type_col_idx < len(existing_row)
                 else ""
             )
-            new_row = _device_to_row(device, bridge, col_g_val, existing_type)
+            existing_connected_via = (
+                existing_row[_CONNECTED_VIA_COL_IDX]
+                if _CONNECTED_VIA_COL_IDX < len(existing_row)
+                else ""
+            )
+            new_row = _device_to_row(
+                device, col_g_val, existing_type, existing_connected_via,
+            )
 
             padded_existing = [
                 existing_row[i] if i < len(existing_row) else ""
@@ -240,7 +266,7 @@ def update_zigbee_sheet(
                     file=sys.stderr,
                 )
         else:
-            new_row = _device_to_row(device, bridge, "", "")
+            new_row = _device_to_row(device, "", "", "")
             appends.append(new_row)
             if verbose:
                 print(

@@ -73,7 +73,10 @@ def get_gspread_client(sheets_config: SheetsConfig) -> object:
         else:
             from google_auth_oauthlib.flow import InstalledAppFlow
             flow = InstalledAppFlow.from_client_secrets_file(str(creds_path), _SCOPES)
-            creds = flow.run_local_server(port=0)
+            # Desktop app (installed) credentials allow any localhost port.
+            # open_browser=False prints the URL for manual copy-paste
+            # (headless-friendly).
+            creds = flow.run_local_server(port=0, open_browser=False)
 
         token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(creds.to_json())

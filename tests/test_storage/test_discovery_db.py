@@ -1218,6 +1218,9 @@ def _zb_device(site: str, ieee: str, **overrides) -> dict:
         "link_quality": 80,
         "availability": "online",
         "network_address": 1234,
+        "description": "Kitchen bench",
+        "definition_description": "Temperature and humidity sensor",
+        "connected_via": "Coordinator",
     }
     d.update(overrides)
     return d
@@ -1484,7 +1487,7 @@ class TestTasmotaTombstoneMigration:
         raw.commit()
         raw.close()
 
-        # Reopening runs the v8 upgrade.
+        # Reopening runs the v8 upgrade (and any later steps).
         db2 = DiscoveryDB(path)
         cols = [r[1] for r in db2.connection.execute(
             "PRAGMA table_info(tasmota_devices)")]
@@ -1492,7 +1495,7 @@ class TestTasmotaTombstoneMigration:
         version = db2.connection.execute(
             "SELECT value FROM _meta WHERE key = 'schema_version'"
         ).fetchone()[0]
-        assert int(version) == 8
+        assert int(version) == DiscoveryDB.SCHEMA_VERSION
         # Pre-existing row defaults to live (is_tombstone=0) and round-trips.
         assert db2.load_latest_tasmota() == {"plug1": _tasmota_doc()}
         db2.close()
@@ -1502,4 +1505,86 @@ class TestTasmotaTombstoneMigration:
         cols = [r[1] for r in db.connection.execute(
             "PRAGMA table_info(tasmota_devices)")]
         assert "is_tombstone" in cols
+        db.close()
+
+
+class TestZigbeeNetworkmapMigration:
+    _V9_COLUMNS = ("description", "definition_description", "connected_via")
+
+    def test_v9_adds_columns_and_preserves_data(self, tmp_path: Path):
+        path = tmp_path / "discovery.db"
+        # Build a current DB with a zigbee device row.
+        db = DiscoveryDB(path)
+        s = db.begin_scan("zigbee")
+        doc = {
+            "bridge": _zb_bridge("welland"),
+            "devices": {"0x01": _zb_device("welland", "0x01")},
+        }
+        db.save_zigbee(s, {"welland": doc})
+        db.finish_scan(s, host_count=1, changed_count=2)
+        db.close()
+
+        # Simulate a pre-v9 DB: drop the columns and reset the version.
+        raw = sqlite3.connect(path)
+        for col in self._V9_COLUMNS:
+            raw.execute(f"ALTER TABLE zigbee_devices DROP COLUMN {col}")
+        raw.execute("UPDATE _meta SET value = '8' WHERE key = 'schema_version'")
+        raw.commit()
+        raw.close()
+
+        # Reopening runs the v9 upgrade.
+        db2 = DiscoveryDB(path)
+        cols = [r[1] for r in db2.connection.execute(
+            "PRAGMA table_info(zigbee_devices)")]
+        for col in self._V9_COLUMNS:
+            assert col in cols
+        version = db2.connection.execute(
+            "SELECT value FROM _meta WHERE key = 'schema_version'"
+        ).fetchone()[0]
+        assert int(version) == DiscoveryDB.SCHEMA_VERSION
+        # The pre-upgrade row reads back with the new fields defaulted
+        # to "" (the dataclass defaults), everything else intact.
+        loaded = db2.load_latest_zigbee()["welland"]["devices"]["0x01"]
+        expected = _zb_device(
+            "welland", "0x01",
+            description="", definition_description="", connected_via="",
+        )
+        assert loaded == expected
+        db2.close()
+
+    def test_fresh_db_has_networkmap_columns(self, tmp_path: Path):
+        db = DiscoveryDB(tmp_path / "fresh.db")
+        cols = [r[1] for r in db.connection.execute(
+            "PRAGMA table_info(zigbee_devices)")]
+        for col in self._V9_COLUMNS:
+            assert col in cols
+        db.close()
+
+    def test_connected_via_change_writes_a_delta_row(self, tmp_path: Path):
+        """A re-routed device (new networkmap parent) is a meaningful
+        change, not volatile churn — it gets a new row."""
+        db = DiscoveryDB(tmp_path / "discovery.db")
+        doc1 = {
+            "bridge": _zb_bridge("welland"),
+            "devices": {
+                "0x01": _zb_device("welland", "0x01", connected_via="Z5"),
+            },
+        }
+        s1 = db.begin_scan("zigbee")
+        db.save_zigbee(s1, {"welland": doc1})
+        db.finish_scan(s1, host_count=1, changed_count=2)
+
+        doc2 = {
+            "bridge": _zb_bridge("welland"),
+            "devices": {
+                "0x01": _zb_device("welland", "0x01", connected_via="Z9"),
+            },
+        }
+        s2 = db.begin_scan("zigbee")
+        changed = db.save_zigbee(s2, {"welland": doc2})
+        db.finish_scan(s2, host_count=1, changed_count=changed)
+
+        assert changed == 1  # the device row only; bridge unchanged
+        loaded = db.load_latest_zigbee()["welland"]["devices"]["0x01"]
+        assert loaded["connected_via"] == "Z9"
         db.close()

@@ -2523,25 +2523,29 @@ def cmd_zigbee_topology(args: argparse.Namespace) -> int:
     # Error strings are "<site_name>: <reason>".
     failed_sites = {e.split(":", 1)[0] for e in errors}
 
+    _STALE_NOTE = (
+        "WARNING: this scan failed — showing the last successfully saved data"
+    )
+
     if fmt == "text":
         colour = use_color(sys.stdout)
         first = True
         for site_name, doc in sorted(zigbee_data.items()):
             bridge = ZigbeeBridgeInfo(**doc["bridge"]) if doc["bridge"] else None
             devices = [ZigbeeDevice(**d) for d in doc["devices"].values()]
-            note = ""
-            if site_name in failed_sites:
-                note = (
-                    "WARNING: this scan failed — showing the last "
-                    "successfully saved data"
-                )
+            note = _STALE_NOTE if site_name in failed_sites else ""
             if not first:
                 print()
-            print(
-                generate_zigbee_text_tree(
+            try:
+                tree = generate_zigbee_text_tree(
                     devices, bridge, site_name, use_color=colour, note=note,
-                ),
-            )
+                )
+            except RuntimeError as e:
+                # e.g. corrupt parent data (routing loop) — the scan was
+                # already persisted; fail the render cleanly.
+                print(f"Error: {e}", file=sys.stderr)
+                return 1
+            print(tree)
             first = False
         raise_for_zigbee_errors(errors)
         return 0 if zigbee_data else 1
@@ -2550,8 +2554,9 @@ def cmd_zigbee_topology(args: argparse.Namespace) -> int:
     for site_name, doc in sorted(zigbee_data.items()):
         bridge = ZigbeeBridgeInfo(**doc["bridge"]) if doc["bridge"] else None
         devices = [ZigbeeDevice(**d) for d in doc["devices"].values()]
+        note = _STALE_NOTE if site_name in failed_sites else ""
 
-        dot = generate_zigbee_topology(devices, bridge, site_name)
+        dot = generate_zigbee_topology(devices, bridge, site_name, note=note)
 
         out_path = output_dir / f"zigbee_{site_name}.{fmt}"
         out_path.parent.mkdir(parents=True, exist_ok=True)

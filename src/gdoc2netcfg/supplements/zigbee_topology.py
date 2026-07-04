@@ -73,6 +73,8 @@ def generate_zigbee_topology(
     devices: list[ZigbeeDevice],
     bridge: ZigbeeBridgeInfo | None,
     site_name: str,
+    *,
+    note: str = "",
 ) -> str:
     """Generate a Graphviz DOT diagram for a single site's Zigbee mesh.
 
@@ -80,6 +82,8 @@ def generate_zigbee_topology(
         devices: All ZigbeeDevice records for this site.
         bridge: Bridge/coordinator info (for labelling the Coordinator node).
         site_name: Site name (used in the graph title).
+        note: Optional warning line appended to the graph title (e.g. a
+            staleness marker when rendering baseline data).
 
     Returns:
         DOT-format string.
@@ -95,9 +99,10 @@ def generate_zigbee_topology(
 
     # Coordinator label
     if bridge:
-        coord_label = (
-            f"Coordinator\\n{bridge.coordinator_type}\\n"
-            f"Ch {bridge.channel}  PAN {bridge.pan_id}"
+        coord_label = _dot_label(
+            "Coordinator",
+            bridge.coordinator_type,
+            f"Ch {bridge.channel}  PAN {bridge.pan_id}",
         )
     else:
         coord_label = "Coordinator"
@@ -120,9 +125,15 @@ def generate_zigbee_topology(
         else:
             unconnected.append(d)
 
+    title = f"Zigbee Mesh — {site_name}"
+    if note:
+        title = _dot_label(title, note)
+    else:
+        title = title.replace("\\", "\\\\")
+
     lines: list[str] = []
     lines.append(f'digraph {_dot_quote(f"zigbee_{site_name}")} {{')
-    lines.append(f'    label={_dot_quote(f"Zigbee Mesh — {site_name}")};')
+    lines.append(f'    label={_dot_quote(title, raw=True)};')
     lines.append("    labelloc=t;")
     lines.append("    rankdir=TB;")
     lines.append("    nodesep=0.4;")
@@ -208,20 +219,26 @@ def _dot_quote(text: str, raw: bool = False) -> str:
     return f'"{text}"'
 
 
-def _node_label(device: ZigbeeDevice) -> str:
-    """Build a multi-line DOT node label for a device.
+def _dot_label(*parts: str) -> str:
+    """Join *parts* into a multi-line DOT label string.
 
-    Backslashes in device data are escaped here (before the label parts
-    are joined with literal ``\\n`` line breaks), so the result is safe
-    to pass through ``_dot_quote(..., raw=True)``.
+    Backslashes in each part are escaped BEFORE the parts are joined
+    with literal ``\\n`` line breaks, so the result is safe to pass
+    through ``_dot_quote(..., raw=True)`` (which must not re-escape
+    the separators).
     """
+    return "\\n".join(part.replace("\\", "\\\\") for part in parts)
+
+
+def _node_label(device: ZigbeeDevice) -> str:
+    """Build a multi-line DOT node label for a device."""
     parts = [device.friendly_name]
     if device.description:
         parts.append(device.description)
     model = device.model or device.model_id
     if model:
         parts.append(model)
-    return "\\n".join(part.replace("\\", "\\\\") for part in parts)
+    return _dot_label(*parts)
 
 
 def _avail_fill(device: ZigbeeDevice) -> str:

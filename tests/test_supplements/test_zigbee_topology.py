@@ -363,6 +363,25 @@ def test_dot_graph_id_is_quoted() -> None:
     assert 'digraph "zigbee_my-site" {' in dot
 
 
+def test_dot_coordinator_label_escapes_backslashes() -> None:
+    """Bridge fields flow into the coordinator label — a backslash in
+    them must not reach the DOT output unescaped."""
+    bridge = ZigbeeBridgeInfo(
+        site="welland", z2m_version="2.9.2",
+        coordinator_ieee="0x00", coordinator_type="Ember\\ZNet",
+        channel=11, pan_id="0x189e",
+    )
+    dot = generate_zigbee_topology([], bridge, "welland")
+    assert "Ember\\\\ZNet" in dot
+
+
+def test_dot_note_appended_to_graph_title() -> None:
+    dot = generate_zigbee_topology(
+        [], _bridge(), "welland", note="WARNING: stale data",
+    )
+    assert "Zigbee Mesh — welland\\nWARNING: stale data" in dot
+
+
 def test_dot_renderer_still_works_alongside_text() -> None:
     """Sanity check that the DOT generator wasn't broken by the additions."""
     devices = [

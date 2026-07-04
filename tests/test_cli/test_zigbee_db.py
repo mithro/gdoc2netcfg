@@ -346,6 +346,53 @@ class TestZigbeeTopology:
         # The stale baseline document is still the DB's latest view.
         assert _load_db(config) == baseline
 
+    def test_svg_of_failed_site_carries_stale_note(self, tmp_path):
+        """The image title labels a failed site's stale baseline too."""
+        config = _config(tmp_path)
+        baseline = {
+            "welland": _site_doc("welland", _device("welland", "0x01")),
+        }
+        _seed_db(config, baseline)
+        out_dir = tmp_path / "diagrams"
+
+        with patch("gdoc2netcfg.cli.main._load_config", return_value=config), \
+             patch(
+                 "gdoc2netcfg.supplements.zigbee.scan_zigbee",
+                 return_value=(baseline, ["welland: Networkmap timed out"]),
+             ), patch(
+                 "gdoc2netcfg.supplements.zigbee_topology.render_dot",
+             ) as mock_render, pytest.raises(ZigbeeScanError):
+            cmd_zigbee_topology(
+                self._args(fmt="svg", output_dir=str(out_dir)),
+            )
+
+        dot = mock_render.call_args.args[0]
+        assert "WARNING: this scan failed" in dot
+
+    def test_routing_loop_fails_cleanly(self, tmp_path, capsys):
+        """Corrupt parent data caught at render time exits with a clean
+        error message, not a raw traceback."""
+        config = _config(tmp_path)
+        loop = {
+            "welland": _site_doc(
+                "welland",
+                _device("welland", "0x01", friendly_name="Z1",
+                        device_type="Router", connected_via="Z2"),
+                _device("welland", "0x02", friendly_name="Z2",
+                        device_type="Router", connected_via="Z1"),
+            ),
+        }
+
+        with patch("gdoc2netcfg.cli.main._load_config", return_value=config), \
+             patch(
+                 "gdoc2netcfg.supplements.zigbee.scan_zigbee",
+                 return_value=(loop, []),
+             ):
+            rc = cmd_zigbee_topology(self._args(fmt="text"))
+
+        assert rc == 1
+        assert "unreachable from any rendered root" in capsys.readouterr().err
+
     def test_no_zigbee_section_errors(self, tmp_path, capsys):
         config = _config(tmp_path)
         config.zigbee.enabled = False

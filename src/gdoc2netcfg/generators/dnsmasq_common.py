@@ -32,7 +32,10 @@ def identity_ipv4(ip: str) -> str:
 
 
 def host_record_config(
-    host: Host, inventory: NetworkInventory, ipv4_transform: Ipv4Transform,
+    host: Host,
+    inventory: NetworkInventory,
+    ipv4_transform: Ipv4Transform,
+    dns_names: "list | None" = None,
 ) -> list[str]:
     """Generate host-record entries for forward DNS for a single host.
 
@@ -51,14 +54,21 @@ def host_record_config(
     host-record containing each IP determines its auto-PTR name.
     Sorting ensures the most-specific interface name (e.g.,
     ipv4.eth0.host.domain) wins over the hostname (host.domain).
+
+    dns_names overrides the name list (default: all of host.dns_names —
+    the internal/external generators deliberately emit records for
+    CNAME-kind entries too, preserving today's flat host-record output;
+    scope-aware generators pass a pre-filtered list).
     """
-    if not host.dns_names:
+    if dns_names is None:
+        dns_names = host.dns_names
+    if not dns_names:
         return []
 
     domain = inventory.site.domain
     output: list[str] = []
 
-    for dns_name in host.dns_names:
+    for dns_name in dns_names:
         # Skip short names except for the bare hostname
         if not dns_name.is_fqdn and dns_name.name != host.hostname:
             continue

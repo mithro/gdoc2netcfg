@@ -40,6 +40,7 @@ class DNSName:
     scope: str = "site"
     kind: str = "native"
     cname_target: str | None = None
+    net: str | None = None  # owning net zone label when scope == 'net'
 
     @property
     def ipv4(self) -> IPv4Address | None:

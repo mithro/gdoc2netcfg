@@ -621,6 +621,7 @@ def _get_generator(name: str):
             "gdoc2netcfg.generators.dnsmasq_external",
             "generate_dnsmasq_external",
         ),
+        "dnsmasq_leaf": ("gdoc2netcfg.generators.dnsmasq_leaf", "generate_dnsmasq_leaf"),
         "nagios": ("gdoc2netcfg.generators.nagios", "generate_nagios"),
         "letsencrypt": ("gdoc2netcfg.generators.letsencrypt", "generate_letsencrypt"),
         "nginx": ("gdoc2netcfg.generators.nginx", "generate_nginx"),

@@ -132,6 +132,7 @@ def _make_dns_name(
     scope: str = "site",
     kind: str = "native",
     cname_target: str | None = None,
+    net: str | None = None,
 ) -> DNSName:
     """Create a DNSName with unified ip_addresses tuple.
 
@@ -152,6 +153,7 @@ def _make_dns_name(
         scope=scope,
         kind=kind,
         cname_target=cname_target,
+        net=net,
     )
 
 
@@ -285,6 +287,7 @@ def derive_dns_names_interface(
                     iface.ipv6_addresses,
                     is_fqdn=True,
                     scope="net",
+                    net=net,
                 )
             )
         names.append(
@@ -333,6 +336,7 @@ def derive_dns_names_subdomain(
                 is_fqdn=True,
                 ipv4_addresses=net_ipv4,
                 scope="net",
+                net=net,
             )
         )
         names.append(
@@ -402,6 +406,7 @@ def derive_dns_names_ip_prefix(host: "Host", domain: str) -> list[DNSName]:
                     is_fqdn=True,
                     ipv4_addresses=dns_name.ipv4_addresses,
                     scope=dns_name.scope,
+                    net=dns_name.net,
                 )
             )
         if dns_name.ipv6_addresses:
@@ -412,6 +417,7 @@ def derive_dns_names_ip_prefix(host: "Host", domain: str) -> list[DNSName]:
                     dns_name.ipv6_addresses,
                     is_fqdn=True,
                     scope=dns_name.scope,
+                    net=dns_name.net,
                 )
             )
     return names

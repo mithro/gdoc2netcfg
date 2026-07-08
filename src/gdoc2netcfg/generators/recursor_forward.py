@@ -20,7 +20,7 @@ site zone (verifications V1/V2).
 
 from __future__ import annotations
 
-from gdoc2netcfg.generators.dnsmasq_leaf import DELEGATED_NETS, _non_leaf_nets
+from gdoc2netcfg.generators.dnsmasq_leaf import _non_leaf_nets
 from gdoc2netcfg.generators.pdns_zones import (
     DELEGATED_NET_SERVERS,
     ROUTER_HOSTNAME,
@@ -53,6 +53,18 @@ def generate_recursor_forward(
     entries.append((domain, [central_auth]))
     for net in sorted(_central_nets(site)):
         entries.append((f"{net}.{domain}", [central_auth]))
+
+    # Catch-all reverses for no-net site-octet leftovers (100G, …):
+    # leaf slices below are more specific and win.
+    entries.append((f"{site.site_octet}.10.in-addr.arpa", [central_auth]))
+    if site.active_ipv6_prefixes:
+        prefix_nibbles = "".join(
+            part.zfill(4)
+            for part in site.active_ipv6_prefixes[0].prefix.rstrip(":").split(":")
+        )
+        entries.append(
+            (".".join(reversed(prefix_nibbles)) + ".ip6.arpa", [central_auth])
+        )
 
     # Central reverses: wg v4 /16s + v6 /56-style slice
     for b in WG_V4_SECOND_OCTETS:

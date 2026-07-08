@@ -67,14 +67,16 @@ class NetworkInterface:
 
     Attributes:
         name: Interface name (e.g. 'eth0', 'bmc'), or None for the default/only interface
-        mac: Ethernet MAC address
+        mac: Ethernet MAC address, or None for DNS-only interfaces
+            (wg tunnels, tailscale — rows with no MAC in the sheet):
+            they get DNS records but never DHCP bindings
         ip_addresses: All IP addresses (IPv4 and IPv6) for this interface
         vlan_id: VLAN this interface belongs to (derived from IP)
         dhcp_name: Name used for DHCP registration
     """
 
     name: str | None
-    mac: MACAddress
+    mac: MACAddress | None
     ip_addresses: tuple[IPv4Address | IPv6Address, ...] = ()
     vlan_id: int | None = None
     dhcp_name: str = ""
@@ -414,8 +416,9 @@ class Host:
 
     @property
     def all_macs(self) -> list[MACAddress]:
-        """All MAC addresses across all interfaces."""
-        return [iface.mac for iface in self.interfaces]
+        """All MAC addresses across all interfaces (DNS-only
+        interfaces have none)."""
+        return [iface.mac for iface in self.interfaces if iface.mac is not None]
 
     @property
     def virtual_interfaces(self) -> list[VirtualInterface]:
@@ -438,7 +441,7 @@ class Host:
             result.append(VirtualInterface(
                 name=first.name,
                 ip_addresses=tuple(ip_addrs),
-                macs=tuple(i.mac for i in ifaces),
+                macs=tuple(i.mac for i in ifaces if i.mac is not None),
                 dhcp_names=tuple(i.dhcp_name for i in ifaces),
                 vlan_id=first.vlan_id,
             ))

@@ -54,6 +54,20 @@ def ip_to_vlan_id(ipv4: IPv4Address, site: Site) -> int | None:
     return None
 
 
+# Third octets holding parked/junk addresses in the site range (ten64's
+# unused NICs at 10.X.253/254): interfaces there produce no DNS records
+# at all (dns-redesign design §3 removed families). Deliberately narrow —
+# other unmapped site-octet subnets (10.1.16 100G, 10.1.21, 10.1.110)
+# are real hosts that keep site-scoped records.
+PARKED_THIRD_OCTETS = frozenset({253, 254})
+
+# Nets whose DNS zones are delegated to another server entirely (design
+# §4: fpgas → tweed's dnsmasq). Their hosts/interfaces get no centrally
+# generated records or projections.
+# TODO(sheet): drive from a VLAN-Allocations column if one appears.
+DELEGATED_NETS = frozenset({"fpgas"})
+
+
 def ip_to_net(ipv4: IPv4Address, site: Site) -> str | None:
     """Determine the NET (per-network DNS zone label) for ANY IPv4 address.
 

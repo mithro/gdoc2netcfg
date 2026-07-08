@@ -33,6 +33,7 @@ SITE = Site(
             id=10, name="int", subdomain="int",
             third_octets=(8, 9, 10, 11, 12, 13, 14, 15, 16),
         ),
+        21: VLAN(id=21, name="fpgas", subdomain="fpgas", is_global=True),
         41: VLAN(id=41, name="sm", subdomain="sm", is_global=True),
         90: VLAN(id=90, name="iot", subdomain="iot", third_octets=(90, 91)),
         121: VLAN(
@@ -306,3 +307,105 @@ class TestOtherNetKinds:
         c = _by_name(host, "net.sw.welland.mithis.com")
         assert c.kind == "cname"
         assert c.cname_target == "sw.net.welland.mithis.com"
+
+
+class TestNetAnchoredHostnames:
+    """Hostnames carrying a legacy net suffix ('au-plug-1.iot',
+    'x10-….sm') are net-anchored: their {H}.{S} name IS their net name
+    (it lives under the net zone cut), so no {H}.{N}.{S} duplication
+    (no 'iot.iot'), no {N}.{H} projection, and no site-zone records."""
+
+    def test_iot_suffix_host_is_net_scoped(self):
+        host = Host(
+            machine_name="au-plug-49",
+            hostname="au-plug-49.iot",
+            interfaces=[_iface(None, "01", "10.1.91.49", "2404:e80:a137:191::49")],
+        )
+        derive_all_dns_names(host, SITE)
+        name_strs = [n.name for n in host.dns_names]
+        assert "au-plug-49.iot.iot.welland.mithis.com" not in name_strs
+        canonical = _by_name(host, "au-plug-49.iot.welland.mithis.com")
+        assert canonical.scope == "net"
+        assert canonical.net == "iot"
+        assert canonical.kind == "native"
+
+    def test_anchored_iface_names_stay_in_net(self):
+        host = Host(
+            machine_name="ha",
+            hostname="ha.iot",
+            interfaces=[
+                _iface("eth0", "01", "10.1.90.2", "2404:e80:a137:190::2"),
+            ],
+        )
+        derive_all_dns_names(host, SITE)
+        n = _by_name(host, "eth0.ha.iot.welland.mithis.com")
+        assert n.scope == "net"
+        assert n.net == "iot"
+        assert n.kind == "native"
+        name_strs = [x.name for x in host.dns_names]
+        assert "eth0.ha.iot.iot.welland.mithis.com" not in name_strs
+
+    def test_delegated_anchored_host_has_no_records(self):
+        """pi*.fpgas hosts live in tweed's zone — the central duplicates
+        retire (design §3 removed families)."""
+        host = Host(
+            machine_name="pi4",
+            hostname="pi4.fpgas",
+            interfaces=[_iface("eth-uplink", "01", "10.21.4.1")],
+        )
+        derive_all_dns_names(host, SITE)
+        assert host.dns_names == []
+
+
+class TestNoNetAndDelegatedInterfaces:
+    def test_unmapped_site_octet_host_keeps_site_records(self):
+        """Hosts on site-octet subnets without a VLAN (10.1.21 carlfk-gw,
+        10.1.110 enx gadgets, 10.1.16 100G) are NOT parked — they keep
+        their site natives exactly as today."""
+        host = Host(
+            machine_name="carlfk-gw",
+            hostname="carlfk-gw",
+            interfaces=[_iface(None, "01", "10.1.21.1", "2404:e80:a137:121::1")],
+        )
+        derive_all_dns_names(host, SITE)
+        agg = _by_name(host, "carlfk-gw.welland.mithis.com")
+        assert agg.kind == "native"
+        assert _v4set(agg) == {"10.1.21.1"}
+
+    def test_parked_is_only_253_254(self):
+        host = Host(
+            machine_name="ten64",
+            hostname="ten64",
+            interfaces=[
+                _iface("br-int", "01", "10.1.10.1"),
+                _iface("wlan0", "02", "10.1.253.1"),
+                _iface("eth1", "03", "10.1.254.1"),
+            ],
+        )
+        derive_all_dns_names(host, SITE)
+        names = " ".join(n.name for n in host.dns_names)
+        assert "wlan0" not in names
+        assert "eth1" not in names
+
+    def test_delegated_net_iface_keeps_site_native(self):
+        """tweed's eth-local (10.21.0.1, fpgas) must stay a site NATIVE —
+        a projection would point into tweed's zone at a name that does
+        not exist there."""
+        host = Host(
+            machine_name="tweed",
+            hostname="tweed",
+            interfaces=[
+                _iface("eth-local", "01", "10.21.0.1"),
+                _iface("eth-uplink", "02", "10.99.21.2"),
+            ],
+        )
+        derive_all_dns_names(host, SITE)
+        n = _by_name(host, "eth-local.tweed.welland.mithis.com")
+        assert n.kind == "native"
+        assert _v4set(n) == {"10.21.0.1"}
+        name_strs = [x.name for x in host.dns_names]
+        assert "eth-local.tweed.fpgas.welland.mithis.com" not in name_strs
+        # the tfpgas transit iface still projects normally
+        up = _by_name(host, "eth-uplink.tweed.welland.mithis.com")
+        assert up.kind == "cname"
+        assert up.cname_target == "eth-uplink.tweed.tfpgas.welland.mithis.com"

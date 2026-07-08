@@ -17,8 +17,8 @@ process (their zones are central), and nets delegated to another server
 
 from __future__ import annotations
 
-from gdoc2netcfg.derivations.dns_names import common_suffix
-from gdoc2netcfg.derivations.vlan import ip_to_net
+from gdoc2netcfg.derivations.dns_names import _anchored_net, common_suffix
+from gdoc2netcfg.derivations.vlan import DELEGATED_NETS, ip_to_net
 from gdoc2netcfg.generators.dnsmasq_common import (
     _ipv4_to_ptr,
     _ipv6_to_ptr,
@@ -31,12 +31,6 @@ from gdoc2netcfg.generators.dnsmasq_common import (
 from gdoc2netcfg.models.host import Host, NetworkInventory, VirtualInterface
 from gdoc2netcfg.models.network import Site
 from gdoc2netcfg.utils.ip import ip_sort_key
-
-# Nets whose zones are delegated to another DNS server entirely — no leaf
-# output and no central records (fpgas → tweed's dnsmasq).
-# TODO(sheet): drive from a VLAN-Allocations column if one appears.
-DELEGATED_NETS = frozenset({"fpgas"})
-
 
 def _non_leaf_nets(site: Site) -> frozenset[str]:
     """Nets that get no dnsmasq leaf: transit zones + wg (central-authored)
@@ -89,10 +83,36 @@ def _host_leaf_fragment(host: Host, net: str, inventory: NetworkInventory) -> st
     sections = [
         _net_dhcp_config(host, net, inventory),
         _net_host_records(host, net, inventory),
+        _short_name_records(host, net, inventory),
         _net_ptr_config(host, net, inventory),
+        _anchored_caa(host, net, inventory),
         _net_sshfp_records(host, net, inventory),
     ]
     return sections_to_text(sections)
+
+
+def _short_name_records(host: Host, net: str, inventory: NetworkInventory) -> list[str]:
+    """Unqualified convenience names, served by the leaf when this net is
+    the host's ONLY net (unambiguous home). dnsmasq can serve unqualified
+    names; zone files cannot, so multi-net hosts' shorts don't survive
+    the redesign (clients use search domains instead)."""
+    if _host_nets(host, inventory.site) != [net]:
+        return []
+    shorts = [n for n in host.dns_names if not n.is_fqdn]
+    return host_record_config(host, inventory, identity_ipv4, dns_names=shorts)
+
+
+def _anchored_caa(host: Host, net: str, inventory: NetworkInventory) -> list[str]:
+    """CAA for net-anchored hostnames (ha.iot, …): their canonical name
+    lives in this leaf's zone, so the CAA parity record does too. (The
+    CA-visible copy is in the public external zone.)"""
+    if _anchored_net(host, inventory.site) != net:
+        return []
+    domain = inventory.site.domain
+    return [
+        f"dns-rr={host.hostname}.{domain},"
+        f"257,000569737375656C657473656E63727970742E6F7267"
+    ]
 
 
 def _net_dhcp_config(host: Host, net: str, inventory: NetworkInventory) -> list[str]:
@@ -101,9 +121,10 @@ def _net_dhcp_config(host: Host, net: str, inventory: NetworkInventory) -> list[
     if not vis:
         return []
 
-    output: list[str] = []
-    output.append(f"# {host.hostname} — DHCP")
+    entries: list[str] = []
     for vi in sorted(vis, key=lambda v: ip_sort_key(str(v.ipv4))):
+        if not vi.macs:
+            continue  # DNS-only endpoint (wg, tailscale): no DHCP binding
         ip = str(vi.ipv4)
         dhcp_name = common_suffix(*set(vi.dhcp_names)).strip("-")
 
@@ -112,11 +133,13 @@ def _net_dhcp_config(host: Host, net: str, inventory: NetworkInventory) -> list[
 
         if ipv6_strs:
             ipv6_brackets = ",".join(f"[{addr}]" for addr in ipv6_strs)
-            output.append(f"dhcp-host={mac_str},{ip},{ipv6_brackets},{dhcp_name}")
+            entries.append(f"dhcp-host={mac_str},{ip},{ipv6_brackets},{dhcp_name}")
         else:
-            output.append(f"dhcp-host={mac_str},{ip},{dhcp_name}")
+            entries.append(f"dhcp-host={mac_str},{ip},{dhcp_name}")
 
-    return output
+    if not entries:
+        return []
+    return [f"# {host.hostname} — DHCP"] + entries
 
 
 def _net_host_records(host: Host, net: str, inventory: NetworkInventory) -> list[str]:

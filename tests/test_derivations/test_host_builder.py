@@ -321,3 +321,45 @@ class TestAggregateOverride:
         records = [_make_record(extra={"Aggregate": "eth1, eth0, eth1"})]
         hosts = build_hosts(records, SITE)
         assert hosts[0].aggregate_override == ["eth1", "eth0"]
+
+
+class TestMacLessInterfaces:
+    """Rows with machine+IP but no MAC are DNS-only interfaces (wg
+    tunnels, tailscale) — they get DNS records but never DHCP bindings.
+    Previously they were skipped entirely, which is why the wg tunnel
+    addresses had no names at all (dns-redesign design §4)."""
+
+    def test_macless_record_builds_interface(self):
+        records = [
+            _make_record(
+                machine="ten64", mac="aa:bb:cc:dd:ee:01",
+                ip="10.1.10.1", interface="br-int",
+            ),
+            _make_record(
+                machine="ten64", mac="",
+                ip="10.1.10.99", interface="wg-test",
+            ),
+        ]
+        hosts = build_hosts(records, SITE)
+        assert len(hosts) == 1
+        ifaces = {i.name: i for i in hosts[0].interfaces}
+        assert "wg-test" in ifaces
+        assert ifaces["wg-test"].mac is None
+        name_strs = [n.name for n in hosts[0].dns_names]
+        assert "wg-test.ten64.welland.mithis.com" in name_strs
+
+    def test_macless_excluded_from_dhcp_indexes(self):
+        records = [
+            _make_record(
+                machine="ten64", mac="",
+                ip="10.1.10.99", interface="wg-test",
+            ),
+        ]
+        hosts = build_hosts(records, SITE)
+        inv = build_inventory(hosts, SITE)
+        assert inv.ip_to_macs.get("10.1.10.99", []) == []
+
+    def test_record_without_ip_still_skipped(self):
+        records = [_make_record(machine="ten64", mac="", ip="")]
+        hosts = build_hosts(records, SITE)
+        assert hosts == []

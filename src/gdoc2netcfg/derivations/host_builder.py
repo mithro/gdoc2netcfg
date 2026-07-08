@@ -26,8 +26,12 @@ from gdoc2netcfg.sources.parser import DeviceRecord
 
 
 def _build_interface(record: DeviceRecord, site: Site) -> NetworkInterface:
-    """Build a NetworkInterface from a single DeviceRecord."""
-    mac = MACAddress.parse(record.mac_address)
+    """Build a NetworkInterface from a single DeviceRecord.
+
+    Records without a MAC (wg tunnels, tailscale) become DNS-only
+    interfaces: DNS records, no DHCP binding.
+    """
+    mac = MACAddress.parse(record.mac_address) if record.mac_address else None
     ipv4 = IPv4Address(record.ip)
     ipv6_addrs = ipv4_to_ipv6_list(ipv4, site.active_ipv6_prefixes)
     vlan_id = ip_to_vlan_id(ipv4, site)
@@ -90,7 +94,8 @@ def build_hosts(records: list[DeviceRecord], site: Site) -> list[Host]:
     bmc_hostnames: set[str] = set()
 
     for record in records:
-        if not record.machine or not record.mac_address or not record.ip:
+        # MAC deliberately optional: MAC-less rows are DNS-only interfaces
+        if not record.machine or not record.ip:
             continue
 
         # Determine sheet type
@@ -268,9 +273,11 @@ def build_inventory(hosts: list[Host], site: Site) -> NetworkInventory:
         suffix = common_suffix(*names).strip(".")
         ip_to_hostname[ip_str] = suffix
 
-    # Second pass: build ip→macs mapping
+    # Second pass: build ip→macs mapping (DNS-only interfaces excluded)
     for host in hosts:
         for iface in host.interfaces:
+            if iface.mac is None:
+                continue
             ip_str = str(iface.ipv4)
             if ip_str not in ip_to_macs:
                 ip_to_macs[ip_str] = []

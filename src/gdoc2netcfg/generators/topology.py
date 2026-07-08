@@ -65,6 +65,8 @@ def generate_topology(
     mac_to_host: dict[str, Host] = {}
     for host in inventory.hosts:
         for iface in host.interfaces:
+            if iface.mac is None:
+                continue
             mac_to_host[str(iface.mac).upper()] = host
 
     hostname_to_host: dict[str, Host] = {

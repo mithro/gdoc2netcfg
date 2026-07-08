@@ -27,13 +27,16 @@ from __future__ import annotations
 import ipaddress
 import time
 
-from gdoc2netcfg.derivations.vlan import ip_to_net
+from gdoc2netcfg.derivations.vlan import (
+    DELEGATED_NETS,
+    PARKED_THIRD_OCTETS,
+    ip_to_net,
+)
 from gdoc2netcfg.generators.dnsmasq_common import (
     _ipv4_to_ptr,
     _ipv6_to_ptr,
     _most_specific_fqdn,
 )
-from gdoc2netcfg.generators.dnsmasq_leaf import DELEGATED_NETS
 from gdoc2netcfg.models.host import Host, NetworkInventory
 from gdoc2netcfg.models.network import Site
 
@@ -125,6 +128,7 @@ def generate_pdns_internal(
             files[f"{net}.{domain}.zone"] = content
 
     files.update(_central_reverse_zones(inventory, central, serial))
+    files.update(_catchall_reverse_zones(inventory, serial))
 
     zone_names = sorted(f[: -len(".zone")] for f in files)
     files["bind-internal.conf"] = "".join(
@@ -266,6 +270,73 @@ def _central_net_zone(
     lines.append("")
     lines.extend(record_lines)
     return "\n".join(lines) + "\n"
+
+
+def _catchall_reverse_zones(
+    inventory: NetworkInventory, serial: int,
+) -> dict[str, str]:
+    """Catch-all reverse zones for site-octet addresses on NO known net
+    (100G backbone 10.1.16.x, 10.1.21, 10.1.110 gadgets, …): a v4
+    {site_octet}.10.in-addr.arpa zone and a v6 /48 zone at the central
+    auth. Leaf slices are more specific and win in the recursor's
+    forward-zones routing, so these only answer for the leftovers.
+    """
+    site = inventory.site
+    domain = site.domain
+
+    v4_zone = f"{site.site_octet}.10.in-addr.arpa"
+    prefix = site.active_ipv6_prefixes[0].prefix if site.active_ipv6_prefixes else None
+    v6_zone = None
+    if prefix:
+        prefix_nibbles = "".join(
+            part.zfill(4) for part in prefix.rstrip(":").split(":")
+        )
+        v6_zone = ".".join(reversed(prefix_nibbles)) + ".ip6.arpa"
+
+    zones: dict[str, list[str]] = {}
+    for host in inventory.hosts_sorted():
+        for iface in host.interfaces:
+            a, b, c, d = iface.ipv4.octets
+            if a != 10:
+                continue
+            net = ip_to_net(iface.ipv4, site)
+
+            site_octet_no_net = (
+                b == site.site_octet
+                and c not in PARKED_THIRD_OCTETS
+                and net is None
+            )
+            # Delegated-net addresses (10.21.x fpgas): tweed owns the v4
+            # reverse (21.10.in-addr.arpa) but not the vanity-mapped v6
+            # slices — their v6 PTRs stay central.
+            delegated = net in DELEGATED_NETS
+            if not (site_octet_no_net or delegated):
+                continue
+
+            ip = str(iface.ipv4)
+            if site_octet_no_net:
+                fqdn = _most_specific_fqdn(host, ip, domain, is_ipv6=False)
+                if fqdn:
+                    zones.setdefault(v4_zone, []).append(
+                        f"{_ipv4_to_ptr(ip)}. {RECORD_TTL} IN PTR {fqdn}."
+                    )
+            if v6_zone is None:
+                continue
+            for ipv6_addr in iface.ipv6_addresses:
+                ipv6_str = str(ipv6_addr)
+                ipv6_fqdn = _most_specific_fqdn(host, ipv6_str, domain, is_ipv6=True)
+                if ipv6_fqdn:
+                    zones.setdefault(v6_zone, []).append(
+                        f"{_ipv6_to_ptr(ipv6_str)}. {RECORD_TTL} IN PTR {ipv6_fqdn}."
+                    )
+
+    files: dict[str, str] = {}
+    for zone, ptr_lines in sorted(zones.items()):
+        lines = _soa_and_ns(zone, domain, serial)
+        lines.append("")
+        lines.extend(ptr_lines)
+        files[f"{zone}.zone"] = "\n".join(lines) + "\n"
+    return files
 
 
 def _v4_reverse_zone_name(ip: str, site: Site) -> str | None:

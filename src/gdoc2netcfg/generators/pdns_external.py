@@ -107,8 +107,7 @@ def _host_public_lines(host: Host, domain: str, public_ip: str) -> list[str]:
 
         if addr_lines:
             lines.extend(addr_lines)
-            if dns_name.scope == "site" and dns_name.kind == "native":
-                has_site_native = True
+            has_site_native = True
 
     if has_site_native:
         site_name = f"{host.hostname}.{domain}"

@@ -158,11 +158,35 @@ def _make_dns_name(
 
 
 def _is_parked(iface: "NetworkInterface", site: "Site") -> bool:
-    """A parked interface holds a site-octet address on no known network
-    (e.g. ten64's 10.1.253/254 NICs). Parked interfaces produce no DNS
-    records at all (design §3 'removed families')."""
+    """A parked interface holds a site-octet address in the designated
+    junk ranges (ten64's 10.X.253/254 NICs). Parked interfaces produce
+    no DNS records at all (design §3 'removed families'). Other unmapped
+    site-octet subnets (100G 10.1.16, 10.1.21, 10.1.110) are real hosts
+    that keep site-scoped records + the central catch-all reverse."""
+    from gdoc2netcfg.derivations.vlan import PARKED_THIRD_OCTETS
+
     a, b, c, d = iface.ipv4.octets
-    return a == 10 and b == site.site_octet and site.network_subdomains.get(c) is None
+    return a == 10 and b == site.site_octet and c in PARKED_THIRD_OCTETS
+
+
+def _anchored_net(host: "Host", site: "Site") -> str | None:
+    """The net a hostname is anchored to by its legacy suffix.
+
+    Hostnames like 'au-plug-1.iot' or 'pi4.fpgas' carry their net as a
+    hostname suffix; their {H}.{S} name already lives under the net zone
+    cut ({H}.{S} == {basename}.{net}.{S}), so the grammar must not
+    duplicate it ('…iot.iot…') or project it. Returns the net label when
+    the suffix names a net that at least one interface is actually on.
+    """
+    from gdoc2netcfg.derivations.vlan import ip_to_net
+
+    if "." not in host.hostname:
+        return None
+    suffix = host.hostname.rsplit(".", 1)[1]
+    for iface in host.interfaces:
+        if ip_to_net(iface.ipv4, site) == suffix:
+            return suffix
+    return None
 
 
 def _aggregate_interfaces(host: "Host", site: "Site") -> "list[NetworkInterface]":
@@ -201,7 +225,15 @@ def derive_dns_names_hostname(
         aggregate addresses (aggregate_override or all-non-parked)
       - {hostname}           (short name, scope=short)
     """
+    from gdoc2netcfg.derivations.vlan import DELEGATED_NETS
+
     if not host.interfaces:
+        return []
+
+    anchored = _anchored_net(host, site)
+    if anchored in DELEGATED_NETS:
+        # e.g. pi4.fpgas: the whole host lives in the delegated zone
+        # (tweed's) — the central duplicates retire (design §3).
         return []
 
     agg_ifaces = _aggregate_interfaces(host, site)
@@ -216,7 +248,8 @@ def derive_dns_names_hostname(
             all_ipv6,
             is_fqdn=True,
             ipv4_addresses=all_ipv4,
-            scope="site",
+            scope="net" if anchored else "site",
+            net=anchored,
         ),
         _make_dns_name(
             host.hostname,
@@ -243,7 +276,11 @@ def derive_dns_names_interface(
     tailscale) keep a site-scoped native record — there is no net zone
     to project them into.
     """
-    from gdoc2netcfg.derivations.vlan import ip_to_net
+    from gdoc2netcfg.derivations.vlan import DELEGATED_NETS, ip_to_net
+
+    anchored = _anchored_net(host, site)
+    if anchored in DELEGATED_NETS:
+        return []
 
     names: list[DNSName] = []
     for iface in host.interfaces:
@@ -253,8 +290,27 @@ def derive_dns_names_interface(
             continue
 
         net = ip_to_net(iface.ipv4, site)
-        if net is None:
-            # No net home (WAN, tailscale): site-scoped native fallback.
+        if net in DELEGATED_NETS:
+            # A projection would point into a zone we don't control
+            # (tweed's) at a name that doesn't exist there — the site
+            # native stays (e.g. eth-local.tweed.welland).
+            net = None
+        if net is not None and net == anchored:
+            # hostname already ends '.{net}': the iface name is in-net
+            # as-is; no site projection (it would be the same name).
+            names.append(
+                _make_dns_name(
+                    f"{iface.name}.{host.hostname}.{domain}",
+                    iface.ipv4,
+                    iface.ipv6_addresses,
+                    is_fqdn=True,
+                    scope="net",
+                    net=net,
+                )
+            )
+        elif net is None:
+            # No net home (WAN, tailscale, unmapped subnet, delegated):
+            # site-scoped native fallback.
             names.append(
                 _make_dns_name(
                     f"{iface.name}.{host.hostname}.{domain}",
@@ -313,14 +369,22 @@ def derive_dns_names_subdomain(
         net-scoped names served ALL their addresses
       - {N}.{hostname}.{domain}  (CNAME → net form, scope=site)
     """
-    from gdoc2netcfg.derivations.vlan import ip_to_net
+    from gdoc2netcfg.derivations.vlan import DELEGATED_NETS, ip_to_net
+
+    anchored = _anchored_net(host, site)
+    if anchored in DELEGATED_NETS:
+        return []
 
     by_net: dict[str, list["NetworkInterface"]] = {}
     for iface in host.interfaces:
         if _is_parked(iface, site):
             continue
         net = ip_to_net(iface.ipv4, site)
-        if net is None:
+        if net is None or net in DELEGATED_NETS:
+            continue
+        if net == anchored:
+            # {H}.{S} already IS the net name (hostname suffix); a
+            # {H}.{N}.{S} form would double the label ('iot.iot').
             continue
         by_net.setdefault(net, []).append(iface)
 

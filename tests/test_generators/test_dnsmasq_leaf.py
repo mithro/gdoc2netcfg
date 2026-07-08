@@ -174,3 +174,25 @@ class TestLeafExclusions:
         )
         files = generate_dnsmasq_leaf(_inventory(host))
         assert files == {}
+
+
+class TestMacLessInterfaces:
+    def test_no_dhcp_host_for_macless_interface(self):
+        """DNS-only interfaces (no MAC: wg, tailscale) never emit
+        dhcp-host lines, but their records still appear."""
+        host = Host(
+            machine_name="gw",
+            hostname="gw",
+            interfaces=[
+                NetworkInterface(
+                    name="veth0",
+                    mac=None,
+                    ip_addresses=(IPv4Address("10.1.10.9"),),
+                    dhcp_name="veth0-gw",
+                ),
+            ],
+        )
+        files = generate_dnsmasq_leaf(_inventory(host))
+        conf = files["int/gw.conf"]
+        assert "dhcp-host=" not in conf
+        assert "host-record=gw.int.welland.mithis.com,10.1.10.9" in conf

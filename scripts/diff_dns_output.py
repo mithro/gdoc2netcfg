@@ -190,7 +190,12 @@ def _summary(rrmap: dict[str, set[str]]) -> str:
 class Allowlist:
     def __init__(self, entries: list[dict]) -> None:
         self.entries = [
-            (e["kind"], re.compile(e["pattern"]), e.get("reason", ""))
+            (
+                e["kind"],
+                re.compile(e["pattern"]),
+                re.compile(e["detail_pattern"]) if e.get("detail_pattern") else None,
+                e.get("reason", ""),
+            )
             for e in entries
         ]
 
@@ -202,9 +207,12 @@ class Allowlist:
         return cls(data.get("allow", []))
 
     def matches(self, kind: str, name: str, detail: str) -> str | None:
-        for allow_kind, pattern, reason in self.entries:
-            if allow_kind == kind and pattern.search(name):
-                return reason or "(allowlisted)"
+        for allow_kind, pattern, detail_pattern, reason in self.entries:
+            if allow_kind != kind or not pattern.search(name):
+                continue
+            if detail_pattern is not None and not detail_pattern.search(detail):
+                continue
+            return reason or "(allowlisted)"
         return None
 
 

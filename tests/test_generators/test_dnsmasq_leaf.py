@@ -73,7 +73,8 @@ def _big_storage():
             _iface("25g2", "04", "10.1.7.16", "2404:e80:a137:107::16"),
         ],
         sshfp_records=[
-            "big-storage IN SSHFP 4 2 996b3981b870b4b2473e3dbadb3c435a8f2314b6"
+            "big-storage IN SSHFP 4 2 "
+            "996b3981b870b4b2473e3dbadb3c435a8f2314b6a962a429a78760426bb13ba6"
         ],
     )
 

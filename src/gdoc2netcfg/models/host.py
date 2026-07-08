@@ -346,6 +346,9 @@ class Host:
         sshfp_records: SSH fingerprint records (derived from ssh_host_keys)
         ssh_host_keys: Raw SSH public key lines ("hostname key-type base64-key")
         extra: Additional spreadsheet columns preserved for generators
+        aggregate_override: Interface names (from the 'Aggregate' sheet
+            column) whose addresses form the host's site-level aggregate
+            DNS records; None = union of all interfaces on known networks
     """
 
     machine_name: str
@@ -356,6 +359,7 @@ class Host:
     ssh_host_keys: list[str] = field(default_factory=list)
     extra: dict[str, str] = field(default_factory=dict)
     alt_names: list[str] = field(default_factory=list)
+    aggregate_override: list[str] | None = None
     dns_names: list[DNSName] = field(default_factory=list)
     hardware_type: str | None = None
     ssl_cert_info: SSLCertInfo | None = None

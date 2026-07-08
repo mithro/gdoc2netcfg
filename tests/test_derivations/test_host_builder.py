@@ -272,3 +272,52 @@ class TestFindLostCredentialCells:
         ]
         hosts = build_hosts(records, SITE)
         assert find_lost_credential_cells(records, hosts, SITE) == []
+
+
+class TestAggregateOverride:
+    """The 'Aggregate' sheet column names the interfaces whose addresses
+    form the host's site-level aggregate records (design §3: per-host
+    override column — ten64 uses it). Absent column → None (union of all
+    interfaces on known networks)."""
+
+    def test_comma_separated(self):
+        records = [_make_record(extra={"Aggregate": "eth0, br-int"})]
+        hosts = build_hosts(records, SITE)
+        assert hosts[0].aggregate_override == ["eth0", "br-int"]
+
+    def test_newline_separated(self):
+        records = [_make_record(extra={"Aggregate": "eth0\nbr-int"})]
+        hosts = build_hosts(records, SITE)
+        assert hosts[0].aggregate_override == ["eth0", "br-int"]
+
+    def test_absent_column_is_none(self):
+        records = [_make_record()]
+        hosts = build_hosts(records, SITE)
+        assert hosts[0].aggregate_override is None
+
+    def test_empty_value_is_none(self):
+        records = [_make_record(extra={"Aggregate": "  "})]
+        hosts = build_hosts(records, SITE)
+        assert hosts[0].aggregate_override is None
+
+    def test_collected_from_any_interface_row(self):
+        """Like Alt Names, the column may be filled on any of the host's
+        interface rows, not just the first."""
+        records = [
+            _make_record(
+                machine="ten64", mac="aa:bb:cc:dd:ee:01",
+                ip="10.1.10.1", interface="eth0",
+            ),
+            _make_record(
+                machine="ten64", mac="aa:bb:cc:dd:ee:02",
+                ip="10.1.10.2", interface="eth1",
+                extra={"Aggregate": "eth0"},
+            ),
+        ]
+        hosts = build_hosts(records, SITE)
+        assert hosts[0].aggregate_override == ["eth0"]
+
+    def test_deduplicated_preserving_order(self):
+        records = [_make_record(extra={"Aggregate": "eth1, eth0, eth1"})]
+        hosts = build_hosts(records, SITE)
+        assert hosts[0].aggregate_override == ["eth1", "eth0"]

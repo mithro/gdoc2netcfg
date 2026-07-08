@@ -149,6 +149,18 @@ def build_hosts(records: list[DeviceRecord], site: Site) -> list[Host]:
                     if name and name not in alt_names:
                         alt_names.append(name)
 
+        # Parse the aggregate override from the "Aggregate" column (newline
+        # or comma separated interface names). Like Alt Names, it may be
+        # filled on any of the host's interface rows.
+        aggregate_override: list[str] = []
+        for r in group:
+            raw_agg = r.extra.get("Aggregate", "")
+            if raw_agg:
+                for part in raw_agg.replace("\n", ",").split(","):
+                    iface_name = part.strip()
+                    if iface_name and iface_name not in aggregate_override:
+                        aggregate_override.append(iface_name)
+
         host = Host(
             machine_name=group[0].machine.lower(),
             hostname=hostname,
@@ -156,6 +168,7 @@ def build_hosts(records: list[DeviceRecord], site: Site) -> list[Host]:
             interfaces=interfaces,
             extra=extra,
             alt_names=alt_names,
+            aggregate_override=aggregate_override or None,
         )
 
         # Derive DNS names (all four passes)

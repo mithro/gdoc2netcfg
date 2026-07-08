@@ -1,0 +1,110 @@
+# Expected differences between the old dnsmasq output and the redesigned
+# per-instance output (dns-redesign design §7 "Removals" + worked examples).
+# Every entry documents an INTENDED change; anything not matched here makes
+# scripts/diff_dns_output.py exit non-zero.
+
+# --- removals -----------------------------------------------------------
+
+[[allow]]
+kind = "removed"
+pattern = '\.fpgas\.welland\.mithis\.com$'
+reason = "pi*.fpgas duplicates retire — tweed's zone is authoritative (design §3)"
+
+[[allow]]
+kind = "removed"
+pattern = '^(ipv4\.|ipv6\.)?[^.]+\.ten64\.welland\.mithis\.com$'
+reason = "ten64 parked-NIC records (10.1.253/254 — no such networks) drop; real ifaces become projections"
+
+[[allow]]
+kind = "removed"
+pattern = '\.25[34]\.1\.10\.in-addr\.arpa$'
+reason = "parked-NIC PTRs (10.1.253/254) drop with their forward records"
+
+# --- changes ------------------------------------------------------------
+
+[[allow]]
+kind = "changed"
+pattern = '^(ipv4\.|ipv6\.)?big-storage\.int\.welland\.mithis\.com$'
+reason = "live defect fix: net-scoped names carry only that net's addresses (design Appendix A)"
+
+[[allow]]
+kind = "changed"
+pattern = '^(ipv4\.|ipv6\.)?ten64\.welland\.mithis\.com$'
+reason = "ten64 site aggregate now honors the Aggregate override column (br-int; was 22 A / 21 AAAA incl. parked junk)"
+
+# --- additions ----------------------------------------------------------
+
+[[allow]]
+kind = "added"
+pattern = '\.(wg|tfpgas)\.welland\.mithis\.com$'
+reason = "transit/wg zones newly name tunnel + transit interfaces (x1c-work.wg… had no name at all)"
+
+[[allow]]
+kind = "added"
+pattern = '\.(store|sm)\.welland\.mithis\.com$'
+reason = "previously-missing net-scoped names (big-storage.store…; sm hosts gain net names)"
+
+# --- redesign-wide classes (verified against the 1.9 full-inventory run) --
+
+[[allow]]
+kind = "added"
+pattern = '.'
+reason = "additions cannot break existing resolution: new name families (N.H.S projections, net natives for sm/wg/tfpgas, MAC-less DNS-only hosts) + sheet drift since the last /opt deploy"
+
+[[allow]]
+kind = "removed"
+pattern = '^(?!.*\.welland\.mithis\.com$)(?!.*\.arpa$).'
+reason = "unqualified short names: dnsmasq-only concept; single-net hosts keep theirs in their leaf, multi-net/net-less hosts rely on client search domains"
+
+[[allow]]
+kind = "removed"
+pattern = '\.arpa$'
+detail_pattern = 'fpgas\.welland\.mithis\.com'
+reason = "pi*.fpgas PTRs retire with the fpgas duplicates (tweed authoritative)"
+
+[[allow]]
+kind = "changed"
+pattern = '\.welland\.mithis\.com$'
+detail_pattern = '^SSHFP:'
+reason = "SSHFPs consolidated at native names (site native + net natives); no longer duplicated at CNAME-owner/site iface names"
+
+[[allow]]
+kind = "changed"
+pattern = '\.welland\.mithis\.com$'
+detail_pattern = "^CAA: \\[\\] ->"
+reason = "CAA parity records added at net-anchored canonical names (ha.iot, ...)"
+
+[[allow]]
+kind = "changed"
+pattern = '\.arpa$'
+detail_pattern = "^PTR: \\['[^']+'\\] -> \\['[^']+\\.(sm|iot|int|net|pwr|store|roam|tmp|guest|wg|t-fpgas)\\.welland\\.mithis\\.com'\\]$"
+reason = "PTR targets move to the net-scoped prefix forms (design §3: today's target form, now consistently net-scoped incl. sm/global-VLAN hosts)"
+
+[[allow]]
+kind = "removed"
+pattern = '\.(iot\.iot|sm\.sm|test\.test)\.welland\.mithis\.com$'
+reason = "double-suffix junk the deployed generator emitted for suffix-named hosts (au-plug-1.iot.iot…) — net-anchored grammar removes it"
+
+[[allow]]
+kind = "changed"
+pattern = '\.(tmp|net|pwr|store|int|roam|iot|guest|sm)\.welland\.mithis\.com$'
+detail_pattern = '^(A|AAAA):'
+reason = "net-scoped names now carry only that net's addresses (the big-storage.int defect fix, applied everywhere incl. the openmesh APs)"
+
+[[allow]]
+kind = "removed"
+pattern = '\.arpa$'
+detail_pattern = "(wlan[01]|eth[1-9])\\.ten64\\.welland"
+reason = "parked ten64 NIC PTRs (10.1.253/254) drop with their forward records"
+
+# --- external-comparison-only classes ------------------------------------
+
+[[allow]]
+kind = "removed"
+pattern = '\.arpa$'
+reason = "the public view no longer serves internal reverse zones (10.x PTRs + v6 PTRs of RFC1918-mapped names were dnsmasq-external auth zones; design review item — pointless/leaky publicly)"
+
+[[allow]]
+kind = "changed"
+pattern = '\.arpa$'
+reason = "remaining PTR deltas are the internal-view data findings; the public view drops reverses entirely"

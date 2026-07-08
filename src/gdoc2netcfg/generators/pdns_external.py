@@ -95,6 +95,9 @@ def _host_public_lines(host: Host, domain: str, public_ip: str) -> list[str]:
         addr_lines: list[str] = []
         seen: set[str] = set()
         for addr in dns_name.ipv4_addresses:
+            octets = addr.octets
+            if octets[0] == 100 and 64 <= octets[1] <= 127:
+                continue  # CGNAT (tailscale) never published externally
             public = public_ip if is_rfc1918(str(addr)) else str(addr)
             if public not in seen:
                 seen.add(public)

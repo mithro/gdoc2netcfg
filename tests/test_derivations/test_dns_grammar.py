@@ -409,3 +409,24 @@ class TestNoNetAndDelegatedInterfaces:
         up = _by_name(host, "eth-uplink.tweed.welland.mithis.com")
         assert up.kind == "cname"
         assert up.cname_target == "eth-uplink.tweed.tfpgas.welland.mithis.com"
+
+
+class TestCgnatExclusion:
+    def test_tailscale_excluded_from_aggregate(self):
+        """CGNAT (100.64/10, tailscale) stays out of site aggregates; the
+        tailscale path remains reachable via its interface name."""
+        host = Host(
+            machine_name="x1c-work",
+            hostname="x1c-work",
+            interfaces=[
+                _iface("wifi", "01", "10.1.20.51", "2404:e80:a137:120::51"),
+                _iface("tailscale0", "02", "100.110.251.12"),
+            ],
+        )
+        derive_all_dns_names(host, SITE)
+        agg = _by_name(host, "x1c-work.welland.mithis.com")
+        assert _v4set(agg) == {"10.1.20.51"}
+        # interface record survives (site-native fallback: no net home)
+        ts = _by_name(host, "tailscale0.x1c-work.welland.mithis.com")
+        assert ts.kind == "native"
+        assert _v4set(ts) == {"100.110.251.12"}

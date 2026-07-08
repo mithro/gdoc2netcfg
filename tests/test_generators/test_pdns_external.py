@@ -187,3 +187,20 @@ class TestZoneSyntax:
         assert result.returncode == 0, (
             f"failed named-checkzone:\n{result.stdout}{result.stderr}"
         )
+
+
+class TestCgnatOmission:
+    def test_cgnat_never_published(self):
+        host = Host(
+            machine_name="x1c-work",
+            hostname="x1c-work",
+            interfaces=[
+                _iface("wifi", "01", "10.1.20.51", "2404:e80:a137:120::51"),
+                _iface("tailscale0", "02", "100.110.251.12"),
+            ],
+        )
+        files = _generate(host)
+        zone = files[f"{DOMAIN}.zone"]
+        assert "100.110.251.12" not in zone
+        # the site name still gets the public transform of the RFC1918 addr
+        assert f"x1c-work.{DOMAIN}. 300 IN A {PUBLIC_V4}" in zone

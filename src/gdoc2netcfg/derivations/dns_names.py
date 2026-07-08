@@ -189,20 +189,33 @@ def _anchored_net(host: "Host", site: "Site") -> str | None:
     return None
 
 
+def _is_cgnat(iface: "NetworkInterface") -> bool:
+    """Tailscale hands out CGNAT space (100.64/10) — those addresses stay
+    out of site aggregates (and the public view): the tailscale path is
+    reachable via its interface name (tailscale0.<host>...)."""
+    a, b, c, d = iface.ipv4.octets
+    return a == 100 and 64 <= b <= 127
+
+
 def _aggregate_interfaces(host: "Host", site: "Site") -> "list[NetworkInterface]":
     """Interfaces whose addresses form the host's site-level aggregate.
 
     aggregate_override (the 'Aggregate' sheet column) selects interfaces
-    by name when present; otherwise: every interface except parked ones.
-    An override matching no interfaces falls back to the default rule
-    (closest behavior to 'no override'; the diff harness surfaces typos).
+    by name when present; otherwise: every interface except parked ones
+    and CGNAT (tailscale) addresses. An override matching no interfaces
+    falls back to the default rule (closest behavior to 'no override';
+    the diff harness surfaces typos).
     """
     if host.aggregate_override:
         wanted = set(host.aggregate_override)
         selected = [i for i in host.interfaces if i.name in wanted]
         if selected:
             return selected
-    return [i for i in host.interfaces if not _is_parked(i, site)]
+    return [
+        i
+        for i in host.interfaces
+        if not _is_parked(i, site) and not _is_cgnat(i)
+    ]
 
 
 def _union_addresses(

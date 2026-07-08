@@ -1,0 +1,45 @@
+# Expected differences between the old dnsmasq output and the redesigned
+# per-instance output (dns-redesign design §7 "Removals" + worked examples).
+# Every entry documents an INTENDED change; anything not matched here makes
+# scripts/diff_dns_output.py exit non-zero.
+
+# --- removals -----------------------------------------------------------
+
+[[allow]]
+kind = "removed"
+pattern = '\.fpgas\.welland\.mithis\.com$'
+reason = "pi*.fpgas duplicates retire — tweed's zone is authoritative (design §3)"
+
+[[allow]]
+kind = "removed"
+pattern = '^(ipv4\.|ipv6\.)?[^.]+\.ten64\.welland\.mithis\.com$'
+reason = "ten64 parked-NIC records (10.1.253/254 — no such networks) drop; real ifaces become projections"
+
+[[allow]]
+kind = "removed"
+pattern = '\.25[34]\.1\.10\.in-addr\.arpa$'
+reason = "parked-NIC PTRs (10.1.253/254) drop with their forward records"
+
+# --- changes ------------------------------------------------------------
+
+[[allow]]
+kind = "changed"
+pattern = '^(ipv4\.|ipv6\.)?big-storage\.int\.welland\.mithis\.com$'
+reason = "live defect fix: net-scoped names carry only that net's addresses (design Appendix A)"
+
+[[allow]]
+kind = "changed"
+pattern = '^(ipv4\.|ipv6\.)?ten64\.welland\.mithis\.com$'
+reason = "ten64 site aggregate now honors the Aggregate override column (br-int; was 22 A / 21 AAAA incl. parked junk)"
+
+# --- additions ----------------------------------------------------------
+
+[[allow]]
+kind = "added"
+pattern = '\.(wg|tfpgas)\.welland\.mithis\.com$'
+reason = "transit/wg zones newly name tunnel + transit interfaces (x1c-work.wg… had no name at all)"
+
+[[allow]]
+kind = "added"
+pattern = '\.(store|sm)\.welland\.mithis\.com$'
+reason = "previously-missing net-scoped names (big-storage.store…; sm hosts gain net names)"

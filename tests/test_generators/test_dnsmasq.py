@@ -362,15 +362,30 @@ class TestMostSpecificFQDN:
         assert "ipv4." in ipv4_ptrs[0]
         assert "ipv6." in ipv6_ptrs[0]
 
-    def test_no_subdomain_dual_stack(self):
-        """Host without VLAN subdomain still gets most-specific name."""
-        # Use an IP outside the int VLAN range (no subdomain mapping)
-        host = _host_with_iface("router", "aa:bb:cc:dd:ee:ff", "10.1.99.1")
+    def test_no_net_address_uses_site_name(self):
+        """Host with an address outside 10/8 (no net home, e.g. a public or
+        CGNAT interface) still gets most-specific site names for its PTR.
+
+        NB a *site-octet* address with no network mapping (e.g. 10.1.253.x)
+        is 'parked' under the dns-redesign grammar and produces no records
+        at all — see test_parked_site_octet_produces_no_records.
+        """
+        host = _host_with_iface("router", "aa:bb:cc:dd:ee:ff", "172.31.99.1")
         inv = _make_inventory(hosts=[host])
         result = generate_dnsmasq_internal(inv)
         output = result["router.conf"]
-        # No subdomain, so most specific for IPv4 is ipv4.router.welland.mithis.com
-        assert "ptr-record=1.99.1.10.in-addr.arpa,ipv4.router.welland.mithis.com" in output
+        # No net, so most specific for IPv4 is ipv4.router.welland.mithis.com
+        assert "ptr-record=1.99.31.172.in-addr.arpa,ipv4.router.welland.mithis.com" in output
+
+    def test_parked_site_octet_produces_no_records(self):
+        """A site-octet address on no known network is parked: no DNS
+        records at all (dns-redesign design §3 removed families)."""
+        host = _host_with_iface("router", "aa:bb:cc:dd:ee:ff", "10.1.253.1")
+        inv = _make_inventory(hosts=[host])
+        result = generate_dnsmasq_internal(inv)
+        output = result.get("router.conf", "")
+        assert "host-record=" not in output
+        assert "ptr-record=" not in output
 
     def test_no_interface_name_uses_hostname(self):
         """Unnamed interface uses hostname-based names (not interface-prefixed)."""

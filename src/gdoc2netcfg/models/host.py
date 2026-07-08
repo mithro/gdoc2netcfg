@@ -16,11 +16,30 @@ class DNSName:
     Each DNS name maps to zero or more IP addresses. The is_fqdn flag
     distinguishes full domain names (e.g. 'big-storage.welland.mithis.com')
     from short names (e.g. 'big-storage').
+
+    The three-scope grammar (dns-redesign design §3) adds:
+
+    scope:
+        'site'  — lives in the site zone (central auth): aggregates,
+                  projections, alt/service names
+        'net'   — lives in a per-net child zone (dnsmasq leaf or a
+                  central transit zone): {P.}H.N.S, {P.}I.H.N.S
+        'short' — unqualified convenience ride-alongs
+    kind:
+        'native' — carries address records (A/AAAA)
+        'cname'  — an alias; cname_target names the canonical form.
+                   ip_addresses is still populated with the target's
+                   addresses for reference (family/prefix decisions and
+                   equivalence checks) — generators MUST NOT emit
+                   address records for kind='cname' entries.
     """
 
     name: str
     ip_addresses: tuple[IPv4Address | IPv6Address, ...] = ()
     is_fqdn: bool = False
+    scope: str = "site"
+    kind: str = "native"
+    cname_target: str | None = None
 
     @property
     def ipv4(self) -> IPv4Address | None:

@@ -623,6 +623,7 @@ def _get_generator(name: str):
         ),
         "dnsmasq_leaf": ("gdoc2netcfg.generators.dnsmasq_leaf", "generate_dnsmasq_leaf"),
         "pdns_internal": ("gdoc2netcfg.generators.pdns_zones", "generate_pdns_internal"),
+        "pdns_external": ("gdoc2netcfg.generators.pdns_external", "generate_pdns_external"),
         "nagios": ("gdoc2netcfg.generators.nagios", "generate_nagios"),
         "letsencrypt": ("gdoc2netcfg.generators.letsencrypt", "generate_letsencrypt"),
         "nginx": ("gdoc2netcfg.generators.nginx", "generate_nginx"),

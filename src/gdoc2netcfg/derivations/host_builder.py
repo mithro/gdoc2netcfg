@@ -25,6 +25,40 @@ from gdoc2netcfg.sources.credentials import credential_field_names
 from gdoc2netcfg.sources.parser import DeviceRecord
 
 
+def _parse_explicit_ipv6(record: DeviceRecord, site: Site) -> list[IPv6Address]:
+    """Parse the 'IPv6 A' sheet column: explicit addresses unioned with
+    the vanity-derived one, enabling v6-only extras (e.g. ten64's
+    per-/64 ::ff gateway addresses on br-int). 'X' resolves to the site
+    octet as in the IPv4 column; unparseable values are ignored (the
+    column historically holds free text on some rows).
+    """
+    import ipaddress as _ipaddress
+
+    raw = record.extra.get("IPv6 A", "")
+    if not raw:
+        return []
+
+    addrs: list[IPv6Address] = []
+    for part in raw.replace("\n", ",").split(","):
+        text = part.strip().replace("X", str(site.site_octet))
+        if not text:
+            continue
+        try:
+            _ipaddress.IPv6Address(text)
+        except ValueError:
+            continue
+        prefix = next(
+            (
+                p.prefix
+                for p in site.active_ipv6_prefixes
+                if text.startswith(p.prefix)
+            ),
+            "",
+        )
+        addrs.append(IPv6Address(address=text, prefix=prefix))
+    return addrs
+
+
 def _build_interface(record: DeviceRecord, site: Site) -> NetworkInterface:
     """Build a NetworkInterface from a single DeviceRecord.
 
@@ -33,7 +67,12 @@ def _build_interface(record: DeviceRecord, site: Site) -> NetworkInterface:
     """
     mac = MACAddress.parse(record.mac_address) if record.mac_address else None
     ipv4 = IPv4Address(record.ip)
-    ipv6_addrs = ipv4_to_ipv6_list(ipv4, site.active_ipv6_prefixes)
+    ipv6_addrs = list(ipv4_to_ipv6_list(ipv4, site.active_ipv6_prefixes))
+    seen_v6 = {str(a) for a in ipv6_addrs}
+    for addr in _parse_explicit_ipv6(record, site):
+        if str(addr) not in seen_v6:
+            seen_v6.add(str(addr))
+            ipv6_addrs.append(addr)
     vlan_id = ip_to_vlan_id(ipv4, site)
     interface_name = record.interface if record.interface else None
 

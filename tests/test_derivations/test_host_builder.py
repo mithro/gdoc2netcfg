@@ -394,3 +394,54 @@ class TestMacLessCrossReferenceRows:
         ]
         hosts = build_hosts(records, SITE)
         assert len(hosts) == 1
+
+
+class TestExplicitIPv6Column:
+    """The 'IPv6 A' sheet column becomes authoritative: its addresses are
+    unioned with the vanity-derived one (dedup) so v6-only extras — like
+    ten64's per-/64 ::ff gateway addresses on br-int — can be modeled.
+    'X' resolves to the site octet exactly as in the IPv4 column."""
+
+    def test_matching_explicit_value_adds_nothing(self):
+        records = [
+            _make_record(extra={"IPv6 A": "2404:e80:a137:110::100"}),
+        ]
+        hosts = build_hosts(records, SITE)
+        v6 = [str(a) for a in hosts[0].interfaces[0].ipv6_addresses]
+        assert v6 == ["2404:e80:a137:110::100"]
+
+    def test_extra_addresses_unioned(self):
+        records = [
+            _make_record(
+                machine="ten64", mac="aa:bb:cc:dd:ee:01",
+                ip="10.1.10.1", interface="br-int",
+                extra={"IPv6 A": "2404:e80:a137:108::ff\n2404:e80:a137:109::ff"},
+            ),
+        ]
+        hosts = build_hosts(records, SITE)
+        v6 = {str(a) for a in hosts[0].interfaces[0].ipv6_addresses}
+        assert v6 == {
+            "2404:e80:a137:110::1",       # derived from 10.1.10.1
+            "2404:e80:a137:108::ff",
+            "2404:e80:a137:109::ff",
+        }
+
+    def test_x_placeholder_resolved(self):
+        records = [
+            _make_record(
+                machine="tim-yoga", mac="aa:bb:cc:dd:ee:02",
+                ip="10.X.20.10", interface="wifi",
+                extra={"IPv6 A": "2404:e80:a137:X20::10"},
+            ),
+        ]
+        hosts = build_hosts(records, SITE)
+        v6 = {str(a) for a in hosts[0].interfaces[0].ipv6_addresses}
+        assert v6 == {"2404:e80:a137:120::10"}
+
+    def test_unparseable_value_ignored(self):
+        records = [
+            _make_record(extra={"IPv6 A": "tbd"}),
+        ]
+        hosts = build_hosts(records, SITE)
+        v6 = [str(a) for a in hosts[0].interfaces[0].ipv6_addresses]
+        assert v6 == ["2404:e80:a137:110::100"]  # derived only

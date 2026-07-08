@@ -96,3 +96,25 @@ kind = "removed"
 pattern = '\.arpa$'
 detail_pattern = "(wlan[01]|eth[1-9])\\.ten64\\.welland"
 reason = "parked ten64 NIC PTRs (10.1.253/254) drop with their forward records"
+
+[[allow]]
+kind = "changed"
+pattern = '\.arpa$'
+detail_pattern = '^SSHFP:'
+reason = "advisory SSHFP copies at PTR names live only in leaves now; central reverse zones (catch-all, transit, wg) do not carry them"
+
+[[allow]]
+kind = "removed"
+pattern = '\.arpa$'
+detail_pattern = 'eth-local\.tweed'
+reason = "10.21.x v4 reverse is tweed's (21.10.in-addr.arpa delegated); its unreachable shadow copy retires"
+
+[[allow]]
+kind = "removed"
+pattern = '\.168\.192\.in-addr\.arpa$'
+reason = "device-local 192.168.x subnets (usb gadgets, SDR peripherals) have no owner zone in the redesign; the PTRs were unreachable local data"
+
+[[allow]]
+kind = "removed"
+pattern = '^37\.95\.121\.87\.in-addr\.arpa$'
+reason = "the WAN address's reverse belongs to Launtel, not us; the internal PTR shadow retires"

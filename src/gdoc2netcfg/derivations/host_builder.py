@@ -86,6 +86,15 @@ def build_hosts(records: list[DeviceRecord], site: Site) -> list[Host]:
     # Filter for this site and resolve 'X' placeholders in IPs
     records = filter_and_resolve_records(records, site)
 
+    # IPs claimed by MAC'd rows: a MAC-less row on such an IP is a
+    # cross-reference (e.g. the IoT sheet listing a Network-sheet machine
+    # for plug bookkeeping), not a host — skip it. MAC-less rows with
+    # unclaimed IPs are genuine DNS-only interfaces (wg, tailscale,
+    # planned hosts).
+    macced_ips = {
+        r.ip for r in records if r.machine and r.ip and r.mac_address
+    }
+
     # Group records by hostname to build hosts.
     # BMC interfaces get their own hostname: {interface}.{machine_hostname}
     host_groups: dict[str, list[DeviceRecord]] = {}
@@ -97,6 +106,8 @@ def build_hosts(records: list[DeviceRecord], site: Site) -> list[Host]:
         # MAC deliberately optional: MAC-less rows are DNS-only interfaces
         if not record.machine or not record.ip:
             continue
+        if not record.mac_address and record.ip in macced_ips:
+            continue  # cross-reference row for a MAC'd interface
 
         # Determine sheet type
         sheet_type = record.sheet_name

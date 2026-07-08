@@ -363,3 +363,34 @@ class TestMacLessInterfaces:
         records = [_make_record(machine="ten64", mac="", ip="")]
         hosts = build_hosts(records, SITE)
         assert hosts == []
+
+
+class TestMacLessCrossReferenceRows:
+    """A MAC-less row whose IP is already claimed by a MAC'd interface is
+    a cross-reference (e.g. the IoT sheet listing a Network-sheet machine
+    for plug bookkeeping) — it must NOT build a phantom duplicate host.
+    MAC-less rows with unclaimed IPs are genuine DNS-only interfaces."""
+
+    def test_crossref_row_skipped(self):
+        records = [
+            _make_record(
+                machine="rpi4-kindle", mac="aa:bb:cc:dd:ee:01",
+                ip="10.1.90.208", sheet_name="Network",
+            ),
+            _make_record(
+                machine="rpi4-kindle", mac="",
+                ip="10.1.90.208", sheet_name="iot",
+            ),
+        ]
+        hosts = build_hosts(records, SITE)
+        assert [h.hostname for h in hosts] == ["rpi4-kindle"]
+
+    def test_unique_ip_macless_row_kept(self):
+        records = [
+            _make_record(
+                machine="ten64", mac="",
+                ip="10.1.10.99", interface="wg-test",
+            ),
+        ]
+        hosts = build_hosts(records, SITE)
+        assert len(hosts) == 1

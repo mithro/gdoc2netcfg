@@ -402,3 +402,95 @@ class TestVlanConsistency:
         result = validate_vlan_consistency([record], VLAN_SITE)
         assert result.has_errors
         assert result.errors[0].code == "vlan_mismatch"
+
+
+class TestMacLessAndCrossHostDuplicates:
+    """MAC-less (DNS-only) interfaces must not trip the MAC-keyed
+    validators, and cross-host IP sharing must error even without MACs
+    (the stale-row class the DHCP-keyed check missed: sw-netgear-m7300
+    rows left behind after the m4300 took over their addresses)."""
+
+    def test_macless_interfaces_do_not_collide_as_mac_none(self):
+        from gdoc2netcfg.constraints.validators import (
+            validate_cross_record_constraints,
+        )
+        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
+        from gdoc2netcfg.models.addressing import IPv4Address
+
+        hosts = [
+            Host(
+                machine_name=f"h{i}",
+                hostname=f"h{i}",
+                interfaces=[
+                    NetworkInterface(
+                        name="wg0",
+                        mac=None,
+                        ip_addresses=(IPv4Address(f"10.1.10.{i}"),),
+                        dhcp_name=f"wg0-h{i}",
+                    )
+                ],
+            )
+            for i in (1, 2)
+        ]
+        inv = NetworkInventory(site=SITE, hosts=hosts)
+        result = validate_cross_record_constraints(inv)
+        assert not [v for v in result.errors if v.code == "mac_duplicate_ip"]
+
+    def test_cross_host_shared_ip_errors_without_macs(self):
+        from gdoc2netcfg.constraints.validators import (
+            validate_cross_record_constraints,
+        )
+        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
+        from gdoc2netcfg.models.addressing import IPv4Address
+
+        hosts = [
+            Host(
+                machine_name=name,
+                hostname=name,
+                interfaces=[
+                    NetworkInterface(
+                        name=None,
+                        mac=None,
+                        ip_addresses=(IPv4Address("10.1.5.31"),),
+                        dhcp_name=name,
+                    )
+                ],
+            )
+            for name in ("sw-old", "sw-new")
+        ]
+        inv = NetworkInventory(site=SITE, hosts=hosts)
+        result = validate_cross_record_constraints(inv)
+        errors = [v for v in result.errors if v.code == "ip_multiple_hosts"]
+        assert len(errors) == 1
+        assert "sw-old" in errors[0].message and "sw-new" in errors[0].message
+
+    def test_same_host_shared_ip_is_fine(self):
+        """eth0+wlan0 sharing one IP on ONE host is the roaming pattern
+        (VirtualInterface grouping) — never an error."""
+        from gdoc2netcfg.constraints.validators import (
+            validate_cross_record_constraints,
+        )
+        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
+        from gdoc2netcfg.models.addressing import IPv4Address, MACAddress
+
+        host = Host(
+            machine_name="lap",
+            hostname="lap",
+            interfaces=[
+                NetworkInterface(
+                    name="eth0",
+                    mac=MACAddress.parse("aa:bb:cc:dd:ee:01"),
+                    ip_addresses=(IPv4Address("10.1.20.5"),),
+                    dhcp_name="eth0-lap",
+                ),
+                NetworkInterface(
+                    name="wlan0",
+                    mac=MACAddress.parse("aa:bb:cc:dd:ee:02"),
+                    ip_addresses=(IPv4Address("10.1.20.5"),),
+                    dhcp_name="wlan0-lap",
+                ),
+            ],
+        )
+        inv = NetworkInventory(site=SITE, hosts=[host])
+        result = validate_cross_record_constraints(inv)
+        assert not [v for v in result.errors if v.code == "ip_multiple_hosts"]

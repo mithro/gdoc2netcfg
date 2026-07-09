@@ -698,7 +698,11 @@ def cmd_generate(args: argparse.Namespace) -> int:
     if args.generators:
         gen_names = args.generators
     else:
-        gen_names = list(config.generators.keys())
+        gen_names = [
+            name
+            for name, gen in config.generators.items()
+            if gen.enabled
+        ]
 
     generated = 0
     post_gen_errors = False

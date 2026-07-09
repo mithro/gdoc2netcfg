@@ -133,3 +133,20 @@ freshness_seconds = 900
 # name is [site].name. Presence of this section enables the hourly scan.
 [zigbee]
 sheet_name = "Zigbee Info"
+
+# dns-redesign per-instance generators: output keys are deploy-relative,
+# so with these output_dir values the generated tree mirrors /etc
+# (out/etc/dnsmasq.d/<net>/generated/, out/etc/powerdns/...).
+# Not in 'enabled' yet — run explicitly until the Phase 2/3 cutovers.
+
+[generators.dnsmasq_leaf]
+output_dir = "etc/dnsmasq.d"
+
+[generators.pdns_internal]
+output_dir = "etc/powerdns"
+
+[generators.pdns_external]
+output_dir = "etc/powerdns"
+
+[generators.recursor_forward]
+output = "etc/powerdns/forward-zones.yml"

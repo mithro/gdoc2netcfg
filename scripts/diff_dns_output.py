@@ -21,7 +21,7 @@ Exit status: 0 when every difference matches the allowlist, 1 otherwise.
 Usage:
   uv run scripts/diff_dns_output.py \
       --old /etc/dnsmasq.d/internal/generated \
-      --new /path/out/dnsmasq-leaf --new /path/out/pdns-internal \
+      --new out/etc/dnsmasq.d --new out/etc/powerdns/zones-internal \
       --allowlist scripts/dns_diff_allowlist.toml
 """
 

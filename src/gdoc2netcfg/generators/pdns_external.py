@@ -19,12 +19,12 @@ signed site native).
 
 from __future__ import annotations
 
-import time
-
 from gdoc2netcfg.generators.pdns_zones import (
     RECORD_TTL,
+    SERIAL_PLACEHOLDER,
     ZONE_TTL,
     _sshfp_lines,
+    finalize_zone_serials,
 )
 from gdoc2netcfg.models.host import Host, NetworkInventory
 from gdoc2netcfg.utils.ip import is_rfc1918
@@ -41,21 +41,22 @@ def generate_pdns_external(
 ) -> dict[str, str]:
     """Generate the external pdns auth zone file + bind config.
 
-    Returns a dict with "{domain}.zone" and "bind-external.conf", or an
-    empty dict when the site has no public IPv4 configured.
+    Returns a dict keyed with deploy-relative paths under /etc/powerdns:
+    "zones-external/{domain}.zone" + "bind-external.conf" — or an empty
+    dict when the site has no public IPv4 configured. serial=None (the
+    default) derives the serial from the zone content; the pdns@external
+    instance must use SOA-EDIT so the serials PRESENTED to the Rollernet
+    secondaries stay RFC-1982-monotonic (content hashes are not).
     """
     public_ip = public_ipv4 or inventory.site.public_ipv4
     if not public_ip:
         return {}
 
-    if serial is None:
-        serial = int(time.time())
-
     domain = inventory.site.domain
 
     lines = [
         f"{domain}. {ZONE_TTL} IN SOA {domain}. hostmaster.mithis.com. "
-        f"{serial} 10800 3600 604800 300",
+        f"{SERIAL_PLACEHOLDER} 10800 3600 604800 300",
     ]
     for ns in PUBLIC_NS:
         lines.append(f"{domain}. {ZONE_TTL} IN NS {ns}")
@@ -72,7 +73,8 @@ def generate_pdns_external(
         lines.append("; hand-maintained public records (ACME, apt-proxy, ...)")
         lines.append(f"$INCLUDE {site_extra_include}")
 
-    files = {f"{domain}.zone": "\n".join(lines) + "\n"}
+    files = {f"zones-external/{domain}.zone": "\n".join(lines) + "\n"}
+    files = finalize_zone_serials(files, serial)
     files["bind-external.conf"] = (
         f'zone "{domain}" {{ type primary; '
         f'file "{zones_dir}/{domain}.zone"; }};\n'

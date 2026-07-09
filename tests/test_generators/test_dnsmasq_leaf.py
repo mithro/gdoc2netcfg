@@ -82,12 +82,12 @@ def _big_storage():
 class TestLeafSplit:
     def test_multi_net_host_splits_per_net(self):
         files = generate_dnsmasq_leaf(_inventory(_big_storage()))
-        assert "int/big-storage.conf" in files
-        assert "store/big-storage.conf" in files
+        assert "int/generated/big-storage.conf" in files
+        assert "store/generated/big-storage.conf" in files
 
     def test_int_leaf_has_only_int_content(self):
         files = generate_dnsmasq_leaf(_inventory(_big_storage()))
-        conf = files["int/big-storage.conf"]
+        conf = files["int/generated/big-storage.conf"]
         assert "host-record=big-storage.int.welland.mithis.com,10.1.11.154" in conf
         assert "host-record=10g1.big-storage.int.welland.mithis.com,10.1.11.154" in conf
         assert "host-record=ipv4.big-storage.int.welland.mithis.com,10.1.11.154" in conf
@@ -96,15 +96,15 @@ class TestLeafSplit:
 
     def test_store_leaf_has_previously_missing_name(self):
         files = generate_dnsmasq_leaf(_inventory(_big_storage()))
-        conf = files["store/big-storage.conf"]
+        conf = files["store/generated/big-storage.conf"]
         assert "host-record=big-storage.store.welland.mithis.com,10.1.7.15" in conf
         assert "10.1.11.154" not in conf
 
     def test_dhcp_hosts_follow_their_net(self):
         files = generate_dnsmasq_leaf(_inventory(_big_storage()))
-        assert "dhcp-host=aa:bb:cc:dd:ee:01,10.1.11.154" in files["int/big-storage.conf"]
-        assert "dhcp-host=aa:bb:cc:dd:ee:03,10.1.7.15" in files["store/big-storage.conf"]
-        assert "10.1.7.15" not in files["int/big-storage.conf"]
+        assert "dhcp-host=aa:bb:cc:dd:ee:01,10.1.11.154" in files["int/generated/big-storage.conf"]
+        assert "dhcp-host=aa:bb:cc:dd:ee:03,10.1.7.15" in files["store/generated/big-storage.conf"]
+        assert "10.1.7.15" not in files["int/generated/big-storage.conf"]
 
 
 class TestLeafScopeDiscipline:
@@ -126,7 +126,7 @@ class TestLeafScopeDiscipline:
 
     def test_ptr_targets_net_scoped_prefix_forms(self):
         files = generate_dnsmasq_leaf(_inventory(_big_storage()))
-        conf = files["int/big-storage.conf"]
+        conf = files["int/generated/big-storage.conf"]
         assert (
             "ptr-record=154.11.1.10.in-addr.arpa,"
             "ipv4.10g1.big-storage.int.welland.mithis.com" in conf
@@ -134,7 +134,7 @@ class TestLeafScopeDiscipline:
 
     def test_sshfp_advisory_at_net_natives(self):
         files = generate_dnsmasq_leaf(_inventory(_big_storage()))
-        conf = files["int/big-storage.conf"]
+        conf = files["int/generated/big-storage.conf"]
         assert "dns-rr=big-storage.int.welland.mithis.com,44," in conf
         assert "dns-rr=10g1.big-storage.int.welland.mithis.com,44," in conf
         # site names never carry leaf SSHFPs
@@ -155,7 +155,7 @@ class TestLeafExclusions:
         files = generate_dnsmasq_leaf(_inventory(host))
         assert not any(f.startswith("wg/") for f in files)
         assert not any(f.startswith("tfpgas/") for f in files)
-        assert "int/ten64.conf" in files
+        assert "int/generated/ten64.conf" in files
 
     def test_delegated_fpgas_excluded(self):
         host = Host(
@@ -193,6 +193,6 @@ class TestMacLessInterfaces:
             ],
         )
         files = generate_dnsmasq_leaf(_inventory(host))
-        conf = files["int/gw.conf"]
+        conf = files["int/generated/gw.conf"]
         assert "dhcp-host=" not in conf
         assert "host-record=gw.int.welland.mithis.com,10.1.10.9" in conf

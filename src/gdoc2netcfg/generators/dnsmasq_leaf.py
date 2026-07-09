@@ -1,7 +1,8 @@
 """Per-net dnsmasq leaf configuration generator (dns-redesign §7).
 
-Produces per-host fragments for each LEAF net, keyed "{net}/{hostname}.conf"
-(deployed to /etc/dnsmasq.d/{net}/generated/ on the router). Each fragment
+Produces per-host fragments for each LEAF net, keyed
+"{net}/generated/{hostname}.conf" — with output_dir = etc/dnsmasq.d the
+output tree mirrors the deployed /etc/dnsmasq.d/{net}/generated/ layout. Each fragment
 contains only that net's view of the host:
 
 - dhcp-host bindings for the host's interfaces on that net
@@ -45,7 +46,8 @@ def _non_leaf_nets(site: Site) -> frozenset[str]:
 def generate_dnsmasq_leaf(inventory: NetworkInventory) -> dict[str, str]:
     """Generate per-net leaf dnsmasq fragments.
 
-    Returns a dict mapping "{net}/{hostname}.conf" to config content.
+    Returns a dict mapping "{net}/generated/{hostname}.conf" to config
+    content (deploy-relative under /etc/dnsmasq.d).
     """
     non_leaf = _non_leaf_nets(inventory.site)
     files: dict[str, str] = {}
@@ -55,7 +57,7 @@ def generate_dnsmasq_leaf(inventory: NetworkInventory) -> dict[str, str]:
                 continue
             content = _host_leaf_fragment(host, net, inventory)
             if content:
-                files[f"{net}/{host.hostname}.conf"] = content
+                files[f"{net}/generated/{host.hostname}.conf"] = content
     return files
 
 

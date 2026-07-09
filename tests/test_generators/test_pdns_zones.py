@@ -110,7 +110,7 @@ def _generate(*hosts, **kwargs):
 class TestSiteZone:
     def test_soa_and_ns(self):
         files = _generate(_ten64())
-        zone = files[f"{DOMAIN}.zone"]
+        zone = files[f"zones-internal/{DOMAIN}.zone"]
         assert (
             f"{DOMAIN}. 3600 IN SOA ten64.{DOMAIN}. hostmaster.mithis.com. "
             f"{SERIAL} 10800 3600 604800 300" in zone
@@ -119,7 +119,7 @@ class TestSiteZone:
 
     def test_delegations_with_glue_no_ds(self):
         files = _generate(_ten64(), _big_storage())
-        zone = files[f"{DOMAIN}.zone"]
+        zone = files[f"zones-internal/{DOMAIN}.zone"]
         assert f"int.{DOMAIN}. 300 IN NS gw.int.{DOMAIN}." in zone
         assert f"gw.int.{DOMAIN}. 300 IN A 10.1.10.1" in zone
         assert f"gw.int.{DOMAIN}. 300 IN AAAA 2404:e80:a137:110::1" in zone
@@ -130,26 +130,26 @@ class TestSiteZone:
         """tfpgas/wg zones are served by this same auth — the delegation
         target is the site NS itself (no glue needed)."""
         files = _generate(_ten64())
-        zone = files[f"{DOMAIN}.zone"]
+        zone = files[f"zones-internal/{DOMAIN}.zone"]
         assert f"tfpgas.{DOMAIN}. 300 IN NS ten64.{DOMAIN}." in zone
         assert f"wg.{DOMAIN}. 300 IN NS ten64.{DOMAIN}." in zone
 
     def test_fpgas_delegated_to_tweed(self):
         files = _generate(_ten64(), _fpgas_host())
-        zone = files[f"{DOMAIN}.zone"]
+        zone = files[f"zones-internal/{DOMAIN}.zone"]
         assert f"fpgas.{DOMAIN}. 300 IN NS gw.fpgas.{DOMAIN}." in zone
         assert f"gw.fpgas.{DOMAIN}. 300 IN A 10.21.0.1" in zone
 
     def test_site_aggregate_honors_override(self):
         files = _generate(_ten64())
-        zone = files[f"{DOMAIN}.zone"]
+        zone = files[f"zones-internal/{DOMAIN}.zone"]
         assert f"ten64.{DOMAIN}. 300 IN A 10.1.10.1" in zone
         # override excludes br-store from the aggregate
         assert f"ten64.{DOMAIN}. 300 IN A 10.1.7.1" not in zone
 
     def test_site_natives_and_prefix_forms(self):
         files = _generate(_ten64(), _big_storage())
-        zone = files[f"{DOMAIN}.zone"]
+        zone = files[f"zones-internal/{DOMAIN}.zone"]
         assert f"big-storage.{DOMAIN}. 300 IN A 10.1.11.154" in zone
         assert f"big-storage.{DOMAIN}. 300 IN A 10.1.7.15" in zone
         assert f"ipv4.big-storage.{DOMAIN}. 300 IN A 10.1.11.154" in zone
@@ -159,7 +159,7 @@ class TestSiteZone:
 
     def test_cname_projections(self):
         files = _generate(_ten64(), _big_storage())
-        zone = files[f"{DOMAIN}.zone"]
+        zone = files[f"zones-internal/{DOMAIN}.zone"]
         assert (
             f"int.big-storage.{DOMAIN}. 300 IN CNAME big-storage.int.{DOMAIN}." in zone
         )
@@ -174,13 +174,13 @@ class TestSiteZone:
 
     def test_no_net_scoped_records_in_site_zone(self):
         files = _generate(_ten64(), _big_storage())
-        zone = files[f"{DOMAIN}.zone"]
+        zone = files[f"zones-internal/{DOMAIN}.zone"]
         assert f"big-storage.int.{DOMAIN}. 300 IN A" not in zone
         assert f"10g1.big-storage.int.{DOMAIN}. 300 IN A" not in zone
 
     def test_sshfp_and_caa_at_site_native(self):
         files = _generate(_ten64(), _big_storage())
-        zone = files[f"{DOMAIN}.zone"]
+        zone = files[f"zones-internal/{DOMAIN}.zone"]
         assert (
             f"big-storage.{DOMAIN}. 300 IN SSHFP 4 2 "
             f"996b3981b870b4b2473e3dbadb3c435a8f2314b6a962a429a78760426bb13ba6" in zone
@@ -194,35 +194,35 @@ class TestSiteZone:
             _ten64(),
             site_extra_include="/etc/powerdns/zones-internal/welland.mithis.com.extra",
         )
-        zone = files[f"{DOMAIN}.zone"]
+        zone = files[f"zones-internal/{DOMAIN}.zone"]
         assert "$INCLUDE /etc/powerdns/zones-internal/welland.mithis.com.extra" in zone
 
     def test_no_include_by_default(self):
         files = _generate(_ten64())
-        assert "$INCLUDE" not in files[f"{DOMAIN}.zone"]
+        assert "$INCLUDE" not in files[f"zones-internal/{DOMAIN}.zone"]
 
 
 class TestCentralNetZones:
     def test_wg_zone(self):
         files = _generate(_ten64())
-        zone = files[f"wg.{DOMAIN}.zone"]
+        zone = files[f"zones-internal/wg.{DOMAIN}.zone"]
         assert f"wg.{DOMAIN}. 3600 IN SOA ten64.{DOMAIN}." in zone
         assert f"wg-x1c-work.ten64.wg.{DOMAIN}. 300 IN A 10.98.6.1" in zone
         assert f"ipv4.wg-x1c-work.ten64.wg.{DOMAIN}. 300 IN A 10.98.6.1" in zone
 
     def test_tfpgas_zone(self):
         files = _generate(_ten64())
-        zone = files[f"tfpgas.{DOMAIN}.zone"]
+        zone = files[f"zones-internal/tfpgas.{DOMAIN}.zone"]
         assert f"br-tfpgas.ten64.tfpgas.{DOMAIN}. 300 IN A 10.99.21.1" in zone
 
     def test_central_v4_reverses(self):
         files = _generate(_ten64())
-        zone = files["98.10.in-addr.arpa.zone"]
+        zone = files["zones-internal/98.10.in-addr.arpa.zone"]
         assert (
             "1.6.98.10.in-addr.arpa. 300 IN PTR "
             f"ipv4.wg-x1c-work.ten64.wg.{DOMAIN}." in zone
         )
-        zone2 = files["21.99.10.in-addr.arpa.zone"]
+        zone2 = files["zones-internal/21.99.10.in-addr.arpa.zone"]
         assert (
             "1.21.99.10.in-addr.arpa. 300 IN PTR "
             f"ipv4.br-tfpgas.ten64.tfpgas.{DOMAIN}." in zone2
@@ -230,7 +230,7 @@ class TestCentralNetZones:
 
     def test_central_v6_reverse_slices(self):
         files = _generate(_ten64())
-        zone = files["6.0.8.9.7.3.1.a.0.8.e.0.4.0.4.2.ip6.arpa.zone"]
+        zone = files["zones-internal/6.0.8.9.7.3.1.a.0.8.e.0.4.0.4.2.ip6.arpa.zone"]
         assert (
             "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.6.0.8.9.7.3.1.a.0.8.e.0.4.0.4.2."
             f"ip6.arpa. 300 IN PTR ipv6.wg-x1c-work.ten64.wg.{DOMAIN}." in zone
@@ -264,8 +264,9 @@ class TestZoneSyntax:
         for fname, content in files.items():
             if not fname.endswith(".zone"):
                 continue
-            zone_name = fname[: -len(".zone")]
+            zone_name = fname.split("/")[-1][: -len(".zone")]
             path = tmp_path / fname
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
             result = subprocess.run(
                 ["named-checkzone", zone_name, str(path)],
@@ -275,3 +276,49 @@ class TestZoneSyntax:
             assert result.returncode == 0, (
                 f"{zone_name} failed named-checkzone:\n{result.stdout}{result.stderr}"
             )
+
+
+class TestContentDerivedSerials:
+    """Default serials derive from each zone's own content: regenerating
+    unchanged data is byte-identical (no epoch churn in /etc diffs), and
+    a record change bumps that zone's serial only. Code revisions matter
+    exactly when they change output — by construction."""
+
+    def test_regeneration_is_byte_identical(self):
+        files_a = generate_pdns_internal(_inventory(_ten64(), _big_storage()))
+        files_b = generate_pdns_internal(_inventory(_ten64(), _big_storage()))
+        assert files_a == files_b
+
+    def test_record_change_bumps_only_that_zone(self):
+        base = generate_pdns_internal(_inventory(_ten64(), _big_storage()))
+        changed_host = _big_storage()
+        changed_host.interfaces[0] = _iface(
+            "10g1", "11", "10.1.11.99", "2404:e80:a137:111::99"
+        )
+        changed = generate_pdns_internal(_inventory(_ten64(), changed_host))
+
+        site = f"zones-internal/{DOMAIN}.zone"
+        wg = f"zones-internal/wg.{DOMAIN}.zone"
+        assert base[site] != changed[site]
+        assert base[wg] == changed[wg]
+
+        def _serial(zone_text):
+            for line in zone_text.splitlines():
+                if " SOA " in line:
+                    return int(line.split()[6])
+            raise AssertionError("no SOA")
+
+        assert _serial(base[site]) != _serial(changed[site])
+        assert _serial(base[wg]) == _serial(changed[wg])
+
+    def test_no_placeholder_leaks(self):
+        files = generate_pdns_internal(_inventory(_ten64(), _big_storage()))
+        for content in files.values():
+            assert "@SERIAL@" not in content
+
+    def test_explicit_serial_still_honored(self):
+        files = generate_pdns_internal(
+            _inventory(_ten64()), serial=1234567,
+        )
+        assert " SOA " in files[f"zones-internal/{DOMAIN}.zone"]
+        assert "1234567 10800" in files[f"zones-internal/{DOMAIN}.zone"]

@@ -17,15 +17,23 @@ Emits bind-format zone files for the central internal auth instance
                              slices for the central-served nets.
 - bind-internal.conf       — zone{} statements for all of the above.
 
-Zone files use absolute owner names and epoch serials (SOA serial-0 ≠
-file mtime on pdns 5.1 — verification V5/G4); the deploy step is
-checksum-gated so serials only take effect when content changes.
+Zone files use absolute owner names and CONTENT-DERIVED serials: the
+serial is a 31-bit hash of the zone data (with the serial field masked),
+so a zone file's bytes change iff its records change — regenerations are
+no-ops, etckeeper diffs stay clean, and code upgrades only bump serials
+when they actually alter output. (SOA serial-0 ≠ file mtime on pdns 5.1
+— verification V5/G4 — so the generator owns serials.)
+
+Caveat: content hashes are not monotonic under RFC 1982 serial
+arithmetic. Irrelevant for the internal zones (no AXFR consumers); the
+external instance must present monotonic serials to the Rollernet
+secondaries via pdns SOA-EDIT on the signed zone (plan Task 5.1/5.3).
 """
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
-import time
 
 from gdoc2netcfg.derivations.vlan import (
     DELEGATED_NETS,
@@ -51,6 +59,31 @@ ROUTER_HOSTNAME = "ten64"
 RECORD_TTL = 300
 ZONE_TTL = 3600
 
+# Substituted with the per-zone content-derived serial at finalize time.
+SERIAL_PLACEHOLDER = "@SERIAL@"
+
+
+def _content_serial(content: str) -> int:
+    """A deterministic 31-bit serial from the zone content (serial field
+    still holding the placeholder): changes iff the zone data changes."""
+    digest = hashlib.sha256(content.encode()).digest()
+    serial = int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
+    return serial or 1
+
+
+def finalize_zone_serials(
+    files: dict[str, str], serial: int | None,
+) -> dict[str, str]:
+    """Replace SERIAL_PLACEHOLDER in every .zone file: with the explicit
+    serial when given (tests), else each zone's content hash."""
+    out: dict[str, str] = {}
+    for name, content in files.items():
+        if name.endswith(".zone"):
+            value = serial if serial is not None else _content_serial(content)
+            content = content.replace(SERIAL_PLACEHOLDER, str(value))
+        out[name] = content
+    return out
+
 
 def _central_nets(site: Site) -> frozenset[str]:
     """Nets served by the central auth itself: wg + transit VLANs."""
@@ -61,11 +94,11 @@ def _central_nets(site: Site) -> frozenset[str]:
     return frozenset(central)
 
 
-def _soa_and_ns(zone: str, domain: str, serial: int) -> list[str]:
+def _soa_and_ns(zone: str, domain: str) -> list[str]:
     primary = f"{ROUTER_HOSTNAME}.{domain}."
     return [
         f"{zone}. {ZONE_TTL} IN SOA {primary} hostmaster.mithis.com. "
-        f"{serial} 10800 3600 604800 300",
+        f"{SERIAL_PLACEHOLDER} 10800 3600 604800 300",
         f"{zone}. {ZONE_TTL} IN NS {primary}",
     ]
 
@@ -107,30 +140,35 @@ def generate_pdns_internal(
 ) -> dict[str, str]:
     """Generate the internal pdns auth zone files + bind config.
 
-    Returns a dict mapping "{zonename}.zone" (and "bind-internal.conf")
-    to file content.
+    Returns a dict keyed with deploy-relative paths under /etc/powerdns:
+    "zones-internal/{zonename}.zone" + "bind-internal.conf". serial=None
+    (the default) derives each zone's serial from its own content.
     """
-    if serial is None:
-        serial = int(time.time())
-
     site = inventory.site
     domain = site.domain
     central = _central_nets(site)
 
     files: dict[str, str] = {}
-    files[f"{domain}.zone"] = _site_zone(
-        inventory, serial, central, site_extra_include
+    files[f"zones-internal/{domain}.zone"] = _site_zone(
+        inventory, central, site_extra_include
     )
 
     for net in sorted(central):
-        content = _central_net_zone(inventory, net, serial)
+        content = _central_net_zone(inventory, net)
         if content is not None:
-            files[f"{net}.{domain}.zone"] = content
+            files[f"zones-internal/{net}.{domain}.zone"] = content
 
-    files.update(_central_reverse_zones(inventory, central, serial))
-    files.update(_catchall_reverse_zones(inventory, serial))
+    for zone_file, content in {
+        **_central_reverse_zones(inventory, central),
+        **_catchall_reverse_zones(inventory),
+    }.items():
+        files[f"zones-internal/{zone_file}"] = content
 
-    zone_names = sorted(f[: -len(".zone")] for f in files)
+    files = finalize_zone_serials(files, serial)
+
+    zone_names = sorted(
+        f[len("zones-internal/"): -len(".zone")] for f in files
+    )
     files["bind-internal.conf"] = "".join(
         f'zone "{z}" {{ type primary; file "{zones_dir}/{z}.zone"; }};\n'
         for z in zone_names
@@ -169,7 +207,6 @@ def _router_net_addresses(
 
 def _site_zone(
     inventory: NetworkInventory,
-    serial: int,
     central: frozenset[str],
     site_extra_include: str | None,
 ) -> str:
@@ -177,7 +214,7 @@ def _site_zone(
     domain = site.domain
     primary = f"{ROUTER_HOSTNAME}.{domain}."
 
-    lines = _soa_and_ns(domain, domain, serial)
+    lines = _soa_and_ns(domain, domain)
 
     # --- Insecure delegations (NS + glue, deliberately NO DS) -------------
     lines.append("")
@@ -250,7 +287,7 @@ def _site_zone(
 
 
 def _central_net_zone(
-    inventory: NetworkInventory, net: str, serial: int,
+    inventory: NetworkInventory, net: str,
 ) -> str | None:
     """Zone file for a central-served net (wg, tfpgas); None if empty."""
     domain = inventory.site.domain
@@ -266,14 +303,14 @@ def _central_net_zone(
     if not record_lines:
         return None
 
-    lines = _soa_and_ns(zone, domain, serial)
+    lines = _soa_and_ns(zone, domain)
     lines.append("")
     lines.extend(record_lines)
     return "\n".join(lines) + "\n"
 
 
 def _catchall_reverse_zones(
-    inventory: NetworkInventory, serial: int,
+    inventory: NetworkInventory,
 ) -> dict[str, str]:
     """Catch-all reverse zones for site-octet addresses on NO known net
     (100G backbone 10.1.16.x, 10.1.21, 10.1.110 gadgets, …): a v4
@@ -332,7 +369,7 @@ def _catchall_reverse_zones(
 
     files: dict[str, str] = {}
     for zone, ptr_lines in sorted(zones.items()):
-        lines = _soa_and_ns(zone, domain, serial)
+        lines = _soa_and_ns(zone, domain)
         lines.append("")
         lines.extend(ptr_lines)
         files[f"{zone}.zone"] = "\n".join(lines) + "\n"
@@ -368,7 +405,7 @@ def _v6_reverse_zone_name(ipv6_str: str) -> str:
 
 
 def _central_reverse_zones(
-    inventory: NetworkInventory, central: frozenset[str], serial: int,
+    inventory: NetworkInventory, central: frozenset[str],
 ) -> dict[str, str]:
     """Reverse zone files for the central-served nets' addresses."""
     site = inventory.site
@@ -404,7 +441,7 @@ def _central_reverse_zones(
 
     files: dict[str, str] = {}
     for zone, ptr_lines in sorted(zones.items()):
-        lines = _soa_and_ns(zone, domain, serial)
+        lines = _soa_and_ns(zone, domain)
         lines.append("")
         lines.extend(ptr_lines)
         files[f"{zone}.zone"] = "\n".join(lines) + "\n"

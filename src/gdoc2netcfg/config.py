@@ -235,12 +235,19 @@ def _build_generators(data: dict) -> dict[str, GeneratorConfig]:
     generators_section = data.get("generators", {})
     enabled_names = generators_section.get("enabled", [])
 
+    # Every [generators.X] section is parsed; 'enabled' only controls
+    # which generators run by default. Explicitly-invoked generators
+    # (e.g. 'generate pdns_internal') still get their configured
+    # output/output_dir/params.
+    names = set(enabled_names) | {
+        k for k, v in generators_section.items() if isinstance(v, dict)
+    }
     generators: dict[str, GeneratorConfig] = {}
-    for name in enabled_names:
+    for name in sorted(names):
         gen_section = generators_section.get(name, {})
         generators[name] = GeneratorConfig(
             name=name,
-            enabled=True,
+            enabled=name in enabled_names,
             output=gen_section.get("output", ""),
             output_dir=gen_section.get("output_dir", ""),
             params={

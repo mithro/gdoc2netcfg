@@ -92,7 +92,7 @@ def _generate(*hosts, **kwargs):
 class TestExternalZone:
     def test_soa_and_rollernet_ns(self):
         files = _generate(_big_storage())
-        zone = files[f"{DOMAIN}.zone"]
+        zone = files[f"zones-external/{DOMAIN}.zone"]
         assert (
             f"{DOMAIN}. 3600 IN SOA {DOMAIN}. hostmaster.mithis.com. "
             f"{SERIAL} 10800 3600 604800 300" in zone
@@ -102,13 +102,13 @@ class TestExternalZone:
 
     def test_apex_record_from_alt_name(self):
         files = _generate(_ten64())
-        zone = files[f"{DOMAIN}.zone"]
+        zone = files[f"zones-external/{DOMAIN}.zone"]
         assert f"{DOMAIN}. 300 IN A {PUBLIC_V4}" in zone
         assert f"{DOMAIN}. 300 IN AAAA 2404:e80:a137:100::1" in zone
 
     def test_rfc1918_transformed_ipv6_kept(self):
         files = _generate(_big_storage())
-        zone = files[f"{DOMAIN}.zone"]
+        zone = files[f"zones-external/{DOMAIN}.zone"]
         assert f"big-storage.{DOMAIN}. 300 IN A {PUBLIC_V4}" in zone
         assert f"big-storage.{DOMAIN}. 300 IN AAAA 2404:e80:a137:111::154" in zone
         assert "10.1.11.154" not in zone
@@ -116,7 +116,7 @@ class TestExternalZone:
 
     def test_net_scoped_names_flat_native(self):
         files = _generate(_big_storage())
-        zone = files[f"{DOMAIN}.zone"]
+        zone = files[f"zones-external/{DOMAIN}.zone"]
         assert f"big-storage.int.{DOMAIN}. 300 IN A {PUBLIC_V4}" in zone
         assert (
             f"big-storage.int.{DOMAIN}. 300 IN AAAA 2404:e80:a137:111::154" in zone
@@ -125,20 +125,20 @@ class TestExternalZone:
 
     def test_no_cnames_or_delegations(self):
         files = _generate(_big_storage(), _ten64())
-        zone = files[f"{DOMAIN}.zone"]
+        zone = files[f"zones-external/{DOMAIN}.zone"]
         assert " CNAME " not in zone
         assert f" IN NS gw." not in zone
 
     def test_public_v4_deduplicated_per_name(self):
         """Both RFC1918 addresses map to the same public IP — one A each."""
         files = _generate(_big_storage())
-        zone = files[f"{DOMAIN}.zone"]
+        zone = files[f"zones-external/{DOMAIN}.zone"]
         line = f"big-storage.{DOMAIN}. 300 IN A {PUBLIC_V4}"
         assert zone.splitlines().count(line) == 1
 
     def test_sshfp_caa_at_site_native_only(self):
         files = _generate(_big_storage())
-        zone = files[f"{DOMAIN}.zone"]
+        zone = files[f"zones-external/{DOMAIN}.zone"]
         assert f"big-storage.{DOMAIN}. 300 IN SSHFP 4 2" in zone
         assert f'big-storage.{DOMAIN}. 300 IN CAA 0 issue "letsencrypt.org"' in zone
         assert f"10g1.big-storage.{DOMAIN}. 300 IN SSHFP" not in zone
@@ -149,7 +149,7 @@ class TestExternalZone:
             _big_storage(),
             site_extra_include="/etc/powerdns/zones-external/welland.mithis.com.extra",
         )
-        zone = files[f"{DOMAIN}.zone"]
+        zone = files[f"zones-external/{DOMAIN}.zone"]
         assert (
             "$INCLUDE /etc/powerdns/zones-external/welland.mithis.com.extra" in zone
         )
@@ -178,7 +178,7 @@ class TestZoneSyntax:
     def test_zone_loads(self, tmp_path):
         files = _generate(_big_storage(), _ten64())
         path = tmp_path / f"{DOMAIN}.zone"
-        path.write_text(files[f"{DOMAIN}.zone"])
+        path.write_text(files[f"zones-external/{DOMAIN}.zone"])
         result = subprocess.run(
             ["named-checkzone", DOMAIN, str(path)],
             capture_output=True,
@@ -200,7 +200,7 @@ class TestCgnatOmission:
             ],
         )
         files = _generate(host)
-        zone = files[f"{DOMAIN}.zone"]
+        zone = files[f"zones-external/{DOMAIN}.zone"]
         assert "100.110.251.12" not in zone
         # the site name still gets the public transform of the RFC1918 addr
         assert f"x1c-work.{DOMAIN}. 300 IN A {PUBLIC_V4}" in zone

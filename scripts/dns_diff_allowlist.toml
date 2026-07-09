@@ -118,3 +118,25 @@ reason = "device-local 192.168.x subnets (usb gadgets, SDR peripherals) have no 
 kind = "removed"
 pattern = '^37\.95\.121\.87\.in-addr\.arpa$'
 reason = "the WAN address's reverse belongs to Launtel, not us; the internal PTR shadow retires"
+
+# --- user-ruled data outcomes (checkpoint round 3, 2026-07-09) ------------
+
+[[allow]]
+kind = "changed"
+pattern = '^(ipv4\.|ipv6\.)?sm-pcie-1(\.welland\.mithis\.com)?$'
+reason = "user-ruled: attached rpi/esp32 devices stay modeled as interfaces (bmc remains the only host-split); their addresses join the aggregate"
+
+[[allow]]
+kind = "changed"
+pattern = '^(ipv4\.|ipv6\.)?(ports\.)?sw-bb-100g\.welland\.mithis\.com$'
+reason = "sheet addition: swp10s1 port row joins the ports aggregate"
+
+[[allow]]
+kind = "changed"
+pattern = '(sw-netgear-m7300|sw-netgear-xs748t|sw-edgecore-7512|sw-edgecore-switch|sw-cisco-shed)'
+reason = "sheet renumbering 2026-07-09: retired/spare switches moved to the 10.1.5.100+ block (not yet deployed to /etc)"
+
+[[allow]]
+kind = "removed"
+pattern = '^(1\.2|3\.3|4\.3|5\.3)\.0\.0.*ip6\.arpa$|^(21|33|34|35)\.5\.1\.10\.in-addr\.arpa$'
+reason = "old PTRs of the renumbered switches (their new PTRs are additions)"

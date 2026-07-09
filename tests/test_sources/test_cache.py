@@ -46,3 +46,21 @@ class TestCSVCache:
         cache.write("test", "new data")
 
         assert cache.read("test") == "new data"
+
+    def test_unchanged_content_preserves_mtime(self, tmp_path: Path):
+        """Rewriting identical content must not touch the file: cache
+        mtimes mean 'data last changed' and feed the DNS SOA serials."""
+        import os
+
+        cache = CSVCache(tmp_path / "cache")
+        cache.write("test", "same data")
+        path = tmp_path / "cache" / "test.csv"
+        old = 1_700_000_000
+        os.utime(path, (old, old))
+
+        cache.write("test", "same data")
+        assert int(path.stat().st_mtime) == old
+
+        cache.write("test", "different data")
+        assert int(path.stat().st_mtime) != old
+        assert cache.read("test") == "different data"

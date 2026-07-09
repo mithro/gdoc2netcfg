@@ -613,6 +613,34 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 # Subcommand: generate
 # ---------------------------------------------------------------------------
 
+def _dns_data_serial(config, config_path) -> int | None:
+    """SOA serial for the pdns zone generators: the last-modification
+    time (epoch seconds) of the DATA the zones are generated from — the
+    cached sheet CSVs (fetch only rewrites them on change, so mtime =
+    "sheet data last changed") and the site config toml.
+
+    Monotonic (unlike a content hash) and human-decodable; the trade-off
+    is that any input change bumps every zone's serial, so untouched
+    zones differ only in their serial line. Discovery-scan data (SSHFP
+    host keys) is deliberately excluded — sqlite mtimes bump on every
+    scan; SSHFP-only changes propagate externally via the signed zone's
+    SOA-EDIT/re-signing cycle instead.
+
+    Returns None (→ generators fall back to content-hash serials) when
+    none of the inputs exist.
+    """
+    from gdoc2netcfg.sources.cache import CSVCache
+
+    cache = CSVCache(config.cache.directory)
+    candidates = [cache._path(sheet.name) for sheet in config.sheets]
+    candidates.append(Path(config_path or "gdoc2netcfg.toml"))
+
+    mtimes = [
+        int(path.stat().st_mtime) for path in candidates if path.exists()
+    ]
+    return max(mtimes) if mtimes else None
+
+
 def _get_generator(name: str):
     """Get a generator function by name."""
     generators = {
@@ -738,6 +766,12 @@ def cmd_generate(args: argparse.Namespace) -> int:
                 kwargs["show_unknown_macs"] = (
                     gen_config.params["show_unknown_macs"].lower() == "true"
                 )
+        elif name in ("pdns_internal", "pdns_external"):
+            kwargs["serial"] = _dns_data_serial(config, args.config)
+            if gen_config:
+                for key in ("zones_dir", "site_extra_include"):
+                    if gen_config.params.get(key):
+                        kwargs[key] = gen_config.params[key]
 
         output = gen_func(inventory, **kwargs)
 

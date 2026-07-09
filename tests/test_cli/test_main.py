@@ -403,3 +403,40 @@ class TestReachabilityCache:
         # Everything after the header line should be identical —
         # the per-host detail lines and the summary line.
         assert live_lines[live_header_idx + 1:] == cached_lines[cached_header_idx + 1:]
+
+
+class TestDnsDataSerial:
+    """_dns_data_serial: the newest mtime across the cached sheet CSVs +
+    the config toml — monotonic 'input data last changed' SOA serials."""
+
+    def _config(self, tmp_path):
+        from gdoc2netcfg.config import CacheConfig, PipelineConfig, SheetConfig
+        from gdoc2netcfg.models.network import Site
+
+        return PipelineConfig(
+            site=Site(name="w", domain="w.example", site_octet=1),
+            sheets=[SheetConfig(name="network", url="http://x")],
+            cache=CacheConfig(directory=tmp_path / "cache"),
+        )
+
+    def test_max_mtime_wins(self, tmp_path):
+        import os
+
+        from gdoc2netcfg.cli.main import _dns_data_serial
+
+        config = self._config(tmp_path)
+        (tmp_path / "cache").mkdir()
+        csv = tmp_path / "cache" / "network.csv"
+        csv.write_text("data")
+        os.utime(csv, (1_700_000_000, 1_700_000_000))
+        toml = tmp_path / "g.toml"
+        toml.write_text("[site]")
+        os.utime(toml, (1_600_000_000, 1_600_000_000))
+
+        assert _dns_data_serial(config, str(toml)) == 1_700_000_000
+
+    def test_no_inputs_returns_none(self, tmp_path):
+        from gdoc2netcfg.cli.main import _dns_data_serial
+
+        config = self._config(tmp_path)
+        assert _dns_data_serial(config, str(tmp_path / "missing.toml")) is None

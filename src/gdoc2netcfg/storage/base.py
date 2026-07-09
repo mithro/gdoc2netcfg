@@ -304,6 +304,33 @@ class BaseDatabase:
         )
         self._conn.commit()
 
+    def latest_change_time(self, scan_type: str) -> int | None:
+        """Epoch seconds of the newest finished scan of *scan_type* that
+        actually CHANGED data (changed_count > 0), or None.
+
+        Data rows are delta-stored (a value only gets rows in the scan
+        that changed it), while a scans row is written every run for
+        freshness tracking — so the database file's mtime means "last
+        scanned" and THIS is the "data last changed" signal (used for
+        DNS SOA serial derivation).
+        """
+        from datetime import datetime, timezone
+
+        cur = self._conn.execute(
+            "SELECT finished_at FROM scans "
+            "WHERE scan_type = ? AND finished_at IS NOT NULL "
+            "AND changed_count > 0 "
+            "ORDER BY finished_at DESC LIMIT 1",
+            (scan_type,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        finished = datetime.fromisoformat(row[0])
+        if finished.tzinfo is None:
+            finished = finished.replace(tzinfo=timezone.utc)
+        return int(finished.timestamp())
+
     def latest_scan_id(self, scan_type: str) -> int | None:
         """Return the ID of the most recent *completed* scan, or None."""
         cur = self._conn.execute(

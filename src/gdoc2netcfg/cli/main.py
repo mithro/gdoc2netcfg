@@ -613,21 +613,48 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 # Subcommand: generate
 # ---------------------------------------------------------------------------
 
+def _code_commit_timestamp() -> int | None:
+    """Epoch seconds of the generator code's HEAD commit (the numeric
+    embodiment of git-describe for SOA purposes): zone output depends on
+    the code, so a code upgrade bumps the serials. None when the package
+    doesn't live in a git checkout. NB uncommitted changes don't count —
+    deployed /opt runs clean checkouts; commit to bump.
+    """
+    import subprocess
+
+    import gdoc2netcfg
+
+    pkg_dir = Path(gdoc2netcfg.__file__).resolve().parent
+    result = subprocess.run(
+        ["git", "-C", str(pkg_dir), "log", "-1", "--format=%ct"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return None
+
+
 def _dns_data_serial(config, config_path) -> int | None:
-    """SOA serial for the pdns zone generators: the last-modification
-    time (epoch seconds) of the DATA the zones are generated from — the
-    cached sheet CSVs (fetch only rewrites them on change, so mtime =
-    "sheet data last changed") and the site config toml.
+    """SOA serial for the pdns zone generators: the newest change time
+    (epoch seconds) across EVERYTHING the zones are generated from:
 
-    Monotonic (unlike a content hash) and human-decodable; the trade-off
-    is that any input change bumps every zone's serial, so untouched
-    zones differ only in their serial line. Discovery-scan data (SSHFP
-    host keys) is deliberately excluded — sqlite mtimes bump on every
-    scan; SSHFP-only changes propagate externally via the signed zone's
-    SOA-EDIT/re-signing cycle instead.
+    - the cached sheet CSVs (fetch only rewrites them on change, so
+      mtime = "sheet data last changed")
+    - the site config toml
+    - the last ssh-host-keys scan that actually changed data (queried
+      from discovery.db — the file's mtime means "last scanned", but
+      data rows are delta-stored, so the scans table knows the last
+      real change; SSHFP records feed the zones)
+    - the generator code's HEAD commit time (zone output depends on it)
 
-    Returns None (→ generators fall back to content-hash serials) when
-    none of the inputs exist.
+    Monotonic and human-decodable (date -d @serial); the trade-off is
+    that any input change stamps every zone's serial, so untouched
+    zones differ only in their serial line. Returns None (→ generators
+    fall back to content-hash serials) when no input exists.
     """
     from gdoc2netcfg.sources.cache import CSVCache
 
@@ -635,10 +662,25 @@ def _dns_data_serial(config, config_path) -> int | None:
     candidates = [cache._path(sheet.name) for sheet in config.sheets]
     candidates.append(Path(config_path or "gdoc2netcfg.toml"))
 
-    mtimes = [
+    times = [
         int(path.stat().st_mtime) for path in candidates if path.exists()
     ]
-    return max(mtimes) if mtimes else None
+
+    if config.cache.discovery_db_path.exists():
+        from gdoc2netcfg.storage.discovery_db import DiscoveryDB
+
+        with DiscoveryDB(
+            config.cache.discovery_db_path, read_only=True,
+        ) as db:
+            change_time = db.latest_change_time("ssh_host_keys")
+        if change_time is not None:
+            times.append(change_time)
+
+    code_time = _code_commit_timestamp()
+    if code_time is not None:
+        times.append(code_time)
+
+    return max(times) if times else None
 
 
 def _get_generator(name: str):

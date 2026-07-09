@@ -406,8 +406,10 @@ class TestReachabilityCache:
 
 
 class TestDnsDataSerial:
-    """_dns_data_serial: the newest mtime across the cached sheet CSVs +
-    the config toml — monotonic 'input data last changed' SOA serials."""
+    """_dns_data_serial: the newest change time across everything the
+    zones are generated from — sheet CSVs, config toml, the last
+    data-changing ssh-host-keys scan, and the generator code's HEAD
+    commit — monotonic 'inputs last changed' SOA serials."""
 
     def _config(self, tmp_path):
         from gdoc2netcfg.config import CacheConfig, PipelineConfig, SheetConfig
@@ -419,11 +421,12 @@ class TestDnsDataSerial:
             cache=CacheConfig(directory=tmp_path / "cache"),
         )
 
-    def test_max_mtime_wins(self, tmp_path):
+    def test_max_mtime_wins(self, tmp_path, monkeypatch):
         import os
 
-        from gdoc2netcfg.cli.main import _dns_data_serial
+        from gdoc2netcfg.cli import main as cli_main
 
+        monkeypatch.setattr(cli_main, "_code_commit_timestamp", lambda: None)
         config = self._config(tmp_path)
         (tmp_path / "cache").mkdir()
         csv = tmp_path / "cache" / "network.csv"
@@ -433,10 +436,85 @@ class TestDnsDataSerial:
         toml.write_text("[site]")
         os.utime(toml, (1_600_000_000, 1_600_000_000))
 
-        assert _dns_data_serial(config, str(toml)) == 1_700_000_000
+        assert cli_main._dns_data_serial(config, str(toml)) == 1_700_000_000
 
-    def test_no_inputs_returns_none(self, tmp_path):
-        from gdoc2netcfg.cli.main import _dns_data_serial
+    def test_code_commit_time_included(self, tmp_path, monkeypatch):
+        import os
 
+        from gdoc2netcfg.cli import main as cli_main
+
+        monkeypatch.setattr(
+            cli_main, "_code_commit_timestamp", lambda: 1_750_000_000,
+        )
         config = self._config(tmp_path)
-        assert _dns_data_serial(config, str(tmp_path / "missing.toml")) is None
+        (tmp_path / "cache").mkdir()
+        csv = tmp_path / "cache" / "network.csv"
+        csv.write_text("data")
+        os.utime(csv, (1_700_000_000, 1_700_000_000))
+
+        assert (
+            cli_main._dns_data_serial(config, str(tmp_path / "no.toml"))
+            == 1_750_000_000
+        )
+
+    def test_sshfp_change_time_included(self, tmp_path, monkeypatch):
+        import os
+
+        from gdoc2netcfg.cli import main as cli_main
+        from gdoc2netcfg.storage.discovery_db import DiscoveryDB
+
+        monkeypatch.setattr(cli_main, "_code_commit_timestamp", lambda: None)
+        config = self._config(tmp_path)
+        (tmp_path / "cache").mkdir()
+        csv = tmp_path / "cache" / "network.csv"
+        csv.write_text("data")
+        os.utime(csv, (1_700_000_000, 1_700_000_000))
+
+        with DiscoveryDB(config.cache.discovery_db_path) as db:
+            scan = db.begin_scan("ssh_host_keys")
+            db._conn.execute(
+                "UPDATE scans SET finished_at = ?, host_count = 1, "
+                "changed_count = 1 WHERE id = ?",
+                ("2026-01-01T00:00:00+00:00", scan),
+            )
+            db._conn.commit()
+
+        serial = cli_main._dns_data_serial(config, str(tmp_path / "no.toml"))
+        assert serial == 1_767_225_600  # 2026-01-01 UTC > the CSV mtime
+
+    def test_metadata_only_scan_does_not_bump(self, tmp_path, monkeypatch):
+        """A scan that changed nothing (changed_count=0) must not move
+        the serial — scan metadata is written every run by design."""
+        import os
+
+        from gdoc2netcfg.cli import main as cli_main
+        from gdoc2netcfg.storage.discovery_db import DiscoveryDB
+
+        monkeypatch.setattr(cli_main, "_code_commit_timestamp", lambda: None)
+        config = self._config(tmp_path)
+        (tmp_path / "cache").mkdir()
+        csv = tmp_path / "cache" / "network.csv"
+        csv.write_text("data")
+        os.utime(csv, (1_700_000_000, 1_700_000_000))
+
+        with DiscoveryDB(config.cache.discovery_db_path) as db:
+            scan = db.begin_scan("ssh_host_keys")
+            db._conn.execute(
+                "UPDATE scans SET finished_at = ?, host_count = 1, "
+                "changed_count = 0 WHERE id = ?",
+                ("2026-01-01T00:00:00+00:00", scan),
+            )
+            db._conn.commit()
+
+        serial = cli_main._dns_data_serial(config, str(tmp_path / "no.toml"))
+        assert serial == 1_700_000_000
+
+    def test_no_inputs_returns_none(self, tmp_path, monkeypatch):
+        from gdoc2netcfg.cli import main as cli_main
+
+        monkeypatch.setattr(cli_main, "_code_commit_timestamp", lambda: None)
+        config = self._config(tmp_path)
+        assert (
+            cli_main._dns_data_serial(config, str(tmp_path / "missing.toml"))
+            is None
+        )

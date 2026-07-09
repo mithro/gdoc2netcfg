@@ -613,29 +613,41 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 # Subcommand: generate
 # ---------------------------------------------------------------------------
 
-def _code_commit_timestamp() -> int | None:
-    """Epoch seconds of the generator code's HEAD commit (the numeric
-    embodiment of git-describe for SOA purposes): zone output depends on
-    the code, so a code upgrade bumps the serials. None when the package
-    doesn't live in a git checkout. NB uncommitted changes don't count —
-    deployed /opt runs clean checkouts; commit to bump.
+def _code_revision_number() -> int | None:
+    """The generator code's revision as a number, from git-describe
+    ("v<major>.<minor>-<count>-g<hash>"): major*10^7 + minor*10^5 +
+    commits-since-tag. Commit COUNTS only accumulate, so this is
+    monotonic — unlike commit dates, which rebase/amend can set to
+    anything; the version weighting (10^5 per minor) outweighs the
+    count reset at a new tag. Falls back to the total commit count when
+    describe is unparseable; None when not a git checkout. NB
+    uncommitted changes don't count — deployed /opt runs clean
+    checkouts; commit to bump.
     """
+    import re
     import subprocess
 
     import gdoc2netcfg
 
     pkg_dir = Path(gdoc2netcfg.__file__).resolve().parent
-    result = subprocess.run(
-        ["git", "-C", str(pkg_dir), "log", "-1", "--format=%ct"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return None
-    try:
-        return int(result.stdout.strip())
-    except ValueError:
-        return None
+
+    def _git(*argv: str) -> str | None:
+        result = subprocess.run(
+            ["git", "-C", str(pkg_dir), *argv],
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    describe = _git("describe", "--tags", "--long")
+    if describe:
+        m = re.fullmatch(r"v?(\d+)\.(\d+)(?:\.\d+)?-(\d+)-g[0-9a-f]+", describe)
+        if m:
+            major, minor, count = (int(g) for g in m.groups())
+            return major * 10_000_000 + minor * 100_000 + count
+
+    count = _git("rev-list", "--count", "HEAD")
+    return int(count) if count and count.isdigit() else None
 
 
 def _dns_data_serial(config, config_path) -> int | None:
@@ -649,12 +661,15 @@ def _dns_data_serial(config, config_path) -> int | None:
       from discovery.db — the file's mtime means "last scanned", but
       data rows are delta-stored, so the scans table knows the last
       real change; SSHFP records feed the zones)
-    - the generator code's HEAD commit time (zone output depends on it)
+    plus the code's git-describe revision number (zone output depends
+    on the code, so a release or commit bumps the serials).
 
-    Monotonic and human-decodable (date -d @serial); the trade-off is
-    that any input change stamps every zone's serial, so untouched
-    zones differ only in their serial line. Returns None (→ generators
-    fall back to content-hash serials) when no input exists.
+    serial = newest data change-time + code revision number: both parts
+    only grow, so the serial is monotonic; date -d @(serial - code
+    number) recovers the data timestamp. The trade-off is that any
+    input change stamps every zone's serial, so untouched zones differ
+    only in their serial line. Returns None (→ generators fall back to
+    content-hash serials) when no data input exists.
     """
     from gdoc2netcfg.sources.cache import CSVCache
 
@@ -676,11 +691,9 @@ def _dns_data_serial(config, config_path) -> int | None:
         if change_time is not None:
             times.append(change_time)
 
-    code_time = _code_commit_timestamp()
-    if code_time is not None:
-        times.append(code_time)
-
-    return max(times) if times else None
+    if not times:
+        return None
+    return max(times) + (_code_revision_number() or 0)
 
 
 def _get_generator(name: str):

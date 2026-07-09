@@ -406,10 +406,11 @@ class TestReachabilityCache:
 
 
 class TestDnsDataSerial:
-    """_dns_data_serial: the newest change time across everything the
-    zones are generated from — sheet CSVs, config toml, the last
-    data-changing ssh-host-keys scan, and the generator code's HEAD
-    commit — monotonic 'inputs last changed' SOA serials."""
+    """_dns_data_serial: newest data change-time (sheet CSVs, config
+    toml, last data-changing ssh-host-keys scan) + the code's
+    git-describe revision number — monotonic 'inputs changed' serials.
+    Commit dates are deliberately NOT used (rebase/amend can set them
+    to anything); commit counts only accumulate."""
 
     def _config(self, tmp_path):
         from gdoc2netcfg.config import CacheConfig, PipelineConfig, SheetConfig
@@ -426,7 +427,7 @@ class TestDnsDataSerial:
 
         from gdoc2netcfg.cli import main as cli_main
 
-        monkeypatch.setattr(cli_main, "_code_commit_timestamp", lambda: None)
+        monkeypatch.setattr(cli_main, "_code_revision_number", lambda: None)
         config = self._config(tmp_path)
         (tmp_path / "cache").mkdir()
         csv = tmp_path / "cache" / "network.csv"
@@ -438,13 +439,14 @@ class TestDnsDataSerial:
 
         assert cli_main._dns_data_serial(config, str(toml)) == 1_700_000_000
 
-    def test_code_commit_time_included(self, tmp_path, monkeypatch):
+    def test_code_revision_added_to_data_time(self, tmp_path, monkeypatch):
         import os
 
         from gdoc2netcfg.cli import main as cli_main
 
+        # v0.1-42-g... → 0*10^7 + 1*10^5 + 42
         monkeypatch.setattr(
-            cli_main, "_code_commit_timestamp", lambda: 1_750_000_000,
+            cli_main, "_code_revision_number", lambda: 100_042,
         )
         config = self._config(tmp_path)
         (tmp_path / "cache").mkdir()
@@ -454,8 +456,24 @@ class TestDnsDataSerial:
 
         assert (
             cli_main._dns_data_serial(config, str(tmp_path / "no.toml"))
-            == 1_750_000_000
+            == 1_700_000_000 + 100_042
         )
+
+    def test_tag_bump_outweighs_count_reset(self):
+        """A new minor tag resets describe's commit count to 0; the
+        version weighting must keep the code number growing."""
+        before = 0 * 10_000_000 + 0 * 100_000 + 748   # v0.0-748
+        after = 0 * 10_000_000 + 1 * 100_000 + 0      # v0.1-0
+        assert after > before
+
+    def test_code_revision_number_live(self):
+        """In this repo (tagged v0.0), the live value is the
+        commits-since-tag count — and never None here."""
+        from gdoc2netcfg.cli.main import _code_revision_number
+
+        num = _code_revision_number()
+        assert num is not None
+        assert 0 < num < 10_000_000  # v0.x → below one major step
 
     def test_sshfp_change_time_included(self, tmp_path, monkeypatch):
         import os
@@ -463,7 +481,7 @@ class TestDnsDataSerial:
         from gdoc2netcfg.cli import main as cli_main
         from gdoc2netcfg.storage.discovery_db import DiscoveryDB
 
-        monkeypatch.setattr(cli_main, "_code_commit_timestamp", lambda: None)
+        monkeypatch.setattr(cli_main, "_code_revision_number", lambda: None)
         config = self._config(tmp_path)
         (tmp_path / "cache").mkdir()
         csv = tmp_path / "cache" / "network.csv"
@@ -490,7 +508,7 @@ class TestDnsDataSerial:
         from gdoc2netcfg.cli import main as cli_main
         from gdoc2netcfg.storage.discovery_db import DiscoveryDB
 
-        monkeypatch.setattr(cli_main, "_code_commit_timestamp", lambda: None)
+        monkeypatch.setattr(cli_main, "_code_revision_number", lambda: None)
         config = self._config(tmp_path)
         (tmp_path / "cache").mkdir()
         csv = tmp_path / "cache" / "network.csv"
@@ -512,7 +530,7 @@ class TestDnsDataSerial:
     def test_no_inputs_returns_none(self, tmp_path, monkeypatch):
         from gdoc2netcfg.cli import main as cli_main
 
-        monkeypatch.setattr(cli_main, "_code_commit_timestamp", lambda: None)
+        monkeypatch.setattr(cli_main, "_code_revision_number", lambda: None)
         config = self._config(tmp_path)
         assert (
             cli_main._dns_data_serial(config, str(tmp_path / "missing.toml"))

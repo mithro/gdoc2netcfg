@@ -14,8 +14,9 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 
-# Pucks get deterministic fixed IPs: 10.1.4.<GWIFI_IP_BASE + number>.
-GWIFI_SUBNET_PREFIX = "10.1.4"
+# Pucks get deterministic fixed IPs: 10.<site_octet>.4.<GWIFI_IP_BASE + number>.
+# The wifi VLAN is id 4 at every site (VLAN Allocations sheet: 10.X.4.X).
+GWIFI_VLAN_OCTET = 4
 GWIFI_IP_BASE = 100
 
 
@@ -57,12 +58,16 @@ def _mac_plus_one(mac: str) -> str:
     return ":".join(parts[:-1] + [f"{last:02X}"])
 
 
-def parse_gwifi_pucks(csv_text: str) -> list[PuckRecord]:
+def parse_gwifi_pucks(csv_text: str, site_octet: int = 1) -> list[PuckRecord]:
     """Parse the Google WiFi Pucks CSV into PuckRecord entries.
 
     Expected columns (header row): #, Model, Firmware, Serial, MAC, ...,
     eth0, eth1, ... Rows are included only when Firmware == 'OpenWRT' and
     both Serial and MAC are non-empty.
+
+    Args:
+        csv_text: The published-CSV content of the pucks tab.
+        site_octet: Second octet of the site's 10.X addressing (1=welland).
 
     Raises:
         ValueError: on duplicate puck numbers, duplicate serials, numbers
@@ -88,7 +93,7 @@ def parse_gwifi_pucks(csv_text: str) -> list[PuckRecord]:
         if not 1 <= number <= 99:
             raise ValueError(
                 f"puck number {number} outside 1..99 (IP scheme is "
-                f"{GWIFI_SUBNET_PREFIX}.{GWIFI_IP_BASE}+NN)")
+                f"10.{site_octet}.{GWIFI_VLAN_OCTET}.{GWIFI_IP_BASE}+NN)")
         if number in seen_numbers:
             raise ValueError(f"duplicate puck number {number}")
         seen_numbers.add(number)
@@ -106,7 +111,7 @@ def parse_gwifi_pucks(csv_text: str) -> list[PuckRecord]:
             serial=serial,
             eth0=eth0,
             eth1=eth1,
-            ip=f"{GWIFI_SUBNET_PREFIX}.{GWIFI_IP_BASE + number}",
+            ip=f"10.{site_octet}.{GWIFI_VLAN_OCTET}.{GWIFI_IP_BASE + number}",
         ))
 
     return records

@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 # tabs.  Every host builder skips these so their rows are never parsed as
 # devices.  Single source of truth shared by _build_hosts_from_csvs and
 # _build_pipeline, so the exclusion can't drift between the two.
-_NON_DEVICE_SHEETS = frozenset({"vlan_allocations", "sites"})
+_NON_DEVICE_SHEETS = frozenset({"vlan_allocations", "sites", "gwifi_pucks"})
 
 
 def _load_config(args: argparse.Namespace):
@@ -442,6 +442,31 @@ def _build_pipeline(config):
         # Build inventory (aggregate derivations)
         inventory = build_inventory(hosts, config.site)
 
+        # Parse gwifi puck identity (non-device sheet; optional). Parse
+        # errors become validation ERRORs rather than crashing the whole
+        # pipeline — other generators keep working and the deploy target
+        # refuses without --force.
+        gwifi_violations = []
+        for name, csv_text in csv_data:
+            if name != "gwifi_pucks":
+                continue
+            from gdoc2netcfg.constraints.errors import (
+                ConstraintViolation,
+                Severity,
+            )
+            from gdoc2netcfg.sources.gwifi_pucks_parser import parse_gwifi_pucks
+
+            try:
+                inventory.gwifi_pucks = parse_gwifi_pucks(
+                    csv_text, site_octet=config.site.site_octet)
+            except ValueError as e:
+                gwifi_violations.append(ConstraintViolation(
+                    severity=Severity.ERROR,
+                    code="gwifi_parse_error",
+                    message=f"gwifi_pucks sheet: {e}",
+                    record_id="gwifi_pucks",
+                ))
+
         # Load supplement data from the DB — the sole source.  Each
         # load_latest_* returns None if no completed scan exists; the
         # enrichers tolerate None (no enrichment).  Reachability is not
@@ -482,6 +507,16 @@ def _build_pipeline(config):
 
         # Validate
         result = validate_all(all_records, hosts, inventory)
+        for violation in gwifi_violations:
+            result.add(violation)
+        if inventory.gwifi_pucks:
+            from gdoc2netcfg.constraints.gwifi_pucks_validation import (
+                validate_gwifi_pucks,
+            )
+
+            for violation in validate_gwifi_pucks(
+                    inventory.gwifi_pucks, inventory).violations:
+                result.add(violation)
 
         return all_records, hosts, inventory, result
     finally:
@@ -626,6 +661,11 @@ def _get_generator(name: str):
         "nginx": ("gdoc2netcfg.generators.nginx", "generate_nginx"),
         "topology": ("gdoc2netcfg.generators.topology", "generate_topology"),
         "known_hosts": ("gdoc2netcfg.generators.known_hosts", "generate_known_hosts"),
+        "gwifi_pucks": ("gdoc2netcfg.generators.gwifi_pucks", "generate_gwifi_pucks"),
+        "gwifi_pucks_dns": (
+            "gdoc2netcfg.generators.gwifi_pucks",
+            "generate_gwifi_pucks_dns",
+        ),
     }
     if name not in generators:
         return None

@@ -56,10 +56,12 @@ disabled_prefixes = [
 # VLAN Allocations spreadsheet sheet, not configured here.
 
 # ── Site-specific: each site customizes this list. Monarto runs
-# ── ["dnsmasq_internal", "dnsmasq_external", "nginx"]. ─────
+# ── ["dnsmasq_internal", "dnsmasq_external", "nginx"] (no gwifi_* —
+# ── the gale puck fleet is welland-only). ─────
 [generators]
 # Which generators to enable
-enabled = ["dnsmasq_internal", "dnsmasq_external", "nagios", "nginx"]
+enabled = ["dnsmasq_internal", "dnsmasq_external", "nagios", "nginx",
+           "gwifi_pucks", "gwifi_pucks_dns"]
 
 [generators.dnsmasq_internal]
 output_dir = "internal"

@@ -238,12 +238,14 @@ def _build_generators(data: dict) -> dict[str, GeneratorConfig]:
     # Every [generators.X] section is parsed; 'enabled' only controls
     # which generators run by default. Explicitly-invoked generators
     # (e.g. 'generate pdns_internal') still get their configured
-    # output/output_dir/params.
-    names = set(enabled_names) | {
-        k for k, v in generators_section.items() if isinstance(v, dict)
-    }
+    # output/output_dir/params. Order: the 'enabled' list first (it is
+    # the default run order), then remaining sections in TOML order.
+    names = list(enabled_names) + [
+        k for k, v in generators_section.items()
+        if isinstance(v, dict) and k not in enabled_names
+    ]
     generators: dict[str, GeneratorConfig] = {}
-    for name in sorted(names):
+    for name in names:
         gen_section = generators_section.get(name, {})
         generators[name] = GeneratorConfig(
             name=name,

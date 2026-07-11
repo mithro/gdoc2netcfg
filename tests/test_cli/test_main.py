@@ -466,6 +466,18 @@ class TestDnsDataSerial:
         after = 0 * 10_000_000 + 1 * 100_000 + 0      # v0.1-0
         assert after > before
 
+    def test_git_binary_missing_returns_none(self, monkeypatch):
+        """No git binary → graceful None, not FileNotFoundError."""
+        import subprocess
+
+        from gdoc2netcfg.cli import main as cli_main
+
+        def _no_git(*args, **kwargs):
+            raise FileNotFoundError("git")
+
+        monkeypatch.setattr(subprocess, "run", _no_git)
+        assert cli_main._code_revision_number() is None
+
     def test_code_revision_number_live(self):
         """In this repo (tagged v0.0), the live value is the
         commits-since-tag count — and never None here."""

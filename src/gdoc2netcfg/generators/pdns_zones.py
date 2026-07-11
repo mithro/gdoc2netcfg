@@ -17,17 +17,19 @@ Emits bind-format zone files for the central internal auth instance
                              slices for the central-served nets.
 - bind-internal.conf       — zone{} statements for all of the above.
 
-Zone files use absolute owner names and CONTENT-DERIVED serials: the
-serial is a 31-bit hash of the zone data (with the serial field masked),
-so a zone file's bytes change iff its records change — regenerations are
-no-ops, etckeeper diffs stay clean, and code upgrades only bump serials
-when they actually alter output. (SOA serial-0 ≠ file mtime on pdns 5.1
-— verification V5/G4 — so the generator owns serials.)
-
-Caveat: content hashes are not monotonic under RFC 1982 serial
-arithmetic. Irrelevant for the internal zones (no AXFR consumers); the
-external instance must present monotonic serials to the Rollernet
-secondaries via pdns SOA-EDIT on the signed zone (plan Task 5.1/5.3).
+Zone files use absolute owner names, and the generator owns the SOA
+serials (SOA serial-0 ≠ file mtime on pdns 5.1 — verification V5/G4).
+In production the CLI passes serial = newest-data-change-time + the
+code's git-describe revision number (see cli.main._dns_data_serial):
+monotonic, and it moves exactly when zone inputs move, so regenerating
+unchanged inputs is byte-identical and etckeeper diffs stay clean. When
+serial=None and no inputs exist (library/test use), each zone falls
+back to a 31-bit content hash of its own data (serial field masked) —
+deterministic but NOT RFC-1982-monotonic, which is fine internally (no
+AXFR consumers); the external instance additionally presents serials to
+the Rollernet secondaries via pdns SOA-EDIT on the signed zone (plan
+Task 5.1/5.3) — required at cutover, since the deployed dnsmasq serials
+are also epoch-scale and may exceed a freshly-computed one.
 """
 
 from __future__ import annotations
@@ -246,7 +248,11 @@ def _site_zone(
     if missing_gateways:
         raise ValueError(
             f"nets with hosts but no {ROUTER_HOSTNAME} gateway interface "
-            f"(cannot emit delegation): {missing_gateways}"
+            f"(cannot emit NS delegation glue, and the projection CNAMEs "
+            f"would resolve NXDOMAIN without it): {missing_gateways}. "
+            f"Fix the sheet: add a {ROUTER_HOSTNAME} interface row on each "
+            f"net, or register an external server in DELEGATED_NET_SERVERS "
+            f"(generators/pdns_zones.py) if the net is served elsewhere."
         )
 
     # --- Site-scoped records ----------------------------------------------

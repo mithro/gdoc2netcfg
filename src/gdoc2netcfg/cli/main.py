@@ -632,11 +632,14 @@ def _code_revision_number() -> int | None:
     pkg_dir = Path(gdoc2netcfg.__file__).resolve().parent
 
     def _git(*argv: str) -> str | None:
-        result = subprocess.run(
-            ["git", "-C", str(pkg_dir), *argv],
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(pkg_dir), *argv],
+                capture_output=True,
+                text=True,
+            )
+        except OSError:  # git binary missing
+            return None
         return result.stdout.strip() if result.returncode == 0 else None
 
     describe = _git("describe", "--tags", "--long")
@@ -827,6 +830,11 @@ def cmd_generate(args: argparse.Namespace) -> int:
                 for key in ("zones_dir", "site_extra_include"):
                     if gen_config.params.get(key):
                         kwargs[key] = gen_config.params[key]
+        elif name == "recursor_forward" and gen_config:
+            if gen_config.params.get("central_auth"):
+                kwargs["central_auth"] = gen_config.params["central_auth"]
+            if gen_config.params.get("peer_zones"):
+                kwargs["peer_zones"] = gen_config.params["peer_zones"]
 
         output = gen_func(inventory, **kwargs)
 

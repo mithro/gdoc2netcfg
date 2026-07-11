@@ -464,6 +464,34 @@ class TestMacLessAndCrossHostDuplicates:
         assert len(errors) == 1
         assert "sw-old" in errors[0].message and "sw-new" in errors[0].message
 
+    def test_cross_host_shared_roaming_ip_is_exempt(self):
+        """Same roaming-range exemption as ip_multiple_macs: pool
+        addresses legitimately move between devices."""
+        from gdoc2netcfg.constraints.validators import (
+            validate_cross_record_constraints,
+        )
+        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
+        from gdoc2netcfg.models.addressing import IPv4Address
+
+        hosts = [
+            Host(
+                machine_name=name,
+                hostname=name,
+                interfaces=[
+                    NetworkInterface(
+                        name="wlan0",
+                        mac=None,
+                        ip_addresses=(IPv4Address("10.1.20.7"),),
+                        dhcp_name=name,
+                    )
+                ],
+            )
+            for name in ("laptop", "phone")
+        ]
+        inv = NetworkInventory(site=SITE, hosts=hosts)
+        result = validate_cross_record_constraints(inv)
+        assert not [v for v in result.errors if v.code == "ip_multiple_hosts"]
+
     def test_same_host_shared_ip_is_fine(self):
         """eth0+wlan0 sharing one IP on ONE host is the roaming pattern
         (VirtualInterface grouping) — never an error."""

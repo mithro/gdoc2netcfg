@@ -303,6 +303,10 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
         for iface in host.interfaces:
             ip_to_hosts.setdefault(str(iface.ipv4), set()).add(host.hostname)
     for ip_str, hostnames in sorted(ip_to_hosts.items()):
+        # Same roaming-range exemption as ip_multiple_macs above: pool
+        # addresses legitimately move between devices.
+        if roam_prefix and ip_str.startswith(roam_prefix):
+            continue
         if len(hostnames) > 1:
             result.add(ConstraintViolation(
                 severity=Severity.ERROR,

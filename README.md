@@ -71,6 +71,8 @@ The external dnsmasq generator implements split-horizon DNS by replacing RFC 191
 
 The nginx generator produces per-host reverse proxy server blocks under `sites-available/`, with four variants per host (`http-public`, `http-private`, `https-public`, `https-private`). Multi-interface hosts get an `upstream` block for round-robin failover across all interfaces, plus per-interface server blocks with direct `proxy_pass`. HTTP variants proxy to port 80, HTTPS variants to port 443.
 
+The gwifi generators (welland only) read the "Google WiFi Pucks" tab: `gwifi_pucks` emits `wisp/pucks.json` — the gale puck identity file for the netboot-install service on wisp.welland.mithis.com (deploy: `scp wisp/pucks.json wisp.welland.mithis.com:/tmp/ && ssh wisp.welland.mithis.com 'sudo install -m 0644 /tmp/pucks.json /etc/gwifi-netboot/pucks.json && sudo systemctl restart gwifi-netboot'`) — and `gwifi_pucks_dns` emits `internal/gwifi-pucks-dns.conf` (puck host-records for ten64's dnsmasq, deployed by the normal `make deploy-dnsmasq-internal`). See `gwifi-openwrt` `docs/wisp-netboot-install-design.md`.
+
 ## Development
 
 ```bash

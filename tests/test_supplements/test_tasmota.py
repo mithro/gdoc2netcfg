@@ -857,6 +857,22 @@ class TestComputeDesiredConfig:
         assert desired["MqttHost"] == "ha.welland.mithis.com"
         assert desired["Topic"] == "ir-ac-remote"
 
+    def test_no_syslog_keys_when_disabled(self):
+        host = _make_host()
+        desired = compute_desired_config(host, _MQTT, _make_tasmota_config())
+        assert "SysLog" not in desired
+        assert "LogHost" not in desired
+        assert "LogPort" not in desired
+
+    def test_syslog_keys_from_target(self):
+        host = _make_host()
+        target = SyslogTarget(ip="10.1.90.1", port=514, level=2)
+        desired = compute_desired_config(
+            host, _MQTT, _make_tasmota_config(), syslog=target)
+        assert desired["SysLog"] == "2"
+        assert desired["LogHost"] == "10.1.90.1"
+        assert desired["LogPort"] == "514"
+
 
 # ---------------------------------------------------------------------------
 # _get_current_value
@@ -891,6 +907,12 @@ class TestGetCurrentValue:
     def test_unknown_field(self):
         td = _make_tasmota_data()
         assert _get_current_value("UnknownField", td) == ""
+
+    def test_syslog_fields(self):
+        td = _make_tasmota_data(syslog_level=2, log_host="10.1.90.1", log_port=514)
+        assert _get_current_value("SysLog", td) == "2"
+        assert _get_current_value("LogHost", td) == "10.1.90.1"
+        assert _get_current_value("LogPort", td) == "514"
 
 
 # ---------------------------------------------------------------------------
@@ -1024,6 +1046,44 @@ class TestComputeDrift:
         drifts = compute_drift(host, _MQTT, config)
         for d in drifts:
             assert d.warning == "", f"Unexpected warning on {d.field}"
+
+
+# ---------------------------------------------------------------------------
+# Syslog drift
+# ---------------------------------------------------------------------------
+
+class TestSyslogDrift:
+    def test_unconfigured_device_drifts(self):
+        """Factory-default device (SysLog 0, empty LogHost) drifts on
+        SysLog + LogHost but not LogPort (514 == 514)."""
+        host = _make_host()
+        host.tasmota_data = _make_tasmota_data(
+            device_name="au-plug-10", friendly_name="au-plug-10",
+            hostname="au-plug-10", mqtt_topic="au-plug-10",
+            mqtt_host=_MQTT.host, mqtt_port=1883,
+            mqtt_user=username(PREFIX, host),
+            syslog_level=0, log_host="", log_port=514,
+        )
+        target = SyslogTarget(ip="10.1.90.1", port=514, level=2)
+        drifts = compute_drift(host, _MQTT, _make_tasmota_config(), syslog=target)
+        fields = {d.field: d for d in drifts}
+        assert fields["SysLog"].current == "0"
+        assert fields["SysLog"].desired == "2"
+        assert fields["LogHost"].desired == "10.1.90.1"
+        assert "LogPort" not in fields
+
+    def test_configured_device_has_no_syslog_drift(self):
+        host = _make_host()
+        host.tasmota_data = _make_tasmota_data(
+            device_name="au-plug-10", friendly_name="au-plug-10",
+            hostname="au-plug-10", mqtt_topic="au-plug-10",
+            mqtt_host=_MQTT.host, mqtt_port=1883,
+            mqtt_user=username(PREFIX, host),
+            syslog_level=2, log_host="10.1.90.1", log_port=514,
+        )
+        target = SyslogTarget(ip="10.1.90.1", port=514, level=2)
+        drifts = compute_drift(host, _MQTT, _make_tasmota_config(), syslog=target)
+        assert not any(d.field in ("SysLog", "LogHost", "LogPort") for d in drifts)
 
 
 # ---------------------------------------------------------------------------

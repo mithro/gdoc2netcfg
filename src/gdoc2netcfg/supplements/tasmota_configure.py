@@ -144,6 +144,7 @@ def compute_desired_config(
     host: Host,
     mqtt_config: MqttBrokerConfig,
     tasmota_config: TasmotaConfig,
+    syslog: SyslogTarget | None = None,
 ) -> dict[str, str]:
     """Derive the desired Tasmota configuration for a host.
 
@@ -151,6 +152,8 @@ def compute_desired_config(
         host: Host object with tasmota_data and extra columns.
         mqtt_config: HA Mosquitto broker connection (MqttHost/MqttPort).
         tasmota_config: Tasmota credential secret (derives MqttUser/MqttPassword).
+        syslog: Resolved remote-syslog target, or None when syslog
+            configuration is disabled.
 
     Returns:
         Mapping of Tasmota command name to desired value.
@@ -172,6 +175,13 @@ def compute_desired_config(
         "MqttPassword": password(tasmota_config.mqtt_secret, host),
     })
 
+    if syslog is not None:
+        desired.update({
+            "SysLog": str(syslog.level),
+            "LogHost": syslog.ip,
+            "LogPort": str(syslog.port),
+        })
+
     return desired
 
 
@@ -189,6 +199,9 @@ def _get_current_value(field: str, tasmota_data) -> str:
         "MqttPort": "mqtt_port",
         "MqttUser": "mqtt_user",
         "MqttPassword": None,  # Can't be read back from device
+        "SysLog": "syslog_level",
+        "LogHost": "log_host",
+        "LogPort": "log_port",
     }
     attr = field_map.get(field)
     if attr is None:
@@ -200,6 +213,7 @@ def compute_drift(
     host: Host,
     mqtt_config: MqttBrokerConfig,
     tasmota_config: TasmotaConfig,
+    syslog: SyslogTarget | None = None,
 ) -> list[ConfigDrift]:
     """Compare actual device state against desired configuration.
 
@@ -207,6 +221,8 @@ def compute_drift(
         host: Host with tasmota_data attached.
         mqtt_config: HA Mosquitto broker connection (MqttHost/MqttPort).
         tasmota_config: Tasmota credential secret (derives MqttUser/MqttPassword).
+        syslog: Resolved remote-syslog target, or None when syslog
+            configuration is disabled.
 
     Returns:
         List of ConfigDrift entries for fields that need updating.
@@ -214,7 +230,7 @@ def compute_drift(
     if host.tasmota_data is None:
         raise ValueError(f"Host {host.hostname} has no tasmota_data")
 
-    desired = compute_desired_config(host, mqtt_config, tasmota_config)
+    desired = compute_desired_config(host, mqtt_config, tasmota_config, syslog)
     drifts: list[ConfigDrift] = []
 
     for field, desired_value in desired.items():

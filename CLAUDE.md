@@ -365,6 +365,13 @@ sink's IP on each device's VLAN from inventory data (never DNS);
 "Syslog Level" column (0 silences one device). Empty `syslog_host`
 disables the feature (monarto until it opts in).
 
+The Tasmota scan data adds three columns to `discovery.db` (schema
+v9). The first write after pulling this change applies the migration
+automatically — but as with other heavyweight upgrades, stop
+`gdoc2netcfg-reachability.service` first and restart it afterwards, to
+avoid the known crash-loop gotcha where the daemon hits the DB mid
+schema-upgrade.
+
 ### Let's Encrypt
 
 Certbot scripts are generated to `/opt/gdoc2netcfg/letsencrypt/`. The `letsencrypt` **generator** is Welland only — monarto does not enable it; monarto's TLS certs (`/etc/letsencrypt/live/ten64.monarto.mithis.com`, `ipv6-ten64.monarto`) are managed by **certbot directly** (a single host cert that nginx terminates with), not by this per-host DNS-01 generator.

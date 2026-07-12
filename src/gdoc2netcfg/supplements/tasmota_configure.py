@@ -98,7 +98,7 @@ def resolve_syslog_target(
     Raises:
         ValueError: if the device has no Tasmota IP, the IP maps to no
             VLAN, the sink is not in the inventory, or the sink has no
-            interface on the device's VLAN.
+            interface with an IPv4 address on the device's VLAN.
     """
     if not tasmota_config.syslog_host:
         return None

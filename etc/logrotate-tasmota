@@ -8,4 +8,7 @@
     delaycompress
     missingok
     notifempty
+    postrotate
+        /usr/lib/rsyslog/rsyslog-rotate
+    endscript
 }

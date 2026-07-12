@@ -49,7 +49,11 @@ drop-in, no new packages. Two new repo-tracked files under `etc/`:
 ### `etc/logrotate-tasmota` → `/etc/logrotate.d/tasmota`
 
 - Pattern `/var/log/tasmota/*.log`: rotated daily, `rotate 14`,
-  `compress`, `delaycompress`, `missingok`, `notifempty`.
+  `compress`, `delaycompress`, `missingok`, `notifempty`, with a
+  `postrotate` block running `/usr/lib/rsyslog/rsyslog-rotate` to HUP
+  rsyslogd — omfile holds dynafile handles open across renames, so
+  without this signal rotated files keep growing and new ones aren't
+  created.
 
 ### `make deploy-syslog`
 

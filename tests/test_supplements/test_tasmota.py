@@ -215,6 +215,14 @@ SAMPLE_STATUS_0 = {
             "Downtime": "0T00:00:03",
         },
     },
+    "StatusLOG": {
+        "SerialLog": 2,
+        "WebLog": 2,
+        "MqttLog": 0,
+        "SysLog": 2,
+        "LogHost": "10.1.90.1",
+        "LogPort": 5514,
+    },
 }
 
 
@@ -360,6 +368,24 @@ class TestParseTasmotaStatus:
         data = {"Status": {"Module": "Shelly 1"}}
         result = _parse_tasmota_status(data)
         assert result["module"] == "Shelly 1"
+
+    def test_parse_syslog_fields(self):
+        parsed = _parse_tasmota_status(SAMPLE_STATUS_0)
+        assert parsed["syslog_level"] == 2
+        assert parsed["log_host"] == "10.1.90.1"
+        assert parsed["log_port"] == 5514
+
+    def test_parse_missing_statuslog_defaults(self):
+        parsed = _parse_tasmota_status({})
+        assert parsed["syslog_level"] == 0
+        assert parsed["log_host"] == ""
+        assert parsed["log_port"] == 514
+
+    def test_parse_partial_statuslog(self):
+        parsed = _parse_tasmota_status({"StatusLOG": {"SysLog": 3}})
+        assert parsed["syslog_level"] == 3
+        assert parsed["log_host"] == ""
+        assert parsed["log_port"] == 514
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +604,25 @@ class TestEnrichHostsWithTasmota:
         assert h1.tasmota_data is not None
         assert h2.tasmota_data is None
         assert h3.tasmota_data is not None
+
+    def test_enrich_carries_syslog_fields(self):
+        host = _make_host(hostname="au-plug-10")
+        enrich_hosts_with_tasmota([host], {"au-plug-10": {
+            "syslog_level": 2, "log_host": "10.1.90.1", "log_port": 514,
+            **_min_cache_entry(),
+        }})
+        assert host.tasmota_data.syslog_level == 2
+        assert host.tasmota_data.log_host == "10.1.90.1"
+        assert host.tasmota_data.log_port == 514
+
+    def test_enrich_syslog_fields_default_when_absent(self):
+        """Pre-v9 cached scans lack the keys — defaults mirror Tasmota
+        factory defaults (unconfigured device)."""
+        host = _make_host(hostname="au-plug-10")
+        enrich_hosts_with_tasmota([host], {"au-plug-10": _min_cache_entry()})
+        assert host.tasmota_data.syslog_level == 0
+        assert host.tasmota_data.log_host == ""
+        assert host.tasmota_data.log_port == 514
 
 
 def _min_cache_entry():

@@ -477,6 +477,9 @@ def _tasmota_doc(name: str = "plug1", module: object = 43) -> dict:
         "uptime": "1T00:00:00",
         "module": module,
         "mqtt_count": 3,
+        "syslog_level": 0,
+        "log_host": "",
+        "log_port": 514,
     }
 
 
@@ -805,6 +808,21 @@ class TestTasmotaShapes:
         assert loaded == {"plug-old": doc}
         assert "mqtt_count" not in loaded["plug-old"]
 
+    def test_doc_without_syslog_fields_roundtrips(self, db: DiscoveryDB):
+        """Syslog fields were added after rows already existed: a
+        baseline document reconstructed from a pre-v9 row lacks them,
+        and saving such a document keeps them absent."""
+        doc = _tasmota_doc("plug1")
+        del doc["syslog_level"]
+        del doc["log_host"]
+        del doc["log_port"]
+        s = db.begin_scan("tasmota")
+        changed = db.save_tasmota(s, {"plug-old": doc})
+        db.finish_scan(s, host_count=1, changed_count=changed)
+
+        loaded = db.load_latest_tasmota()
+        assert loaded == {"plug-old": doc}
+
     def test_adding_mqtt_count_is_a_change(self, db: DiscoveryDB):
         doc = _tasmota_doc("plug1")
         without = dict(doc)
@@ -818,6 +836,13 @@ class TestTasmotaShapes:
         db.finish_scan(s2, host_count=1, changed_count=changed)
         assert changed == 1
         assert db.load_latest_tasmota()["plug1"]["mqtt_count"] == 3
+
+
+def _strip_v9(conn: sqlite3.Connection) -> None:
+    """Regress a current DB's v9 features back to the v8 shape."""
+    conn.execute("ALTER TABLE tasmota_devices DROP COLUMN syslog_level")
+    conn.execute("ALTER TABLE tasmota_devices DROP COLUMN log_host")
+    conn.execute("ALTER TABLE tasmota_devices DROP COLUMN log_port")
 
 
 def _strip_v8(conn: sqlite3.Connection) -> None:
@@ -856,6 +881,7 @@ class TestSchemaUpgradeV5:
     def _make_v4_db(self, path: Path) -> None:
         """Create a current DB, then strip it back to schema v4."""
         d = DiscoveryDB(path)
+        _strip_v9(d.connection)
         _strip_v8(d.connection)
         _strip_v7(d.connection)
         d.connection.execute(
@@ -902,6 +928,9 @@ class TestSchemaUpgradeV5:
         scan_id = cur.lastrowid
         doc = _tasmota_doc("plug-old")
         del doc["mqtt_count"]
+        del doc["syslog_level"]
+        del doc["log_host"]
+        del doc["log_port"]
         cols = ", ".join(doc)
         placeholders = ", ".join("?" * (len(doc) + 2))
         conn.execute(
@@ -923,6 +952,7 @@ class TestSchemaUpgradeV6:
     def _make_v5_db(self, path: Path) -> None:
         """Create a current DB, then strip it back to schema v5."""
         d = DiscoveryDB(path)
+        _strip_v9(d.connection)
         _strip_v8(d.connection)
         _strip_v7(d.connection)
         d.connection.execute("DROP TABLE bridge_port_aliases")
@@ -994,6 +1024,7 @@ class TestSchemaUpgradeV7:
     def _make_v6_db(self, path: Path) -> None:
         """Create a current DB, then strip it back to schema v6."""
         d = DiscoveryDB(path)
+        _strip_v9(d.connection)
         _strip_v8(d.connection)
         _strip_v7(d.connection)
         d.connection.execute(
@@ -1042,6 +1073,69 @@ class TestSchemaUpgradeV7:
         d.finish_scan(s, host_count=1, changed_count=changed)
         loaded = d.load_latest_bridge()["sw1"]
         assert loaded["port_statistics"] == [[1, 1000, 2000, 0], [898, None, None, 7]]
+        d.close()
+
+
+class TestSchemaUpgradeV9:
+    def _make_v8_db(self, path: Path) -> None:
+        """Create a current DB, then strip it back to schema v8."""
+        d = DiscoveryDB(path)
+        _strip_v9(d.connection)
+        d.connection.execute(
+            "UPDATE _meta SET value = '8' WHERE key = 'schema_version'"
+        )
+        d.connection.commit()
+        d.close()
+
+    def test_rw_open_upgrades_v8(self, tmp_path: Path):
+        path = tmp_path / "v8.db"
+        self._make_v8_db(path)
+
+        d = DiscoveryDB(path)  # read-write open applies the upgrade
+        cols = [r[1] for r in d.connection.execute(
+            "PRAGMA table_info(tasmota_devices)"
+        )]
+        assert "syslog_level" in cols
+        assert "log_host" in cols
+        assert "log_port" in cols
+        version = d.connection.execute(
+            "SELECT value FROM _meta WHERE key = 'schema_version'"
+        ).fetchone()[0]
+        assert int(version) == DiscoveryDB.SCHEMA_VERSION
+        d.close()
+
+    def test_pre_v9_tasmota_rows_load_without_syslog_fields(self, tmp_path: Path):
+        """Tasmota scans written before the upgrade never captured
+        syslog settings — the reconstructed document omits the keys."""
+        path = tmp_path / "v8.db"
+        self._make_v8_db(path)
+
+        conn = sqlite3.connect(str(path))
+        cur = conn.execute(
+            "INSERT INTO scans (scan_type, started_at, finished_at, "
+            "host_count, changed_count) VALUES ('tasmota', "
+            "'2026-06-01T00:00:00+00:00', '2026-06-01T00:01:00+00:00', 1, 1)"
+        )
+        scan_id = cur.lastrowid
+        conn.execute(
+            "INSERT INTO tasmota_devices (scan_id, device_key, device_name, "
+            "friendly_name, hostname, firmware_version, mqtt_host, mqtt_port, "
+            "mqtt_topic, mqtt_client, mqtt_user, mac, ip, wifi_ssid, wifi_rssi, "
+            "wifi_signal, uptime, module, mqtt_count) VALUES "
+            "(?, 'plug-old', 'plug-old', 'plug-old', 'tasmota-plug-old', "
+            "'13.2.0', 'mqtt.example', 1883, 'plug-old', 'DVES_old', 'tasmota', "
+            "'AA:BB:CC:00:11:22', '10.1.90.10', 'iot', 80, -55, '1T00:00:00', "
+            "43, 3)",
+            (scan_id,),
+        )
+        conn.commit()
+        conn.close()
+
+        d = DiscoveryDB(path)  # applies the v9 upgrade
+        loaded = d.load_latest_tasmota()
+        assert "syslog_level" not in loaded["plug-old"]
+        assert "log_host" not in loaded["plug-old"]
+        assert "log_port" not in loaded["plug-old"]
         d.close()
 
 
@@ -1477,24 +1571,34 @@ class TestTasmotaTombstoneMigration:
         db.finish_scan(s, host_count=1, changed_count=1)
         db.close()
 
-        # Simulate a pre-v8 DB: drop the column and reset the schema version.
+        # Simulate a pre-v8 DB: drop the v8+ columns and reset the schema
+        # version (v9's syslog columns must go too, or reopening replays
+        # the v9 upgrade onto a table that already has them).
         raw = sqlite3.connect(path)
+        _strip_v9(raw)
         raw.execute("ALTER TABLE tasmota_devices DROP COLUMN is_tombstone")
         raw.execute("UPDATE _meta SET value = '7' WHERE key = 'schema_version'")
         raw.commit()
         raw.close()
 
-        # Reopening runs the v8 upgrade.
+        # Reopening runs the v8 and v9 upgrades.
         db2 = DiscoveryDB(path)
         cols = [r[1] for r in db2.connection.execute(
             "PRAGMA table_info(tasmota_devices)")]
         assert "is_tombstone" in cols
+        assert "syslog_level" in cols
         version = db2.connection.execute(
             "SELECT value FROM _meta WHERE key = 'schema_version'"
         ).fetchone()[0]
-        assert int(version) == 8
-        # Pre-existing row defaults to live (is_tombstone=0) and round-trips.
-        assert db2.load_latest_tasmota() == {"plug1": _tasmota_doc()}
+        assert int(version) == DiscoveryDB.SCHEMA_VERSION
+        # Pre-existing row defaults to live (is_tombstone=0) and
+        # round-trips — minus the syslog fields, which were dropped
+        # along with the column and can't be recovered by the upgrade.
+        expected = _tasmota_doc()
+        del expected["syslog_level"]
+        del expected["log_host"]
+        del expected["log_port"]
+        assert db2.load_latest_tasmota() == {"plug1": expected}
         db2.close()
 
     def test_fresh_db_has_is_tombstone_column(self, tmp_path: Path):

@@ -37,3 +37,15 @@ class TestBuildTasmota:
     def test_invalid_port_raises(self):
         with pytest.raises(ValueError, match="syslog_port"):
             _build_tasmota({"tasmota": {"syslog_port": 0}})
+
+    def test_bool_port_raises(self):
+        with pytest.raises(ValueError, match="syslog_port"):
+            _build_tasmota({"tasmota": {"syslog_port": True}})
+
+    def test_bool_level_raises(self):
+        with pytest.raises(ValueError, match="syslog_level"):
+            _build_tasmota({"tasmota": {"syslog_level": False}})
+
+    def test_float_level_raises(self):
+        with pytest.raises(ValueError, match="syslog_level"):
+            _build_tasmota({"tasmota": {"syslog_level": 2.0}})

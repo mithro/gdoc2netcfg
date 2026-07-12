@@ -257,14 +257,16 @@ def _build_tasmota(data: dict) -> TasmotaConfig:
     if not section:
         return TasmotaConfig()
     syslog_port = section.get("syslog_port", 514)
-    if not isinstance(syslog_port, int) or not 1 <= syslog_port <= 65535:
+    if (isinstance(syslog_port, bool) or not isinstance(syslog_port, int)
+            or not 1 <= syslog_port <= 65535):
         raise ValueError(
             f"[tasmota] syslog_port must be an integer 1-65535, got {syslog_port!r}"
         )
     syslog_level = section.get("syslog_level", 2)
-    if syslog_level not in (0, 1, 2, 3, 4):
+    if (isinstance(syslog_level, bool) or not isinstance(syslog_level, int)
+            or not 0 <= syslog_level <= 4):
         raise ValueError(
-            f"[tasmota] syslog_level must be 0-4, got {syslog_level!r}"
+            f"[tasmota] syslog_level must be an integer 0-4, got {syslog_level!r}"
         )
     return TasmotaConfig(
         mqtt_secret=section.get("mqtt_secret", ""),

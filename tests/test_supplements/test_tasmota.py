@@ -8,7 +8,7 @@ from gdoc2netcfg.cli.main import main
 from gdoc2netcfg.config import HomeAssistantConfig, MqttBrokerConfig, TasmotaConfig
 from gdoc2netcfg.derivations.mqtt_credentials import password, username
 from gdoc2netcfg.derivations.tasmota_credentials import PREFIX
-from gdoc2netcfg.models.addressing import IPv4Address, MACAddress
+from gdoc2netcfg.models.addressing import IPv4Address, IPv6Address, MACAddress
 from gdoc2netcfg.models.host import Host, NetworkInterface, TasmotaData
 from gdoc2netcfg.models.network import VLAN, Site
 from gdoc2netcfg.supplements.tasmota import (
@@ -1918,7 +1918,7 @@ class TestResolveSyslogTarget:
             ),
         ])
         host = self._device(ip="10.1.90.10")
-        with pytest.raises(ValueError, match="no interface on VLAN 90"):
+        with pytest.raises(ValueError, match="on VLAN 90"):
             resolve_syslog_target(host, [host, sink], _make_site(), config)
 
     def test_host_without_tasmota_ip_raises(self):
@@ -1946,3 +1946,37 @@ class TestResolveSyslogTarget:
         host = self._device(extra={"Syslog Level": "9"})
         with pytest.raises(ValueError, match="Syslog Level"):
             resolve_syslog_target(host, [host, _make_sink()], _make_site(), config)
+
+    def test_ipv6_only_interface_on_vlan_raises(self):
+        config = _make_tasmota_config(syslog_host="ten64")
+        sink = _make_sink(interfaces=[
+            NetworkInterface(
+                name="iot",
+                mac=MACAddress.parse("aa:bb:cc:dd:ee:02"),
+                ip_addresses=(IPv6Address("2404:e80:a137:190::1", "2404:e80:a137:"),),
+                vlan_id=90,
+            ),
+        ])
+        host = self._device(ip="10.1.90.10")
+        with pytest.raises(ValueError, match="no interface with an IPv4"):
+            resolve_syslog_target(host, [host, sink], _make_site(), config)
+
+    def test_skips_ipv6_only_interface_for_ipv4_sibling(self):
+        config = _make_tasmota_config(syslog_host="ten64")
+        sink = _make_sink(interfaces=[
+            NetworkInterface(
+                name="iot6",
+                mac=MACAddress.parse("aa:bb:cc:dd:ee:03"),
+                ip_addresses=(IPv6Address("2404:e80:a137:190::1", "2404:e80:a137:"),),
+                vlan_id=90,
+            ),
+            NetworkInterface(
+                name="iot",
+                mac=MACAddress.parse("aa:bb:cc:dd:ee:02"),
+                ip_addresses=(IPv4Address("10.1.90.1"),),
+                vlan_id=90,
+            ),
+        ])
+        host = self._device(ip="10.1.90.10")
+        target = resolve_syslog_target(host, [host, sink], _make_site(), config)
+        assert target.ip == "10.1.90.1"

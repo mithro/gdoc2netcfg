@@ -121,15 +121,22 @@ def resolve_syslog_target(
             f"[tasmota] syslog_host {name!r} not found in the inventory"
         )
     for iface in sink.interfaces:
-        if iface.vlan_id == vlan_id:
-            return SyslogTarget(
-                ip=str(iface.ipv4),
-                port=tasmota_config.syslog_port,
-                level=_syslog_level(host, tasmota_config),
-            )
+        if iface.vlan_id != vlan_id:
+            continue
+        ipv4 = next(
+            (ip for ip in iface.ip_addresses if isinstance(ip, IPv4Address)),
+            None,
+        )
+        if ipv4 is None:
+            continue
+        return SyslogTarget(
+            ip=str(ipv4),
+            port=tasmota_config.syslog_port,
+            level=_syslog_level(host, tasmota_config),
+        )
     raise ValueError(
-        f"[tasmota] syslog_host {name!r} has no interface on VLAN {vlan_id} "
-        f"(device {host.hostname} @ {device_ip})"
+        f"[tasmota] syslog_host {name!r} has no interface with an IPv4 "
+        f"address on VLAN {vlan_id} (device {host.hostname} @ {device_ip})"
     )
 
 

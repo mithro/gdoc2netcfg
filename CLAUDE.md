@@ -350,6 +350,21 @@ The two sites forward DNS queries to each other via WireGuard tunnel (`10.98.2.1
 
 Generated nginx configs are deployed to `/etc/nginx/gdoc2netcfg/` (per-host directories under `sites-available/`, plus `scripts/`, `conf.d/`, `stream.d/` for healthcheck infrastructure). Hosts are activated via symlinks: `ln -s /etc/nginx/gdoc2netcfg/sites-available/{fqdn} /etc/nginx/sites-enabled/{fqdn}`. Deployed on **both sites** (welland and monarto).
 
+### Tasmota remote syslog
+
+Tasmota devices send their logs (UDP syslog) to the site router. The
+rsyslog drop-in (`etc/rsyslog-tasmota.conf` → `/etc/rsyslog.d/tasmota.conf`)
+receives on UDP 514 into per-device files `/var/log/tasmota/<hostname>.log`
+(rotated daily, 14 kept — `etc/logrotate-tasmota`). Deploy both with
+`sudo make deploy-syslog` (path-scoped etckeeper commit included).
+
+Device-side settings are pushed by `tasmota configure`: `[tasmota]
+syslog_host` names the sink by sheet hostname and is resolved to the
+sink's IP on each device's VLAN from inventory data (never DNS);
+`syslog_level` (default 2) can be overridden per device via the sheet's
+"Syslog Level" column (0 silences one device). Empty `syslog_host`
+disables the feature (monarto until it opts in).
+
 ### Let's Encrypt
 
 Certbot scripts are generated to `/opt/gdoc2netcfg/letsencrypt/`. The `letsencrypt` **generator** is Welland only — monarto does not enable it; monarto's TLS certs (`/etc/letsencrypt/live/ten64.monarto.mithis.com`, `ipv6-ten64.monarto`) are managed by **certbot directly** (a single host cert that nginx terminates with), not by this per-host DNS-01 generator.

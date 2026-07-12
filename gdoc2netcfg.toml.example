@@ -108,6 +108,15 @@ password = ""
 # pushes the per-device login to the plugs.
 [tasmota]
 mqtt_secret = ""
+# Remote syslog: hostname (in the sheet) of the syslog sink. The configure
+# step resolves it to the sink's IP on each device's VLAN and pushes
+# LogHost/LogPort/SysLog to every device. Empty disables syslog config.
+# The sink host runs the rsyslog drop-in deployed by `make deploy-syslog`.
+syslog_host = ""
+syslog_port = 514
+# Site default SysLog level (0=off, 1=error, 2=info, 3=debug, 4=more debug);
+# override per device via the sheet's "Syslog Level" column.
+syslog_level = 2
 
 # ── Optional: sensors2mqtt per-host MQTT credentials ─────────
 # Issues a per-host broker login for each `local` host in the Network sheet's

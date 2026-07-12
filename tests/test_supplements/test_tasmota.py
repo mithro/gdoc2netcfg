@@ -1465,9 +1465,65 @@ class TestConfigureAllTasmotaDevices:
         # h2 has no tasmota_data -> will fail
         config = _make_tasmota_config()
 
-        success, fail = configure_all_tasmota_devices([h1, h2], _MQTT, config)
+        success, fail = configure_all_tasmota_devices(
+            [h1, h2], _MQTT, config, _make_site(), [h1, h2])
         assert success == 1
         assert fail == 1
+
+
+# ---------------------------------------------------------------------------
+# syslog push
+# ---------------------------------------------------------------------------
+
+class TestConfigureSyslogPush:
+    def _drifted_host(self):
+        """Device correct except for factory-default syslog settings."""
+        host = _make_host()
+        host.tasmota_data = _make_tasmota_data(
+            device_name="au-plug-10", friendly_name="au-plug-10",
+            hostname="au-plug-10", mqtt_topic="au-plug-10",
+            mqtt_host=_MQTT.host, mqtt_port=1883,
+            mqtt_user=username(PREFIX, host), mqtt_count=1,
+            syslog_level=0, log_host="", log_port=514,
+        )
+        return host
+
+    def test_pushes_syslog_commands(self):
+        host = self._drifted_host()
+        target = SyslogTarget(ip="10.1.90.1", port=514, level=2)
+        with patch(
+            "gdoc2netcfg.supplements.tasmota_configure._send_tasmota_command",
+            return_value={},
+        ) as send:
+            ok = configure_tasmota_device(
+                host, _MQTT, _make_tasmota_config(), syslog=target)
+        assert ok
+        commands = [c.args[1] for c in send.call_args_list]
+        assert "SysLog 2" in commands
+        assert "LogHost 10.1.90.1" in commands
+        assert "LogPort 514" not in commands  # 514 == 514, no drift
+
+    def test_all_resolves_per_device(self):
+        host = self._drifted_host()
+        config = _make_tasmota_config(syslog_host="ten64")
+        sink = _make_sink()
+        with patch(
+            "gdoc2netcfg.supplements.tasmota_configure._send_tasmota_command",
+            return_value={},
+        ) as send:
+            success, fail = configure_all_tasmota_devices(
+                [host], _MQTT, config, _make_site(), [host, sink])
+        assert (success, fail) == (1, 0)
+        commands = [c.args[1] for c in send.call_args_list]
+        assert "LogHost 10.1.90.1" in commands
+
+    def test_all_resolution_failure_raises(self):
+        """A bogus sheet value or missing sink aborts loudly."""
+        host = self._drifted_host()
+        config = _make_tasmota_config(syslog_host="no-such-host")
+        with pytest.raises(ValueError, match="no-such-host"):
+            configure_all_tasmota_devices(
+                [host], _MQTT, config, _make_site(), [host])
 
 
 # ---------------------------------------------------------------------------

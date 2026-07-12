@@ -2038,6 +2038,7 @@ def cmd_tasmota_configure(args: argparse.Namespace) -> int:
     from gdoc2netcfg.supplements.tasmota_configure import (
         configure_all_tasmota_devices,
         configure_tasmota_device,
+        resolve_syslog_target,
     )
 
     hosts = _tasmota_hosts(config)
@@ -2054,6 +2055,7 @@ def cmd_tasmota_configure(args: argparse.Namespace) -> int:
         )
         success, fail = configure_all_tasmota_devices(
             tasmota_hosts, config.homeassistant.mqtt, config.tasmota,
+            config.site, hosts,
             dry_run=dry_run, verbose=True, force=force,
         )
         print(f"\n{success} succeeded, {fail} failed.")
@@ -2074,9 +2076,13 @@ def cmd_tasmota_configure(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
+        syslog = None
+        if target.tasmota_data.ip:
+            syslog = resolve_syslog_target(
+                target, hosts, config.site, config.tasmota)
         ok = configure_tasmota_device(
             target, config.homeassistant.mqtt, config.tasmota,
-            dry_run=dry_run, verbose=True, force=force,
+            dry_run=dry_run, verbose=True, force=force, syslog=syslog,
         )
         return 0 if ok else 1
 

@@ -300,6 +300,7 @@ def configure_tasmota_device(
     dry_run: bool = False,
     verbose: bool = False,
     force: bool = False,
+    syslog: SyslogTarget | None = None,
 ) -> bool:
     """Push desired configuration to a single Tasmota device.
 
@@ -313,6 +314,8 @@ def configure_tasmota_device(
         verbose: Print progress to stderr.
         force: If True, apply changes that would break HA integration
             (e.g. Topic rename on an HA-connected device).
+        syslog: Resolved remote-syslog target for this device, or None
+            when disabled.
 
     Returns:
         True if all changes were applied (or no changes needed).
@@ -328,7 +331,7 @@ def configure_tasmota_device(
             print(f"  {host.hostname}: no IP in Tasmota data", file=sys.stderr)
         return False
 
-    drifts = compute_drift(host, mqtt_config, tasmota_config)
+    drifts = compute_drift(host, mqtt_config, tasmota_config, syslog)
 
     # MqttCount == 0 means the device has never connected to the MQTT
     # broker since boot.  This is a diagnostic signal — likely the
@@ -393,7 +396,7 @@ def configure_tasmota_device(
     # MqttCount == 0 (never connected — wrong/absent credentials are the usual
     # cause).
     all_ok = True
-    desired = compute_desired_config(host, mqtt_config, tasmota_config)
+    desired = compute_desired_config(host, mqtt_config, tasmota_config, syslog)
     fields_to_push = {d.field: d.desired for d in drifts_to_apply}
     if mqtt_disconnected or "MqttUser" in fields_to_push:
         fields_to_push["MqttUser"] = desired["MqttUser"]
@@ -421,6 +424,8 @@ def configure_all_tasmota_devices(
     hosts: list[Host],
     mqtt_config: MqttBrokerConfig,
     tasmota_config: TasmotaConfig,
+    site: Site,
+    all_hosts: list[Host],
     dry_run: bool = False,
     verbose: bool = False,
     force: bool = False,
@@ -431,6 +436,9 @@ def configure_all_tasmota_devices(
         hosts: Hosts with tasmota_data attached.
         mqtt_config: HA Mosquitto broker connection (MqttHost/MqttPort).
         tasmota_config: Tasmota credential secret (derives MqttUser/MqttPassword).
+        site: Site topology (VLAN definitions) for syslog target resolution.
+        all_hosts: Full host list (the syslog sink is usually not a
+            Tasmota device, so it is not in *hosts*).
         dry_run: If True, show changes without applying.
         verbose: Print progress to stderr.
         force: If True, apply HA-breaking changes (e.g. Topic rename).
@@ -441,9 +449,12 @@ def configure_all_tasmota_devices(
     success = 0
     fail = 0
     for host in hosts:
+        syslog = None
+        if host.tasmota_data is not None and host.tasmota_data.ip:
+            syslog = resolve_syslog_target(host, all_hosts, site, tasmota_config)
         ok = configure_tasmota_device(
             host, mqtt_config, tasmota_config, dry_run=dry_run, verbose=verbose,
-            force=force,
+            force=force, syslog=syslog,
         )
         if ok:
             success += 1

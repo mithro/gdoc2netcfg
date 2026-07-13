@@ -1,0 +1,14 @@
+# Tasmota remote syslog logs (see etc/rsyslog-tasmota.conf).
+# Repo-tracked at etc/logrotate-tasmota in gdoc2netcfg; deployed to
+# /etc/logrotate.d/tasmota by `sudo make deploy-syslog`.
+/var/log/tasmota/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    postrotate
+        /usr/lib/rsyslog/rsyslog-rotate
+    endscript
+}

@@ -180,12 +180,17 @@ _TASMOTA_FIELDS = (
     ("uptime", str),
     ("module", (int, str)),
     ("mqtt_count", int),
+    ("syslog_level", int),
+    ("log_host", str),
+    ("log_port", int),
 )
 
 # Fields added to the scanner after rows already existed: optional in
 # documents (absent stays absent — baseline documents reconstructed
-# from pre-v5 rows lack them), stored as NULL when absent.
-_TASMOTA_OPTIONAL_FIELDS = frozenset({"mqtt_count"})
+# from pre-v5/pre-v9 rows lack them), stored as NULL when absent.
+_TASMOTA_OPTIONAL_FIELDS = frozenset({
+    "mqtt_count", "syslog_level", "log_host", "log_port",
+})
 
 # Zigbee device fields (doc key == column except "site", which equals
 # the owning site and is not stored).  None-able fields get NULL columns.
@@ -755,13 +760,18 @@ class DiscoveryDB(BaseDatabase):
     # v7: nullable traffic counters; vendor PoE power, box sensors,
     #     bridge MAC, LLDP port descriptions.
     # v8: tasmota_devices.is_tombstone (sheet-MAC identity tombstones).
-    SCHEMA_VERSION = 8
+    # v9: tasmota_devices.syslog_level/log_host/log_port (remote syslog
+    #     settings read back from the device).
+    SCHEMA_VERSION = 9
     SCHEMA_UPGRADES = {
         5: ["ALTER TABLE tasmota_devices ADD COLUMN mqtt_count INTEGER"],
         6: [_upgrade_v6_port_aliases],
         7: [_upgrade_v7_extended_bridge_data],
         8: ["ALTER TABLE tasmota_devices "
             "ADD COLUMN is_tombstone INTEGER NOT NULL DEFAULT 0"],
+        9: ["ALTER TABLE tasmota_devices ADD COLUMN syslog_level INTEGER",
+            "ALTER TABLE tasmota_devices ADD COLUMN log_host TEXT",
+            "ALTER TABLE tasmota_devices ADD COLUMN log_port INTEGER"],
     }
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:

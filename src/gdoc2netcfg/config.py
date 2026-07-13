@@ -57,14 +57,23 @@ class GeneratorConfig:
 
 @dataclass
 class TasmotaConfig:
-    """Tasmota per-device MQTT credential derivation ([tasmota]).
+    """Tasmota per-device MQTT credential derivation + syslog ([tasmota]).
 
     `mqtt_secret` derives each device's MqttUser (`tas-<id>`) and MqttPassword
     (`sha256(secret+<id>)`); the broker stores the pre-hashed form. Replaces the
     #30 interim shared `mqtt_user`/`mqtt_password` static login.
+
+    `syslog_host` names the syslog sink by inventory hostname; the configure
+    step resolves it to the sink's IP on each device's VLAN and pushes
+    LogHost/LogPort/SysLog. Empty disables syslog configuration entirely.
+    `syslog_level` (0-4) is the site default; the sheet's "Syslog Level"
+    column overrides it per device.
     """
 
     mqtt_secret: str = ""
+    syslog_host: str = ""
+    syslog_port: int = 514
+    syslog_level: int = 2
 
 
 @dataclass
@@ -247,7 +256,24 @@ def _build_tasmota(data: dict) -> TasmotaConfig:
     section = data.get("tasmota", {})
     if not section:
         return TasmotaConfig()
-    return TasmotaConfig(mqtt_secret=section.get("mqtt_secret", ""))
+    syslog_port = section.get("syslog_port", 514)
+    if (isinstance(syslog_port, bool) or not isinstance(syslog_port, int)
+            or not 1 <= syslog_port <= 65535):
+        raise ValueError(
+            f"[tasmota] syslog_port must be an integer 1-65535, got {syslog_port!r}"
+        )
+    syslog_level = section.get("syslog_level", 2)
+    if (isinstance(syslog_level, bool) or not isinstance(syslog_level, int)
+            or not 0 <= syslog_level <= 4):
+        raise ValueError(
+            f"[tasmota] syslog_level must be an integer 0-4, got {syslog_level!r}"
+        )
+    return TasmotaConfig(
+        mqtt_secret=section.get("mqtt_secret", ""),
+        syslog_host=section.get("syslog_host", ""),
+        syslog_port=syslog_port,
+        syslog_level=syslog_level,
+    )
 
 
 def _build_sensors2mqtt(data: dict) -> Sensors2mqttConfig:

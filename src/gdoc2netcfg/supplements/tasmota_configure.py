@@ -20,10 +20,13 @@ from typing import TYPE_CHECKING
 
 from gdoc2netcfg.derivations.mqtt_credentials import password, username
 from gdoc2netcfg.derivations.tasmota_credentials import PREFIX
+from gdoc2netcfg.derivations.vlan import ip_to_vlan_id
+from gdoc2netcfg.models.addressing import IPv4Address
 
 if TYPE_CHECKING:
     from gdoc2netcfg.config import MqttBrokerConfig, TasmotaConfig
     from gdoc2netcfg.models.host import Host
+    from gdoc2netcfg.models.network import Site
 
 
 @dataclass(frozen=True)
@@ -44,10 +47,104 @@ class ConfigDrift:
     warning: str = ""
 
 
+# Sheet column carrying a per-device SysLog level override (0-4).
+_SYSLOG_LEVEL_COLUMN = "Syslog Level"
+
+
+@dataclass(frozen=True)
+class SyslogTarget:
+    """Resolved remote-syslog settings for one device.
+
+    Attributes:
+        ip: Syslog sink IPv4 on the device's VLAN (pushed as LogHost).
+        port: Syslog UDP port (pushed as LogPort).
+        level: SysLog verbosity 0-4 (pushed as SysLog).
+    """
+
+    ip: str
+    port: int
+    level: int
+
+
+def _syslog_level(host: Host, tasmota_config: TasmotaConfig) -> int:
+    """Per-device SysLog level: sheet column override or site default."""
+    raw = host.extra.get(_SYSLOG_LEVEL_COLUMN, "").strip()
+    if not raw:
+        return tasmota_config.syslog_level
+    if raw not in ("0", "1", "2", "3", "4"):
+        raise ValueError(
+            f"{host.hostname}: invalid {_SYSLOG_LEVEL_COLUMN!r} value "
+            f"{raw!r} (must be 0-4)"
+        )
+    return int(raw)
+
+
+def resolve_syslog_target(
+    host: Host,
+    all_hosts: list[Host],
+    site: Site,
+    tasmota_config: TasmotaConfig,
+) -> SyslogTarget | None:
+    """Resolve the syslog sink IP on *host*'s network.
+
+    The configured ``[tasmota] syslog_host`` names the sink by hostname;
+    devices must log to the sink's address on their own VLAN, so the
+    sink's interfaces are matched against the VLAN of the device's live
+    Tasmota IP (inventory data, never live DNS).
+
+    Returns:
+        None when syslog configuration is disabled (empty syslog_host).
+
+    Raises:
+        ValueError: if the device has no Tasmota IP, the IP maps to no
+            VLAN, the sink is not in the inventory, or the sink has no
+            interface with an IPv4 address on the device's VLAN.
+    """
+    if not tasmota_config.syslog_host:
+        return None
+    if host.tasmota_data is None or not host.tasmota_data.ip:
+        raise ValueError(
+            f"{host.hostname}: no Tasmota IP to resolve a syslog target for"
+        )
+    device_ip = IPv4Address(host.tasmota_data.ip)
+    vlan_id = ip_to_vlan_id(device_ip, site)
+    if vlan_id is None:
+        raise ValueError(
+            f"{host.hostname}: Tasmota IP {device_ip} maps to no known VLAN"
+        )
+    name = tasmota_config.syslog_host
+    sink = next(
+        (h for h in all_hosts if name in (h.hostname, h.machine_name)), None,
+    )
+    if sink is None:
+        raise ValueError(
+            f"[tasmota] syslog_host {name!r} not found in the inventory"
+        )
+    for iface in sink.interfaces:
+        if iface.vlan_id != vlan_id:
+            continue
+        ipv4 = next(
+            (ip for ip in iface.ip_addresses if isinstance(ip, IPv4Address)),
+            None,
+        )
+        if ipv4 is None:
+            continue
+        return SyslogTarget(
+            ip=str(ipv4),
+            port=tasmota_config.syslog_port,
+            level=_syslog_level(host, tasmota_config),
+        )
+    raise ValueError(
+        f"[tasmota] syslog_host {name!r} has no interface with an IPv4 "
+        f"address on VLAN {vlan_id} (device {host.hostname} @ {device_ip})"
+    )
+
+
 def compute_desired_config(
     host: Host,
     mqtt_config: MqttBrokerConfig,
     tasmota_config: TasmotaConfig,
+    syslog: SyslogTarget | None = None,
 ) -> dict[str, str]:
     """Derive the desired Tasmota configuration for a host.
 
@@ -55,6 +152,8 @@ def compute_desired_config(
         host: Host object with tasmota_data and extra columns.
         mqtt_config: HA Mosquitto broker connection (MqttHost/MqttPort).
         tasmota_config: Tasmota credential secret (derives MqttUser/MqttPassword).
+        syslog: Resolved remote-syslog target, or None when syslog
+            configuration is disabled.
 
     Returns:
         Mapping of Tasmota command name to desired value.
@@ -76,6 +175,13 @@ def compute_desired_config(
         "MqttPassword": password(tasmota_config.mqtt_secret, host),
     })
 
+    if syslog is not None:
+        desired.update({
+            "SysLog": str(syslog.level),
+            "LogHost": syslog.ip,
+            "LogPort": str(syslog.port),
+        })
+
     return desired
 
 
@@ -93,6 +199,9 @@ def _get_current_value(field: str, tasmota_data) -> str:
         "MqttPort": "mqtt_port",
         "MqttUser": "mqtt_user",
         "MqttPassword": None,  # Can't be read back from device
+        "SysLog": "syslog_level",
+        "LogHost": "log_host",
+        "LogPort": "log_port",
     }
     attr = field_map.get(field)
     if attr is None:
@@ -104,6 +213,7 @@ def compute_drift(
     host: Host,
     mqtt_config: MqttBrokerConfig,
     tasmota_config: TasmotaConfig,
+    syslog: SyslogTarget | None = None,
 ) -> list[ConfigDrift]:
     """Compare actual device state against desired configuration.
 
@@ -111,6 +221,8 @@ def compute_drift(
         host: Host with tasmota_data attached.
         mqtt_config: HA Mosquitto broker connection (MqttHost/MqttPort).
         tasmota_config: Tasmota credential secret (derives MqttUser/MqttPassword).
+        syslog: Resolved remote-syslog target, or None when syslog
+            configuration is disabled.
 
     Returns:
         List of ConfigDrift entries for fields that need updating.
@@ -118,7 +230,7 @@ def compute_drift(
     if host.tasmota_data is None:
         raise ValueError(f"Host {host.hostname} has no tasmota_data")
 
-    desired = compute_desired_config(host, mqtt_config, tasmota_config)
+    desired = compute_desired_config(host, mqtt_config, tasmota_config, syslog)
     drifts: list[ConfigDrift] = []
 
     for field, desired_value in desired.items():
@@ -188,6 +300,7 @@ def configure_tasmota_device(
     dry_run: bool = False,
     verbose: bool = False,
     force: bool = False,
+    syslog: SyslogTarget | None = None,
 ) -> bool:
     """Push desired configuration to a single Tasmota device.
 
@@ -201,6 +314,8 @@ def configure_tasmota_device(
         verbose: Print progress to stderr.
         force: If True, apply changes that would break HA integration
             (e.g. Topic rename on an HA-connected device).
+        syslog: Resolved remote-syslog target for this device, or None
+            when disabled.
 
     Returns:
         True if all changes were applied (or no changes needed).
@@ -216,7 +331,7 @@ def configure_tasmota_device(
             print(f"  {host.hostname}: no IP in Tasmota data", file=sys.stderr)
         return False
 
-    drifts = compute_drift(host, mqtt_config, tasmota_config)
+    drifts = compute_drift(host, mqtt_config, tasmota_config, syslog)
 
     # MqttCount == 0 means the device has never connected to the MQTT
     # broker since boot.  This is a diagnostic signal — likely the
@@ -281,7 +396,7 @@ def configure_tasmota_device(
     # MqttCount == 0 (never connected — wrong/absent credentials are the usual
     # cause).
     all_ok = True
-    desired = compute_desired_config(host, mqtt_config, tasmota_config)
+    desired = compute_desired_config(host, mqtt_config, tasmota_config, syslog)
     fields_to_push = {d.field: d.desired for d in drifts_to_apply}
     if mqtt_disconnected or "MqttUser" in fields_to_push:
         fields_to_push["MqttUser"] = desired["MqttUser"]
@@ -309,6 +424,8 @@ def configure_all_tasmota_devices(
     hosts: list[Host],
     mqtt_config: MqttBrokerConfig,
     tasmota_config: TasmotaConfig,
+    site: Site,
+    all_hosts: list[Host],
     dry_run: bool = False,
     verbose: bool = False,
     force: bool = False,
@@ -319,6 +436,9 @@ def configure_all_tasmota_devices(
         hosts: Hosts with tasmota_data attached.
         mqtt_config: HA Mosquitto broker connection (MqttHost/MqttPort).
         tasmota_config: Tasmota credential secret (derives MqttUser/MqttPassword).
+        site: Site topology (VLAN definitions) for syslog target resolution.
+        all_hosts: Full host list (the syslog sink is usually not a
+            Tasmota device, so it is not in *hosts*).
         dry_run: If True, show changes without applying.
         verbose: Print progress to stderr.
         force: If True, apply HA-breaking changes (e.g. Topic rename).
@@ -329,9 +449,12 @@ def configure_all_tasmota_devices(
     success = 0
     fail = 0
     for host in hosts:
+        syslog = None
+        if host.tasmota_data is not None and host.tasmota_data.ip:
+            syslog = resolve_syslog_target(host, all_hosts, site, tasmota_config)
         ok = configure_tasmota_device(
             host, mqtt_config, tasmota_config, dry_run=dry_run, verbose=verbose,
-            force=force,
+            force=force, syslog=syslog,
         )
         if ok:
             success += 1

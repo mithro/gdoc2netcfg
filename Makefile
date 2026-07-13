@@ -114,6 +114,18 @@ deploy-known-hosts: generate ## Generate and deploy system-wide SSH known_hosts 
 	cp $(OUTPUT_DIR)/known_hosts $(SSH_KNOWN_HOSTS)
 	$(ETCKEEPER_COMMIT) "gdoc2netcfg deploy known-hosts: $(GDOC2NETCFG_VERSION)" $(SSH_KNOWN_HOSTS)
 
+RSYSLOG_TASMOTA_CONF := /etc/rsyslog.d/tasmota.conf
+LOGROTATE_TASMOTA_CONF := /etc/logrotate.d/tasmota
+TASMOTA_LOG_DIR := /var/log/tasmota
+
+.PHONY: deploy-syslog
+deploy-syslog: ## Deploy rsyslog + logrotate config for Tasmota remote syslog (run with sudo)
+	install -d $(TASMOTA_LOG_DIR)
+	cp etc/rsyslog-tasmota.conf $(RSYSLOG_TASMOTA_CONF)
+	cp etc/logrotate-tasmota $(LOGROTATE_TASMOTA_CONF)
+	systemctl restart rsyslog
+	$(ETCKEEPER_COMMIT) "gdoc2netcfg deploy syslog: $(GDOC2NETCFG_VERSION)" $(RSYSLOG_TASMOTA_CONF) $(LOGROTATE_TASMOTA_CONF)
+
 .PHONY: deploy
 deploy: deploy-dnsmasq deploy-nginx deploy-known-hosts ## Run all deploy steps (run with sudo)
 

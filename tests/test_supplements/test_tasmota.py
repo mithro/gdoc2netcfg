@@ -8,8 +8,9 @@ from gdoc2netcfg.cli.main import main
 from gdoc2netcfg.config import HomeAssistantConfig, MqttBrokerConfig, TasmotaConfig
 from gdoc2netcfg.derivations.mqtt_credentials import password, username
 from gdoc2netcfg.derivations.tasmota_credentials import PREFIX
-from gdoc2netcfg.models.addressing import IPv4Address, MACAddress
+from gdoc2netcfg.models.addressing import IPv4Address, IPv6Address, MACAddress
 from gdoc2netcfg.models.host import Host, NetworkInterface, TasmotaData
+from gdoc2netcfg.models.network import VLAN, Site
 from gdoc2netcfg.supplements.tasmota import (
     _UNKNOWN_PREFIX,
     _parse_tasmota_status,
@@ -18,11 +19,13 @@ from gdoc2netcfg.supplements.tasmota import (
 )
 from gdoc2netcfg.supplements.tasmota_configure import (
     ConfigDrift,
+    SyslogTarget,
     _get_current_value,
     compute_desired_config,
     compute_drift,
     configure_all_tasmota_devices,
     configure_tasmota_device,
+    resolve_syslog_target,
 )
 from gdoc2netcfg.supplements.tasmota_ha import (
     _slug_for_host,
@@ -90,6 +93,44 @@ def _make_tasmota_config(**overrides):
     }
     defaults.update(overrides)
     return TasmotaConfig(**defaults)
+
+
+def _make_site():
+    """Welland-shaped site: VLAN 10 (int) and VLAN 90 (iot)."""
+    return Site(
+        name="welland",
+        domain="welland.mithis.com",
+        site_octet=1,
+        vlans={
+            10: VLAN(id=10, name="int", subdomain="int"),
+            90: VLAN(id=90, name="iot", subdomain="iot"),
+        },
+    )
+
+
+def _make_sink(interfaces=None):
+    """The syslog sink host (ten64) with one interface per VLAN."""
+    if interfaces is None:
+        interfaces = [
+            NetworkInterface(
+                name="int",
+                mac=MACAddress.parse("aa:bb:cc:dd:ee:01"),
+                ip_addresses=(IPv4Address("10.1.10.1"),),
+                vlan_id=10,
+            ),
+            NetworkInterface(
+                name="iot",
+                mac=MACAddress.parse("aa:bb:cc:dd:ee:02"),
+                ip_addresses=(IPv4Address("10.1.90.1"),),
+                vlan_id=90,
+            ),
+        ]
+    return Host(
+        machine_name="ten64",
+        hostname="ten64",
+        sheet_type="Server",
+        interfaces=interfaces,
+    )
 
 
 # Broker host/port now come from [homeassistant.mqtt]; these values match the
@@ -173,6 +214,14 @@ SAMPLE_STATUS_0 = {
             "LinkCount": 1,
             "Downtime": "0T00:00:03",
         },
+    },
+    "StatusLOG": {
+        "SerialLog": 2,
+        "WebLog": 2,
+        "MqttLog": 0,
+        "SysLog": 2,
+        "LogHost": "10.1.90.1",
+        "LogPort": 5514,
     },
 }
 
@@ -319,6 +368,24 @@ class TestParseTasmotaStatus:
         data = {"Status": {"Module": "Shelly 1"}}
         result = _parse_tasmota_status(data)
         assert result["module"] == "Shelly 1"
+
+    def test_parse_syslog_fields(self):
+        parsed = _parse_tasmota_status(SAMPLE_STATUS_0)
+        assert parsed["syslog_level"] == 2
+        assert parsed["log_host"] == "10.1.90.1"
+        assert parsed["log_port"] == 5514
+
+    def test_parse_missing_statuslog_defaults(self):
+        parsed = _parse_tasmota_status({})
+        assert parsed["syslog_level"] == 0
+        assert parsed["log_host"] == ""
+        assert parsed["log_port"] == 514
+
+    def test_parse_partial_statuslog(self):
+        parsed = _parse_tasmota_status({"StatusLOG": {"SysLog": 3}})
+        assert parsed["syslog_level"] == 3
+        assert parsed["log_host"] == ""
+        assert parsed["log_port"] == 514
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +604,25 @@ class TestEnrichHostsWithTasmota:
         assert h1.tasmota_data is not None
         assert h2.tasmota_data is None
         assert h3.tasmota_data is not None
+
+    def test_enrich_carries_syslog_fields(self):
+        host = _make_host(hostname="au-plug-10")
+        enrich_hosts_with_tasmota([host], {"au-plug-10": {
+            "syslog_level": 2, "log_host": "10.1.90.1", "log_port": 514,
+            **_min_cache_entry(),
+        }})
+        assert host.tasmota_data.syslog_level == 2
+        assert host.tasmota_data.log_host == "10.1.90.1"
+        assert host.tasmota_data.log_port == 514
+
+    def test_enrich_syslog_fields_default_when_absent(self):
+        """Pre-v9 cached scans lack the keys — defaults mirror Tasmota
+        factory defaults (unconfigured device)."""
+        host = _make_host(hostname="au-plug-10")
+        enrich_hosts_with_tasmota([host], {"au-plug-10": _min_cache_entry()})
+        assert host.tasmota_data.syslog_level == 0
+        assert host.tasmota_data.log_host == ""
+        assert host.tasmota_data.log_port == 514
 
 
 def _min_cache_entry():
@@ -816,6 +902,22 @@ class TestComputeDesiredConfig:
         assert desired["MqttHost"] == "ha.welland.mithis.com"
         assert desired["Topic"] == "ir-ac-remote"
 
+    def test_no_syslog_keys_when_disabled(self):
+        host = _make_host()
+        desired = compute_desired_config(host, _MQTT, _make_tasmota_config())
+        assert "SysLog" not in desired
+        assert "LogHost" not in desired
+        assert "LogPort" not in desired
+
+    def test_syslog_keys_from_target(self):
+        host = _make_host()
+        target = SyslogTarget(ip="10.1.90.1", port=514, level=2)
+        desired = compute_desired_config(
+            host, _MQTT, _make_tasmota_config(), syslog=target)
+        assert desired["SysLog"] == "2"
+        assert desired["LogHost"] == "10.1.90.1"
+        assert desired["LogPort"] == "514"
+
 
 # ---------------------------------------------------------------------------
 # _get_current_value
@@ -850,6 +952,12 @@ class TestGetCurrentValue:
     def test_unknown_field(self):
         td = _make_tasmota_data()
         assert _get_current_value("UnknownField", td) == ""
+
+    def test_syslog_fields(self):
+        td = _make_tasmota_data(syslog_level=2, log_host="10.1.90.1", log_port=514)
+        assert _get_current_value("SysLog", td) == "2"
+        assert _get_current_value("LogHost", td) == "10.1.90.1"
+        assert _get_current_value("LogPort", td) == "514"
 
 
 # ---------------------------------------------------------------------------
@@ -983,6 +1091,44 @@ class TestComputeDrift:
         drifts = compute_drift(host, _MQTT, config)
         for d in drifts:
             assert d.warning == "", f"Unexpected warning on {d.field}"
+
+
+# ---------------------------------------------------------------------------
+# Syslog drift
+# ---------------------------------------------------------------------------
+
+class TestSyslogDrift:
+    def test_unconfigured_device_drifts(self):
+        """Factory-default device (SysLog 0, empty LogHost) drifts on
+        SysLog + LogHost but not LogPort (514 == 514)."""
+        host = _make_host()
+        host.tasmota_data = _make_tasmota_data(
+            device_name="au-plug-10", friendly_name="au-plug-10",
+            hostname="au-plug-10", mqtt_topic="au-plug-10",
+            mqtt_host=_MQTT.host, mqtt_port=1883,
+            mqtt_user=username(PREFIX, host),
+            syslog_level=0, log_host="", log_port=514,
+        )
+        target = SyslogTarget(ip="10.1.90.1", port=514, level=2)
+        drifts = compute_drift(host, _MQTT, _make_tasmota_config(), syslog=target)
+        fields = {d.field: d for d in drifts}
+        assert fields["SysLog"].current == "0"
+        assert fields["SysLog"].desired == "2"
+        assert fields["LogHost"].desired == "10.1.90.1"
+        assert "LogPort" not in fields
+
+    def test_configured_device_has_no_syslog_drift(self):
+        host = _make_host()
+        host.tasmota_data = _make_tasmota_data(
+            device_name="au-plug-10", friendly_name="au-plug-10",
+            hostname="au-plug-10", mqtt_topic="au-plug-10",
+            mqtt_host=_MQTT.host, mqtt_port=1883,
+            mqtt_user=username(PREFIX, host),
+            syslog_level=2, log_host="10.1.90.1", log_port=514,
+        )
+        target = SyslogTarget(ip="10.1.90.1", port=514, level=2)
+        drifts = compute_drift(host, _MQTT, _make_tasmota_config(), syslog=target)
+        assert not any(d.field in ("SysLog", "LogHost", "LogPort") for d in drifts)
 
 
 # ---------------------------------------------------------------------------
@@ -1364,9 +1510,65 @@ class TestConfigureAllTasmotaDevices:
         # h2 has no tasmota_data -> will fail
         config = _make_tasmota_config()
 
-        success, fail = configure_all_tasmota_devices([h1, h2], _MQTT, config)
+        success, fail = configure_all_tasmota_devices(
+            [h1, h2], _MQTT, config, _make_site(), [h1, h2])
         assert success == 1
         assert fail == 1
+
+
+# ---------------------------------------------------------------------------
+# syslog push
+# ---------------------------------------------------------------------------
+
+class TestConfigureSyslogPush:
+    def _drifted_host(self):
+        """Device correct except for factory-default syslog settings."""
+        host = _make_host()
+        host.tasmota_data = _make_tasmota_data(
+            device_name="au-plug-10", friendly_name="au-plug-10",
+            hostname="au-plug-10", mqtt_topic="au-plug-10",
+            mqtt_host=_MQTT.host, mqtt_port=1883,
+            mqtt_user=username(PREFIX, host), mqtt_count=1,
+            syslog_level=0, log_host="", log_port=514,
+        )
+        return host
+
+    def test_pushes_syslog_commands(self):
+        host = self._drifted_host()
+        target = SyslogTarget(ip="10.1.90.1", port=514, level=2)
+        with patch(
+            "gdoc2netcfg.supplements.tasmota_configure._send_tasmota_command",
+            return_value={},
+        ) as send:
+            ok = configure_tasmota_device(
+                host, _MQTT, _make_tasmota_config(), syslog=target)
+        assert ok
+        commands = [c.args[1] for c in send.call_args_list]
+        assert "SysLog 2" in commands
+        assert "LogHost 10.1.90.1" in commands
+        assert "LogPort 514" not in commands  # 514 == 514, no drift
+
+    def test_all_resolves_per_device(self):
+        host = self._drifted_host()
+        config = _make_tasmota_config(syslog_host="ten64")
+        sink = _make_sink()
+        with patch(
+            "gdoc2netcfg.supplements.tasmota_configure._send_tasmota_command",
+            return_value={},
+        ) as send:
+            success, fail = configure_all_tasmota_devices(
+                [host], _MQTT, config, _make_site(), [host, sink])
+        assert (success, fail) == (1, 0)
+        commands = [c.args[1] for c in send.call_args_list]
+        assert "LogHost 10.1.90.1" in commands
+
+    def test_all_resolution_failure_raises(self):
+        """A bogus sheet value or missing sink aborts loudly."""
+        host = self._drifted_host()
+        config = _make_tasmota_config(syslog_host="no-such-host")
+        with pytest.raises(ValueError, match="no-such-host"):
+            configure_all_tasmota_devices(
+                [host], _MQTT, config, _make_site(), [host])
 
 
 # ---------------------------------------------------------------------------
@@ -1825,3 +2027,117 @@ class TestTasmotaDiscrepancy:
             discrepancies=[TasmotaDiscrepancy("ip_mismatch", "m", "i", "h", "d")],
         )
         assert r2.discrepancies[0].kind == "ip_mismatch"
+
+
+class TestResolveSyslogTarget:
+    def _device(self, ip="10.1.90.10", extra=None):
+        host = _make_host(hostname="au-plug-10", extra=extra)
+        host.tasmota_data = _make_tasmota_data(ip=ip)
+        return host
+
+    def test_disabled_returns_none(self):
+        config = _make_tasmota_config()  # syslog_host defaults to ""
+        host = self._device()
+        assert resolve_syslog_target(
+            host, [host, _make_sink()], _make_site(), config) is None
+
+    def test_resolves_sink_ip_on_device_vlan(self):
+        config = _make_tasmota_config(syslog_host="ten64")
+        host = self._device(ip="10.1.90.10")
+        target = resolve_syslog_target(
+            host, [host, _make_sink()], _make_site(), config)
+        assert target == SyslogTarget(ip="10.1.90.1", port=514, level=2)
+
+    def test_sink_matched_by_machine_name_or_hostname(self):
+        config = _make_tasmota_config(syslog_host="ten64")
+        sink = _make_sink()
+        sink.hostname = "ten64.int"  # hostname differs; machine_name matches
+        host = self._device()
+        target = resolve_syslog_target(host, [host, sink], _make_site(), config)
+        assert target.ip == "10.1.90.1"
+
+    def test_unknown_sink_raises(self):
+        config = _make_tasmota_config(syslog_host="no-such-host")
+        host = self._device()
+        with pytest.raises(ValueError, match="no-such-host"):
+            resolve_syslog_target(host, [host, _make_sink()], _make_site(), config)
+
+    def test_device_ip_without_vlan_raises(self):
+        config = _make_tasmota_config(syslog_host="ten64")
+        host = self._device(ip="10.9.9.9")  # matches no VLAN
+        with pytest.raises(ValueError, match="no known VLAN"):
+            resolve_syslog_target(host, [host, _make_sink()], _make_site(), config)
+
+    def test_sink_without_interface_on_vlan_raises(self):
+        config = _make_tasmota_config(syslog_host="ten64")
+        sink = _make_sink(interfaces=[
+            NetworkInterface(
+                name="int",
+                mac=MACAddress.parse("aa:bb:cc:dd:ee:01"),
+                ip_addresses=(IPv4Address("10.1.10.1"),),
+                vlan_id=10,
+            ),
+        ])
+        host = self._device(ip="10.1.90.10")
+        with pytest.raises(ValueError, match="on VLAN 90"):
+            resolve_syslog_target(host, [host, sink], _make_site(), config)
+
+    def test_host_without_tasmota_ip_raises(self):
+        config = _make_tasmota_config(syslog_host="ten64")
+        host = _make_host(hostname="au-plug-10")  # no tasmota_data
+        with pytest.raises(ValueError, match="no Tasmota IP"):
+            resolve_syslog_target(host, [host, _make_sink()], _make_site(), config)
+
+    def test_level_override_from_sheet_column(self):
+        config = _make_tasmota_config(syslog_host="ten64")
+        host = self._device(extra={"Syslog Level": "0"})
+        target = resolve_syslog_target(
+            host, [host, _make_sink()], _make_site(), config)
+        assert target.level == 0
+
+    def test_blank_override_uses_site_default(self):
+        config = _make_tasmota_config(syslog_host="ten64", syslog_level=3)
+        host = self._device(extra={"Syslog Level": "  "})
+        target = resolve_syslog_target(
+            host, [host, _make_sink()], _make_site(), config)
+        assert target.level == 3
+
+    def test_invalid_override_raises(self):
+        config = _make_tasmota_config(syslog_host="ten64")
+        host = self._device(extra={"Syslog Level": "9"})
+        with pytest.raises(ValueError, match="Syslog Level"):
+            resolve_syslog_target(host, [host, _make_sink()], _make_site(), config)
+
+    def test_ipv6_only_interface_on_vlan_raises(self):
+        config = _make_tasmota_config(syslog_host="ten64")
+        sink = _make_sink(interfaces=[
+            NetworkInterface(
+                name="iot",
+                mac=MACAddress.parse("aa:bb:cc:dd:ee:02"),
+                ip_addresses=(IPv6Address("2404:e80:a137:190::1", "2404:e80:a137:"),),
+                vlan_id=90,
+            ),
+        ])
+        host = self._device(ip="10.1.90.10")
+        with pytest.raises(ValueError, match="no interface with an IPv4"):
+            resolve_syslog_target(host, [host, sink], _make_site(), config)
+
+    def test_skips_ipv6_only_interface_for_ipv4_sibling(self):
+        config = _make_tasmota_config(syslog_host="ten64")
+        sink = _make_sink(interfaces=[
+            NetworkInterface(
+                name="iot6",
+                mac=MACAddress.parse("aa:bb:cc:dd:ee:03"),
+                ip_addresses=(IPv6Address("2404:e80:a137:190::1", "2404:e80:a137:"),),
+                vlan_id=90,
+            ),
+            NetworkInterface(
+                name="iot",
+                mac=MACAddress.parse("aa:bb:cc:dd:ee:02"),
+                ip_addresses=(IPv4Address("10.1.90.1"),),
+                vlan_id=90,
+            ),
+        ])
+        host = self._device(ip="10.1.90.10")
+        target = resolve_syslog_target(host, [host, sink], _make_site(), config)
+        assert target.ip == "10.1.90.1"

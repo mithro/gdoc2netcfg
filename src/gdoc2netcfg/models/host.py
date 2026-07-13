@@ -301,6 +301,9 @@ class TasmotaData:
         mqtt_count: Number of successful MQTT connections since boot.
             Zero means the device has never connected to the MQTT broker,
             indicating a configuration problem (e.g. wrong credentials).
+        syslog_level: Remote syslog verbosity (SysLog command, 0=off .. 4).
+        log_host: Remote syslog target (LogHost command); "" if unset.
+        log_port: Remote syslog UDP port (LogPort command).
         controls: Hostnames this device controls, parsed from spreadsheet.
     """
 
@@ -321,6 +324,9 @@ class TasmotaData:
     uptime: str = ""
     module: str = ""
     mqtt_count: int = 0
+    syslog_level: int = 0
+    log_host: str = ""
+    log_port: int = 514
     controls: tuple[str, ...] = ()
 
 

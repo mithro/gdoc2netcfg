@@ -101,6 +101,7 @@ def _parse_tasmota_status(data: dict) -> dict:
       StatusFWR.Version
       StatusSTS.UptimeSec, Uptime, MqttCount
       StatusSTS.Wifi.SSId, RSSI, Signal
+      StatusLOG.SysLog, LogHost, LogPort
 
     Args:
         data: Raw JSON dict from Status 0.
@@ -114,6 +115,7 @@ def _parse_tasmota_status(data: dict) -> dict:
     fwr = data.get("StatusFWR", {})
     sts = data.get("StatusSTS", {})
     wifi = sts.get("Wifi", {})
+    log = data.get("StatusLOG", {})
 
     # FriendlyName can be a list or a string
     friendly = status.get("FriendlyName", [""])
@@ -138,6 +140,9 @@ def _parse_tasmota_status(data: dict) -> dict:
         "uptime": sts.get("Uptime", ""),
         "module": status.get("Module", ""),
         "mqtt_count": sts.get("MqttCount", 0),
+        "syslog_level": log.get("SysLog", 0),
+        "log_host": log.get("LogHost", ""),
+        "log_port": log.get("LogPort", 514),
     }
 
 
@@ -354,6 +359,9 @@ def enrich_hosts_with_tasmota(
             uptime=info.get("uptime", ""),
             module=info.get("module", ""),
             mqtt_count=info.get("mqtt_count", 0),
+            syslog_level=info.get("syslog_level", 0),
+            log_host=info.get("log_host", ""),
+            log_port=info.get("log_port", 514),
             controls=controls,
         )
 

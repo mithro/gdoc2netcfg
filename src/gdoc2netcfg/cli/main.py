@@ -184,6 +184,12 @@ def _build_hosts_from_csvs(config, csv_data: list[tuple[str, str]]):
     data.
     """
     from gdoc2netcfg.derivations.host_builder import build_hosts
+
+    return build_hosts(_parse_device_records(csv_data), config.site)
+
+
+def _parse_device_records(csv_data: list[tuple[str, str]]):
+    """Parse device-sheet CSVs into DeviceRecords, skipping _NON_DEVICE_SHEETS."""
     from gdoc2netcfg.sources.parser import parse_csv
 
     records = []
@@ -191,7 +197,7 @@ def _build_hosts_from_csvs(config, csv_data: list[tuple[str, str]]):
         if name in _NON_DEVICE_SHEETS:
             continue
         records.extend(parse_csv(csv_text, name))
-    return build_hosts(records, config.site)
+    return records
 
 
 def _load_stored_credentials(config) -> dict[str, dict[str, str]]:
@@ -531,8 +537,35 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     #    Skip entirely when no credential columns were seen this run — never
     #    tombstone credentials on a transient fetch failure of that sheet.
     if has_credential_columns:
+        from gdoc2netcfg.derivations.host_builder import (
+            build_hosts,
+            find_lost_credential_cells,
+        )
+
         _enrich_site_from_sheets(config, raw_csvs)
-        hosts = _build_hosts_from_csvs(config, raw_csvs)
+        records = _parse_device_records(raw_csvs)
+        hosts = build_hosts(records, config.site)
+        lost = find_lost_credential_cells(records, hosts, config.site)
+        if lost:
+            print(
+                "Error: credential cells sit on spreadsheet rows the host "
+                "builder discards; they would be silently lost:",
+                file=sys.stderr,
+            )
+            for cell in lost:
+                print(
+                    f"  {cell.sheet_name} row {cell.row_number}: machine "
+                    f"'{cell.machine}' interface '{cell.interface}' field "
+                    f"'{cell.field}'",
+                    file=sys.stderr,
+                )
+            print(
+                "Move each credential onto a row of the same machine that "
+                "has both a MAC address and an IP, then re-run fetch. "
+                "Nothing was stored.",
+                file=sys.stderr,
+            )
+            return 1
         creds = extract_credentials(hosts)
         with CredentialsDB(config.cache.credentials_db_path) as cred_db:
             scan_id = cred_db.begin_scan("csv_credentials")

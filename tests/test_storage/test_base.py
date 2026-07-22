@@ -352,9 +352,9 @@ class TestCleanupIncompleteScans:
         deleted = db.cleanup_incomplete_scans(max_age_hours=1)
         assert deleted == 0
 
-    def test_runs_on_init(self, tmp_path: Path):
-        db_path = tmp_path / "auto_cleanup.db"
-        # Create DB with an old incomplete scan
+    def test_not_run_on_init(self, tmp_path: Path):
+        """Cleanup is manual — a plain open must NOT remove orphan scans."""
+        db_path = tmp_path / "no_auto_cleanup.db"
         d = ConcreteDB(db_path)
         two_hours_ago = (
             datetime.now(timezone.utc) - timedelta(hours=2)
@@ -366,12 +366,44 @@ class TestCleanupIncompleteScans:
         d.connection.commit()
         d.close()
 
-        # Re-opening should clean up the orphan
+        # Re-opening must leave the orphan untouched (cleanup is manual)...
         d2 = ConcreteDB(db_path)
-        cur = d2.connection.execute(
+        assert d2.connection.execute(
             "SELECT COUNT(*) FROM scans WHERE finished_at IS NULL"
+        ).fetchone()[0] == 1
+        # ...and an explicit cleanup still removes it.
+        assert d2.cleanup_incomplete_scans(max_age_hours=1) == 1
+        assert d2.connection.execute(
+            "SELECT COUNT(*) FROM scans WHERE finished_at IS NULL"
+        ).fetchone()[0] == 0
+        d2.close()
+
+    def test_open_does_not_crash_on_orphan_with_children(self, tmp_path: Path):
+        """Regression: opening a DB whose orphan scan has committed child
+        rows must NOT raise.  Cleanup no longer runs on open, so the
+        child tables' no-cascade foreign key is never tripped."""
+        db_path = tmp_path / "orphan_children.db"
+        d = ConcreteDB(db_path)
+        two_hours_ago = (
+            datetime.now(timezone.utc) - timedelta(hours=2)
+        ).isoformat()
+        cur = d.connection.execute(
+            "INSERT INTO scans (scan_type, started_at) VALUES (?, ?)",
+            ("test", two_hours_ago),
         )
-        assert cur.fetchone()[0] == 0
+        orphan_id = cur.lastrowid
+        d.connection.execute(
+            "INSERT INTO test_data (scan_id, value) VALUES (?, 'partial')",
+            (orphan_id,),
+        )
+        d.connection.commit()
+        d.close()
+
+        # Previously raised FOREIGN KEY constraint failed from on-open cleanup.
+        d2 = ConcreteDB(db_path)
+        assert d2.connection.execute(
+            "SELECT COUNT(*) FROM test_data WHERE scan_id = ?", (orphan_id,)
+        ).fetchone()[0] == 1  # untouched by the open
         d2.close()
 
     def test_removes_incomplete_scan_with_child_rows(self, db: ConcreteDB):

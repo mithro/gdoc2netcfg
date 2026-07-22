@@ -352,9 +352,9 @@ class TestCleanupIncompleteScans:
         deleted = db.cleanup_incomplete_scans(max_age_hours=1)
         assert deleted == 0
 
-    def test_runs_on_init(self, tmp_path: Path):
-        db_path = tmp_path / "auto_cleanup.db"
-        # Create DB with an old incomplete scan
+    def test_not_run_on_init(self, tmp_path: Path):
+        """Cleanup is manual — a plain open must NOT remove orphan scans."""
+        db_path = tmp_path / "no_auto_cleanup.db"
         d = ConcreteDB(db_path)
         two_hours_ago = (
             datetime.now(timezone.utc) - timedelta(hours=2)
@@ -366,13 +366,154 @@ class TestCleanupIncompleteScans:
         d.connection.commit()
         d.close()
 
-        # Re-opening should clean up the orphan
+        # Re-opening must leave the orphan untouched (cleanup is manual)...
         d2 = ConcreteDB(db_path)
-        cur = d2.connection.execute(
+        assert d2.connection.execute(
             "SELECT COUNT(*) FROM scans WHERE finished_at IS NULL"
-        )
-        assert cur.fetchone()[0] == 0
+        ).fetchone()[0] == 1
+        # ...and an explicit cleanup still removes it.
+        assert d2.cleanup_incomplete_scans(max_age_hours=1) == 1
+        assert d2.connection.execute(
+            "SELECT COUNT(*) FROM scans WHERE finished_at IS NULL"
+        ).fetchone()[0] == 0
         d2.close()
+
+    def test_open_does_not_crash_on_orphan_with_children(self, tmp_path: Path):
+        """Regression: opening a DB whose orphan scan has committed child
+        rows must NOT raise.  Cleanup no longer runs on open, so the
+        child tables' no-cascade foreign key is never tripped."""
+        db_path = tmp_path / "orphan_children.db"
+        d = ConcreteDB(db_path)
+        two_hours_ago = (
+            datetime.now(timezone.utc) - timedelta(hours=2)
+        ).isoformat()
+        cur = d.connection.execute(
+            "INSERT INTO scans (scan_type, started_at) VALUES (?, ?)",
+            ("test", two_hours_ago),
+        )
+        orphan_id = cur.lastrowid
+        d.connection.execute(
+            "INSERT INTO test_data (scan_id, value) VALUES (?, 'partial')",
+            (orphan_id,),
+        )
+        d.connection.commit()
+        d.close()
+
+        # Previously raised FOREIGN KEY constraint failed from on-open cleanup.
+        d2 = ConcreteDB(db_path)
+        assert d2.connection.execute(
+            "SELECT COUNT(*) FROM test_data WHERE scan_id = ?", (orphan_id,)
+        ).fetchone()[0] == 1  # untouched by the open
+        d2.close()
+
+    def test_removes_incomplete_scan_with_child_rows(self, db: ConcreteDB):
+        """A crashed scan can leave already-committed child rows behind
+        (begin_scan and the row-saving commit are separate transactions).
+        Cleanup must delete those children before the scan, or the scans
+        DELETE trips the no-cascade FK (foreign_keys=ON) with
+        'FOREIGN KEY constraint failed'.
+        """
+        two_hours_ago = (
+            datetime.now(timezone.utc) - timedelta(hours=2)
+        ).isoformat()
+        cur = db.connection.execute(
+            "INSERT INTO scans (scan_type, started_at) VALUES (?, ?)",
+            ("test", two_hours_ago),
+        )
+        orphan_id = cur.lastrowid
+        db.connection.execute(
+            "INSERT INTO test_data (scan_id, value) VALUES (?, ?)",
+            (orphan_id, "partial"),
+        )
+        db.connection.commit()
+
+        deleted = db.cleanup_incomplete_scans(max_age_hours=1)
+
+        assert deleted == 1
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM scans WHERE id = ?", (orphan_id,)
+        ).fetchone()[0] == 0
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM test_data WHERE scan_id = ?", (orphan_id,)
+        ).fetchone()[0] == 0
+
+    def test_child_cleanup_preserves_completed_scan_data(self, db: ConcreteDB):
+        """Cleaning an orphan must not touch a completed scan's child rows."""
+        good_id = db.begin_scan("test")
+        db.connection.execute(
+            "INSERT INTO test_data (scan_id, value) VALUES (?, ?)",
+            (good_id, "keep"),
+        )
+        db.connection.commit()
+        db.finish_scan(good_id, host_count=1, changed_count=0)
+
+        two_hours_ago = (
+            datetime.now(timezone.utc) - timedelta(hours=2)
+        ).isoformat()
+        cur = db.connection.execute(
+            "INSERT INTO scans (scan_type, started_at) VALUES (?, ?)",
+            ("test", two_hours_ago),
+        )
+        orphan_id = cur.lastrowid
+        db.connection.execute(
+            "INSERT INTO test_data (scan_id, value) VALUES (?, ?)",
+            (orphan_id, "drop"),
+        )
+        db.connection.commit()
+
+        db.cleanup_incomplete_scans(max_age_hours=1)
+
+        assert db.connection.execute(
+            "SELECT value FROM test_data WHERE scan_id = ?", (good_id,)
+        ).fetchone()[0] == "keep"
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM test_data WHERE scan_id = ?", (orphan_id,)
+        ).fetchone()[0] == 0
+
+    def test_cleans_children_across_multiple_tables(self, tmp_path: Path):
+        """The child-table set is discovered from the schema, so an orphan
+        with rows in several referencing tables is fully cleaned."""
+
+        class TwoChildDB(ConcreteDB):
+            def _create_tables(self, conn: sqlite3.Connection) -> None:
+                super()._create_tables(conn)
+                conn.execute(
+                    "CREATE TABLE extra_data ("
+                    "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    "  scan_id INTEGER NOT NULL REFERENCES scans(id),"
+                    "  note TEXT NOT NULL"
+                    ")"
+                )
+
+        d = TwoChildDB(tmp_path / "multi.db")
+        try:
+            two_hours_ago = (
+                datetime.now(timezone.utc) - timedelta(hours=2)
+            ).isoformat()
+            cur = d.connection.execute(
+                "INSERT INTO scans (scan_type, started_at) VALUES (?, ?)",
+                ("test", two_hours_ago),
+            )
+            orphan_id = cur.lastrowid
+            d.connection.execute(
+                "INSERT INTO test_data (scan_id, value) VALUES (?, 'a')",
+                (orphan_id,),
+            )
+            d.connection.execute(
+                "INSERT INTO extra_data (scan_id, note) VALUES (?, 'b')",
+                (orphan_id,),
+            )
+            d.connection.commit()
+
+            assert d.cleanup_incomplete_scans(max_age_hours=1) == 1
+            assert d.connection.execute(
+                "SELECT COUNT(*) FROM test_data"
+            ).fetchone()[0] == 0
+            assert d.connection.execute(
+                "SELECT COUNT(*) FROM extra_data"
+            ).fetchone()[0] == 0
+        finally:
+            d.close()
 
 
 # -- scan_history ----------------------------------------------------------

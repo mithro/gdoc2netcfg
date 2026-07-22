@@ -2744,6 +2744,56 @@ def cmd_db_history(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_db_cleanup_incomplete_scans(args: argparse.Namespace) -> int:
+    """Delete crashed (never-finished) scans and their orphaned rows.
+
+    Manual admin housekeeping.  Cleanup is intentionally NOT run on open
+    (an orphaned in-progress scan must never crash a routine open, and
+    reads already ignore unfinished scans), so it is invoked explicitly
+    here.  Opens the databases read-write, so it needs write access —
+    root on production, where the databases are root-owned.
+    """
+    config = _load_config(args)
+
+    import sqlite3
+
+    from gdoc2netcfg.storage import open_databases
+
+    config_path = config.cache.config_db_path
+    discovery_path = config.cache.discovery_db_path
+
+    missing = [p for p in [config_path, discovery_path] if not p.exists()]
+    if missing:
+        for p in missing:
+            print(f"Database not found: {p}", file=sys.stderr)
+        return 1
+
+    try:
+        pair = open_databases(config.cache.directory)
+    except sqlite3.OperationalError as e:
+        print(
+            f"Cannot open databases for writing: {e}\n"
+            "This command modifies the databases — run it as an admin with "
+            "write access (root on production, where the DBs are root-owned).",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        total = 0
+        for label, db in [("Config", pair.config), ("Discovery", pair.discovery)]:
+            removed = db.cleanup_incomplete_scans(
+                max_age_hours=args.max_age_hours
+            )
+            total += removed
+            print(f"{label} DB: removed {removed} incomplete scan(s)")
+        print(f"\nTotal: {total} incomplete scan(s) removed.")
+    finally:
+        pair.close()
+
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -3029,6 +3079,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Maximum number of scans to show (default: 50)",
     )
 
+    db_cleanup_parser = db_subparsers.add_parser(
+        "cleanup-incomplete-scans",
+        help="Delete crashed (never-finished) scans and their orphaned "
+             "rows (admin; needs DB write access, i.e. root on production)",
+    )
+    db_cleanup_parser.add_argument(
+        "--max-age-hours", type=int, default=1,
+        help="Only remove unfinished scans older than this many hours, "
+             "so a scan currently in progress is spared (default: 1)",
+    )
+
     # password (device credential lookup)
     pwd_parser = subparsers.add_parser(
         "password", help="Look up device credentials",
@@ -3065,6 +3126,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_db_info(args)
         elif args.db_command == "history":
             return cmd_db_history(args)
+        elif args.db_command == "cleanup-incomplete-scans":
+            return cmd_db_cleanup_incomplete_scans(args)
         else:
             db_parser.print_help()
             return 0

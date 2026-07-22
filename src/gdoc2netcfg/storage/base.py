@@ -304,21 +304,63 @@ class BaseDatabase:
         now = datetime.now(timezone.utc)
         return (now - finished).total_seconds()
 
+    def _scan_child_tables(self) -> list[str]:
+        """Tables holding a foreign key that references ``scans``.
+
+        Discovered from the live schema (``PRAGMA foreign_key_list``) so
+        every current or future child table is covered automatically and
+        the set cannot drift from the DDL.
+        """
+        tables: list[str] = []
+        for (name,) in self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall():
+            if name == "scans":
+                continue
+            for fk in self._conn.execute(
+                f'PRAGMA foreign_key_list("{name}")'
+            ).fetchall():
+                if fk[2] == "scans":  # fk[2] = referenced table
+                    tables.append(name)
+                    break
+        return tables
+
     def cleanup_incomplete_scans(self, max_age_hours: int = 1) -> int:
         """Delete scans that were never finished (process crash).
 
         Only deletes scans older than *max_age_hours* to avoid removing
-        a scan that is currently in progress.  Returns the number of
-        rows deleted.
+        a scan that is currently in progress.  A crashed scan may already
+        have committed child rows (``begin_scan`` and the row-saving
+        commit run in separate transactions), so rows referencing the
+        orphaned scans are deleted first — otherwise the ``scans`` DELETE
+        trips the no-cascade foreign keys (foreign_keys=ON) with
+        ``FOREIGN KEY constraint failed``.
+
+        The deletes run in one explicit transaction (the connection is
+        autocommit, ``isolation_level=None``).  The ``scans`` DELETE is
+        issued unconditionally so a read-write open of an unwritable
+        database still fails fast on the write attempt.  Returns the
+        number of scan rows deleted.
         """
         cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
         cutoff_iso = cutoff.isoformat()
-        cur = self._conn.execute(
-            "DELETE FROM scans "
-            "WHERE finished_at IS NULL AND started_at < ?",
-            (cutoff_iso,),
-        )
-        self._conn.commit()
+        where = "finished_at IS NULL AND started_at < ?"
+        orphans = f"SELECT id FROM scans WHERE {where}"  # noqa: S608
+        self._conn.execute("BEGIN")
+        try:
+            for table in self._scan_child_tables():
+                self._conn.execute(
+                    f'DELETE FROM "{table}" WHERE scan_id IN ({orphans})',  # noqa: S608
+                    (cutoff_iso,),
+                )
+            cur = self._conn.execute(
+                f"DELETE FROM scans WHERE {where}",  # noqa: S608
+                (cutoff_iso,),
+            )
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
         return cur.rowcount
 
     # ------------------------------------------------------------------

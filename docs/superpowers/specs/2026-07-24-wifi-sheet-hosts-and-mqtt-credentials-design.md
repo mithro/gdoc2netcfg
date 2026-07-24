@@ -131,7 +131,10 @@ host.
   inventory, so the standard MAC/IP-uniqueness validators cover them; the
   "absent from inventory" premise is inverted.
 - `generators/gwifi_pucks_dns` — superseded by standard host-records from
-  the wifi sheet (`puck04.wifi.welland.mithis.com` etc.).
+  the wifi sheet (`puck04.wifi.welland.mithis.com` etc.). Note: both puck
+  generators live in `generators/gwifi_pucks.py` on the branch — that file
+  is *edited* (dns generator function deleted, identity generator reworked),
+  not removed wholesale.
 - `NetworkInventory.gwifi_pucks` and the `[sheets] gwifi_pucks` source.
 
 ### Added / changed
@@ -153,7 +156,9 @@ host.
   the same host** (single machine, multi-port endpoint — the existing
   `VirtualInterface` model); MACs from different hosts on one non-roam IP
   remain an ERROR. Additive relaxation: no currently-passing configuration
-  changes validity.
+  changes validity. (Implementation note: `inventory.ip_to_macs` holds
+  `(mac, dhcp_name)` tuples without a host backreference — the validator
+  needs a MAC→host map built during validation.)
 - **`PuckData`** (typed, frozen, `models/host.py`): `number: int`,
   `serial: str`. A pure derivation lifts it from `host.extra` (`#`,
   `Serial`) for WiFi-sheet hosts whose rows carry them; fail-loud on
@@ -238,7 +243,8 @@ Mirrors the Tasmota shape exactly; the `Host`-based KDF core is untouched.
       intended renames.
    4. Credentials: set secrets, `--dry-run` both consumers, register on the
       welland broker, verify logins.
-4. Existing tests must stay green throughout (1825 passing at baseline).
+4. No test regressions versus the merged base (1825 pass on `origin/main`
+   today; the count grows when the branch's own tests merge in at step 0).
 
 ## Out of scope
 

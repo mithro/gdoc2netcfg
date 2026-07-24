@@ -174,6 +174,35 @@ class TestDnsmasqGenerator:
         assert "10.1.10.2" in result["bravo.conf"]
         assert "10.1.10.1" not in result["bravo.conf"]
 
+    def test_dhcp_wisp_type_suppresses_dhcp_host_lines(self):
+        """Type=DHCP:wisp hosts get no dhcp-host lines (DHCP served by wisp)."""
+        inv = _inventory_with_host("puck06", "aa:bb:cc:dd:ee:ff", "10.1.10.1", dhcp_name="puck06")
+        inv.hosts[0].extra["Type"] = "DHCP:wisp"
+        result = generate_dnsmasq_internal(inv)
+        output = result["puck06.conf"]
+
+        assert "dhcp-host=" not in output
+        # host-records / DNS entries are unaffected
+        assert "host-record=" in output
+
+    def test_dhcp_wisp_type_strips_whitespace(self):
+        """Stray whitespace around the Type value still triggers suppression."""
+        inv = _inventory_with_host("puck07", "aa:bb:cc:dd:ee:ff", "10.1.10.2", dhcp_name="puck07")
+        inv.hosts[0].extra["Type"] = " DHCP:wisp "
+        result = generate_dnsmasq_internal(inv)
+        output = result["puck07.conf"]
+
+        assert "dhcp-host=" not in output
+
+    def test_other_type_value_keeps_dhcp_host_lines(self):
+        """A Type value other than the exact 'DHCP:wisp' string is unaffected."""
+        inv = _inventory_with_host("iot1", "aa:bb:cc:dd:ee:ff", "10.1.10.3", dhcp_name="iot1")
+        inv.hosts[0].extra["Type"] = "DHCP"
+        result = generate_dnsmasq_internal(inv)
+        output = result["iot1.conf"]
+
+        assert "dhcp-host=" in output
+
     def test_all_record_types_in_single_file(self):
         host = _host_with_iface("server", "aa:bb:cc:dd:ee:ff", "10.1.10.1", dhcp_name="server")
         host.sshfp_records = ["server IN SSHFP 1 2 abc123"]

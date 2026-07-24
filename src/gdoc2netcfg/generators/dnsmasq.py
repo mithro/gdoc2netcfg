@@ -48,6 +48,11 @@ def _generate_host_internal(host: Host, inventory: NetworkInventory) -> str:
 
 def _host_dhcp_config(host: Host, inventory: NetworkInventory) -> list[str]:
     """Generate dhcp-host entries for a single host."""
+    # DHCP for this host is served elsewhere (e.g. wisp on the pucks' VLAN,
+    # netboot design D7) — emit no bindings so ten64 never competes.
+    if host.extra.get("Type", "").strip() == "DHCP:wisp":
+        return []
+
     if not host.interfaces:
         return []
 

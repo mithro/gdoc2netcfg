@@ -66,3 +66,22 @@ class TestGenerateGwifiPucks:
         inventory = NetworkInventory(site=WELLAND, hosts=[wan_only])
         with pytest.raises(ValueError, match="puck99.wifi"):
             generate_gwifi_pucks(inventory)
+
+    def test_missing_wan_interface_raises_with_hostname(self):
+        lan_only = Host(
+            machine_name="puck98",
+            hostname="puck98.wifi",
+            sheet_type="WiFi",
+            interfaces=[
+                NetworkInterface(
+                    name="lan",
+                    mac=MACAddress.parse("aa:bb:cc:dd:ee:02"),
+                    ip_addresses=(IPv4Address("10.1.4.198"),),
+                ),
+            ],
+            puck_data=PuckData(number=98, serial="TESTSERIAL02"),
+        )
+
+        inventory = NetworkInventory(site=WELLAND, hosts=[lan_only])
+        with pytest.raises(ValueError, match="puck98.wifi"):
+            generate_gwifi_pucks(inventory)

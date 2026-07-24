@@ -20,8 +20,12 @@ See gwifi-openwrt docs/wisp-netboot-install-design.md (sections 5.3, D7).
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
 
 from gdoc2netcfg.models.host import NetworkInventory
+
+if TYPE_CHECKING:
+    from gdoc2netcfg.models.host import Host
 
 
 def generate_gwifi_pucks(inventory: NetworkInventory) -> str:
@@ -33,7 +37,7 @@ def generate_gwifi_pucks(inventory: NetworkInventory) -> str:
     missing interface raises ``ValueError`` naming the host.
     """
     pucks = sorted(
-        (h for h in inventory.hosts if h.puck_data),
+        (h for h in inventory.hosts if h.puck_data is not None),
         key=lambda h: h.puck_data.number,
     )
     doc = {
@@ -44,7 +48,7 @@ def generate_gwifi_pucks(inventory: NetworkInventory) -> str:
     return json.dumps(doc, indent=2) + "\n"
 
 
-def _puck_entry(host) -> dict:
+def _puck_entry(host: Host) -> dict[str, object]:
     """Build one pucks.json entry from a puck host's wan/lan interfaces."""
     by_name = host.interface_by_name
     wan = by_name.get("wan")
@@ -55,11 +59,17 @@ def _puck_entry(host) -> dict:
             f"{host.hostname}: puck host missing '{missing}' interface "
             "(pucks.json requires both wan and lan)"
         )
+    try:
+        wan_ipv4 = wan.ipv4
+    except ValueError as e:
+        raise ValueError(
+            f"{host.hostname}: puck host 'wan' interface has no IPv4 address"
+        ) from e
     return {
         "name": host.machine_name,
         "number": host.puck_data.number,
         "serial": host.puck_data.serial,
         "eth0": str(wan.mac).upper(),
         "eth1": str(lan.mac).upper(),
-        "ip": str(wan.ipv4),
+        "ip": str(wan_ipv4),
     }

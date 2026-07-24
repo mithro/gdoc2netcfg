@@ -20,22 +20,28 @@ if TYPE_CHECKING:
     from gdoc2netcfg.models.network import Site
 
 
+# Sheet types whose hostnames get a subdomain suffix. compute_dhcp_name has
+# a narrower map: Test-sheet hosts historically get NO dhcp suffix.
+_HOSTNAME_SUFFIXES = {"IoT": ".iot", "Test": ".test", "WiFi": ".wifi"}
+_DHCP_NAME_SUFFIXES = {"IoT": ".iot", "WiFi": ".wifi"}
+
+
 def compute_hostname(machine_name: str, sheet_type: str) -> str:
     """Compute the hostname from a machine name and sheet type.
 
-    IoT devices get a '.iot' suffix appended. Network devices use the
-    machine name directly (lowercased).
+    IoT and WiFi devices get a '.iot'/'.wifi' suffix appended, and Test
+    devices get '.test'. Network devices use the machine name directly
+    (lowercased).
 
     >>> compute_hostname('thermostat', 'IoT')
     'thermostat.iot'
+    >>> compute_hostname('puck04', 'WiFi')
+    'puck04.wifi'
     >>> compute_hostname('Desktop', 'Network')
     'desktop'
     """
     hostname = machine_name.lower().strip()
-    if sheet_type == "IoT":
-        hostname += ".iot"
-    elif sheet_type == "Test":
-        hostname += ".test"
+    hostname += _HOSTNAME_SUFFIXES.get(sheet_type, "")
     return hostname
 
 
@@ -43,7 +49,9 @@ def compute_dhcp_name(machine_name: str, interface: str, sheet_type: str) -> str
     """Compute the DHCP name from a machine name and interface.
 
     If an interface is specified, it's prepended with a dash separator.
-    IoT devices get a '.iot' suffix.
+    IoT and WiFi devices get a '.iot'/'.wifi' suffix. Unlike
+    compute_hostname, Test-sheet hosts get NO dhcp suffix — this
+    asymmetry is deliberate and preserved from the original behaviour.
 
     >>> compute_dhcp_name('desktop', 'eth0', 'Network')
     'eth0-desktop'
@@ -53,12 +61,15 @@ def compute_dhcp_name(machine_name: str, interface: str, sheet_type: str) -> str
     'thermostat.iot'
     >>> compute_dhcp_name('camera', 'eth0', 'IoT')
     'eth0-camera.iot'
+    >>> compute_dhcp_name('puck04', 'wan', 'WiFi')
+    'wan-puck04.wifi'
+    >>> compute_dhcp_name('box', '', 'Test')
+    'box'
     """
     dhcp_name = machine_name.lower().strip()
     if interface and interface.strip():
         dhcp_name = interface.lower().strip() + "-" + dhcp_name
-    if sheet_type == "IoT":
-        dhcp_name += ".iot"
+    dhcp_name += _DHCP_NAME_SUFFIXES.get(sheet_type, "")
     return dhcp_name
 
 

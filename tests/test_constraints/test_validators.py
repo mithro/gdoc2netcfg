@@ -287,6 +287,48 @@ class TestCrossRecordConstraints:
         assert result.has_errors
         assert result.errors[0].code == "ip_multiple_macs"
 
+    def test_multiple_macs_on_non_roaming_ip_same_mac_different_hosts_is_error(self):
+        """Regression: if two DIFFERENT hosts both list the SAME MAC on one
+        non-roaming IP (a sheet copy-paste error), the collision must still
+        be flagged. A naive last-writer-wins mac→hostname map would collapse
+        this to a single owner and wrongly skip the violation."""
+        hosts = [
+            _host("a", [_iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.10.1", dhcp_name="a")]),
+            _host("b", [_iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.10.1", dhcp_name="b")]),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.10.1": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "a"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "b"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        assert result.has_errors
+        assert result.errors[0].code == "ip_multiple_macs"
+
+    def test_multiple_macs_on_non_roaming_ip_unowned_mac_still_error(self):
+        """A MAC absent from any host (unowned) on a non-roaming IP keeps
+        the violation even when the other MAC on that IP IS owned by a
+        host — an unowned MAC never counts as 'same host'."""
+        hosts = [
+            _host("a", [_iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.10.1", dhcp_name="a")]),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.10.1": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "a"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:99"), "unknown"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        assert result.has_errors
+        assert result.errors[0].code == "ip_multiple_macs"
+
     def test_multiple_macs_on_roaming_ip_unchanged_different_hosts(self):
         """Roaming range still allows multiple MACs from different hosts,
         regardless of host mapping."""

@@ -248,7 +248,8 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
 
     Checks:
     - MAC address must not be assigned to multiple different IPs
-    - IP address uniqueness (multiple MACs on same IP only in roaming range)
+    - IP address uniqueness (multiple MACs on same IP only in the roaming
+      range, or when all MACs belong to one host)
     """
     result = ValidationResult()
 
@@ -277,11 +278,14 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
                 field="mac_address",
             ))
 
-    # mac → owning hostname (None if the MAC isn't found on any host)
-    mac_to_hostname: dict[str, str | None] = {}
+    # mac → set of hostnames that claim it. Normally a MAC belongs to exactly
+    # one host, but a sheet copy-paste error can list the same MAC on two
+    # different hosts — track the full set (not last-writer-wins) so that
+    # collision is visible to the check below.
+    mac_to_hostnames: dict[str, set[str]] = {}
     for host in inventory.hosts:
         for iface in host.interfaces:
-            mac_to_hostname[str(iface.mac)] = host.hostname
+            mac_to_hostnames.setdefault(str(iface.mac), set()).add(host.hostname)
 
     # Multiple MACs per IP: allowed in the roaming range or when all MACs
     # belong to one host (e.g. a multi-port endpoint like a puck's wan+lan
@@ -290,8 +294,15 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
         is_roaming = roam_prefix and ip_str.startswith(roam_prefix)
         if len(macs) <= 1 or is_roaming:
             continue
-        owning_hostnames = {mac_to_hostname.get(str(mac)) for mac, _ in macs}
-        if len(owning_hostnames) == 1 and None not in owning_hostnames:
+        owning_hostnames: set[str] = set()
+        has_unowned_mac = False
+        for mac, _ in macs:
+            hostnames = mac_to_hostnames.get(str(mac))
+            if not hostnames:
+                has_unowned_mac = True
+            else:
+                owning_hostnames.update(hostnames)
+        if not has_unowned_mac and len(owning_hostnames) == 1:
             continue
         mac_list = ", ".join(f"{mac} ({name})" for mac, name in macs)
         result.add(ConstraintViolation(

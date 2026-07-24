@@ -330,6 +330,25 @@ class TasmotaData:
     controls: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class PuckData:
+    """Typed gwifi puck identity lifted from the WiFi sheet's extra columns.
+
+    Populated by the puck_data derivation from the `#` (puck number) and
+    `Serial` extra columns present on WiFi-sheet rows for gwifi pucks (both
+    interface rows carry identical values via sheet formulas). OpenMesh
+    hosts on the same sheet carry neither column, so their `puck_data`
+    stays None.
+
+    Attributes:
+        number: Puck number parsed from the `#` column (1..99).
+        serial: Device serial number from the `Serial` column.
+    """
+
+    number: int
+    serial: str
+
+
 @dataclass
 class Host:
     """A logical host with one or more network interfaces.
@@ -365,6 +384,7 @@ class Host:
     nsdp_data: NSDPData | None = None
     switch_data: SwitchData | None = None
     tasmota_data: TasmotaData | None = None
+    puck_data: PuckData | None = None
 
     @property
     def first_ipv4(self) -> IPv4Address | None:

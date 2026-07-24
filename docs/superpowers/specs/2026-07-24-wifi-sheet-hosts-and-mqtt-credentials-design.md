@@ -13,6 +13,13 @@ Tasmota/sensors2mqtt credential machinery unchanged.
 
 ## Background / current state
 
+- **Baseline pin**: all existing gwifi puck code lives on the pushed but
+  unmerged branch `gwifi-pucks-generator` (5 commits, `58e8e9a..3096eec`) —
+  it is NOT on `origin/main`. Step zero of the plan is merging that branch
+  into this feature branch (`wifi-sheet-hosts`) so the refactor operates on
+  real code. The `pucks.json` byte-compare target is that branch's generator
+  output against the current sheet (equivalently, the file currently
+  deployed to wisp).
 - Pucks exist only as `PuckRecord`s (bespoke parser over the
   `Google WiFi Pucks` flash tab) in `inventory.gwifi_pucks`, consumed by two
   special generators (`gwifi_pucks` → `pucks.json` for wisp's netboot;
@@ -106,7 +113,9 @@ block: `iot.welland - IoT Devices` R24–R29 C8 (Physical Location, pulling
 
 The migration is driven by a script using the service-account credentials
 (`~/.config/gale-fleet/sheets-sa.json`) so it is reviewable and re-runnable,
-not hand-edited.
+not hand-edited. The formula-scan seed lives outside the repo at
+`/home/tim/local/gwifi/tmp/scan_formulas.py`; the plan copies it into this
+repo (e.g. `scripts/`) as the basis of the migration + verification tool.
 
 **Optional ledger row**: a Machine-less allocation row documenting wisp's
 `10.X.4.2` (parallel to IoT's section rows). Documentation only; creates no
@@ -130,10 +139,21 @@ host.
 - **`[sheets] wifi` source** (published-CSV URL of the new tab), fetched and
   cached like `network`/`iot`, parsed by the standard `parse_csv` with
   `sheet_name="WiFi"`. Zero parser changes.
-- **Hostname suffix**: generalize the hardcoded IoT special-case in
-  `derivations/dns_names.py` (`compute_hostname` / `compute_dhcp_name`) into
-  a sheet-type→suffix mapping: `{"IoT": ".iot", "WiFi": ".wifi"}`.
-  `host_builder`'s sheet-type normalization gains `"wifi" → "WiFi"`.
+- **Hostname suffix**: generalize the hardcoded sheet-type special-cases in
+  `derivations/dns_names.py` into suffix mappings that preserve today's
+  exact behaviour and add WiFi: `compute_hostname` maps
+  `{"IoT": ".iot", "Test": ".test", "WiFi": ".wifi"}`; `compute_dhcp_name`
+  maps `{"IoT": ".iot", "WiFi": ".wifi"}` (its existing IoT-only asymmetry —
+  no `.test` — is preserved, not "fixed"). `host_builder`'s sheet-type
+  normalization gains `"wifi" → "WiFi"`.
+- **Constraint amendment** (`constraints/validators.py`): `ip_multiple_macs`
+  currently ERRORs on any IP with >1 MAC outside the roam range
+  (`10.X.20.0/24`) — every 2-MAC puck endpoint on `10.X.4.x` would fail.
+  Relax it: multiple MACs on one IP are allowed when **all MACs belong to
+  the same host** (single machine, multi-port endpoint — the existing
+  `VirtualInterface` model); MACs from different hosts on one non-roam IP
+  remain an ERROR. Additive relaxation: no currently-passing configuration
+  changes validity.
 - **`PuckData`** (typed, frozen, `models/host.py`): `number: int`,
   `serial: str`. A pure derivation lifts it from `host.extra` (`#`,
   `Serial`) for WiFi-sheet hosts whose rows carry them; fail-loud on
@@ -145,7 +165,12 @@ host.
   `puck_data`, `eth0` = the `wan` interface MAC, `eth1` = the `lan`
   interface MAC, `ip` = the shared fixed IP. Output must remain
   **byte-identical** to today's file (wisp's gwifi-netboot contract);
-  fail loud if a puck host is missing either interface.
+  fail loud if a puck host is missing either interface. Two equivalences
+  this rests on, both enforced: the `PuckData` enrichment asserts
+  machine name == `puck{number:02d}` (the old parser synthesized the name
+  from `#`; the new path takes the sheet's Machine value), and MAC string
+  form must match the old uppercase-colon normalization (the `MACAddress`
+  model's canonical form — pinned by the golden test).
 - **DHCP suppression**: the internal dnsmasq generator skips `dhcp-host`
   bindings for hosts whose `Type` extra equals `DHCP:wisp` (wisp is the
   DHCP authority for the pucks' VLAN — netboot design D7). The value is
@@ -162,6 +187,10 @@ host.
   of DNS. No transition aliases.
 - Pucks gain bare-hostname DNS variants (`puck04.welland.mithis.com`)
   alongside the existing `.wifi` names, per standard derivations.
+- Monarto also gains the `.wifi` OpenMesh hosts: their rows keep the
+  current blank `Site` (= all sites) and X-placeholder IPs, so monarto's
+  generated DNS renames the same way welland's does — expected in the
+  monarto diff review, not a surprise.
 
 ## Part 3 — MQTT credentials (two consumers)
 
@@ -195,6 +224,8 @@ Mirrors the Tasmota shape exactly; the `Host`-based KDF core is untouched.
 2. **Sheet migration verification** as in Part 1 step 4.
 3. **Staged rollout** (order matters — prod reads the old rows until
    deployed):
+   0. Merge `gwifi-pucks-generator` into `wifi-sheet-hosts` (baseline pin,
+      see Background); tests green on the merged base.
    1. Land the sheet migration (new tab populated; old rows still present;
       both welland and monarto prod unaffected — they don't read the new tab
       yet).

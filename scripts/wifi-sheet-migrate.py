@@ -463,6 +463,38 @@ def rewrite_ref_formulas(new_tab_openmesh_start_row: int) -> dict[int, str]:
     }
 
 
+def validate_new_tab_openmesh_positions(
+    new_tab_values: list[list[str]], openmesh_start_row: int
+) -> list[str]:
+    """Return violation descriptions (empty == OK) confirming the NEW tab's
+    Machine column holds ``OPENMESH_MACHINES_IN_ORDER`` at the block
+    first-rows computed from ``openmesh_start_row`` -- exactly the rows
+    ``rewrite_ref_formulas`` points the rewritten iot.welland formulas at.
+
+    ``new_tab_values`` is the FULL, freshly-fetched new tab (element 0 ==
+    its row 1, the header, so row numbers are absolute/1-based). Guards
+    against rewriting formulas to point at rows that don't actually hold
+    what the snapshot assumed (e.g. populate wrote something unexpected, or
+    the new tab was hand-edited between populate and rewrite-refs).
+    """
+    if not new_tab_values:
+        raise ValueError(f"{NEW_TAB_TITLE}: tab is empty (no header row)")
+    machine_col = header_index(new_tab_values[0], "Machine", sheet_label=NEW_TAB_TITLE)
+    first_rows = openmesh_block_first_rows(
+        openmesh_start_row, OPENMESH_BLOCK_SIZE, len(OPENMESH_MACHINES_IN_ORDER)
+    )
+    violations: list[str] = []
+    for machine, row_num in zip(OPENMESH_MACHINES_IN_ORDER, first_rows):
+        row = new_tab_values[row_num - 1] if row_num - 1 < len(new_tab_values) else []
+        actual = _cell(row, machine_col)
+        if actual != machine:
+            violations.append(
+                f"{NEW_TAB_TITLE} row {row_num}: expected Machine={machine!r}, "
+                f"found {actual!r}"
+            )
+    return violations
+
+
 def find_row_index(rows: list[list[str]], col: int, value: str) -> int:
     """1-based row number of the first row whose column `col` (0-based) equals `value`."""
     for i, row in enumerate(rows, start=1):
@@ -711,6 +743,23 @@ def cmd_rewrite_refs(client: SheetsClient, *, snapshot_path: Path, dry_run: bool
         return 1
 
     formulas = rewrite_ref_formulas(snapshot["new_tab_openmesh_start_row"])
+
+    # Confirm the NEW tab actually has the OpenMesh machines at the rows the
+    # rewritten formulas will point at -- catches populate having written
+    # something unexpected, or the new tab being hand-edited since.
+    new_tab_values = client.get_values(NEW_TAB_TITLE)
+    position_violations = validate_new_tab_openmesh_positions(
+        new_tab_values, snapshot["new_tab_openmesh_start_row"]
+    )
+    if position_violations:
+        print(
+            f"REFUSING to rewrite-refs: {NEW_TAB_TITLE!r} doesn't have the expected "
+            "OpenMesh machines at the target rows:",
+            file=sys.stderr,
+        )
+        for v in position_violations:
+            print(f"  {v}", file=sys.stderr)
+        return 1
 
     current = client.get_values(IOT_TAB_TITLE, "A1:Z35")
     print("Would rewrite iot.welland formulas:")

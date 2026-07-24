@@ -512,6 +512,47 @@ class TestRewriteRefFormulas:
         assert formulas[24] == "='wifi.welland - WiFi Infrastructure'!H4"
 
 
+class TestValidateNewTabOpenmeshPositions:
+    """rewrite-refs' guard that the NEW tab actually has what it's about to
+    point iot.welland's formulas at."""
+
+    FULL_HARDWARE_MAP = {m: "OM2P" for m in wsm.OPENMESH_MACHINES_IN_ORDER}
+
+    def _new_tab_values(self):
+        rows, openmesh_start_row = wsm.compute_new_tab_rows(
+            FLASH_VALUES, FULL_IP_ALLOC_VALUES, self.FULL_HARDWARE_MAP
+        )
+        return [list(wsm.NEW_TAB_HEADER)] + rows, openmesh_start_row
+
+    def test_clean_new_tab_has_no_violations(self):
+        new_tab_values, openmesh_start_row = self._new_tab_values()
+        assert (
+            wsm.validate_new_tab_openmesh_positions(new_tab_values, openmesh_start_row) == []
+        )
+
+    def test_wrong_machine_at_position_detected(self):
+        new_tab_values, openmesh_start_row = self._new_tab_values()
+        idx = openmesh_start_row - 1  # 0-based index of the first OpenMesh row
+        new_tab_values[idx] = list(new_tab_values[idx])
+        new_tab_values[idx][1] = "openmesh-wrong"  # was openmesh-ab-30
+        violations = wsm.validate_new_tab_openmesh_positions(new_tab_values, openmesh_start_row)
+        assert len(violations) == 1
+        assert "openmesh-ab-30" in violations[0]
+        assert "openmesh-wrong" in violations[0]
+
+    def test_missing_rows_detected(self):
+        new_tab_values, openmesh_start_row = self._new_tab_values()
+        # Slice to just BEFORE the first OpenMesh row (index openmesh_start_row
+        # - 1) so every expected block-first-row is now out of bounds.
+        truncated = new_tab_values[: openmesh_start_row - 1]
+        violations = wsm.validate_new_tab_openmesh_positions(truncated, openmesh_start_row)
+        assert len(violations) == len(wsm.OPENMESH_MACHINES_IN_ORDER)
+
+    def test_empty_new_tab_fails_loud(self):
+        with pytest.raises(ValueError, match="empty"):
+            wsm.validate_new_tab_openmesh_positions([], openmesh_start_row=2)
+
+
 # ---------------------------------------------------------------------------
 # find_row_index
 # ---------------------------------------------------------------------------

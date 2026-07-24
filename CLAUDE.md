@@ -143,9 +143,9 @@ Two one-off scripts support the live-sheet migration onto this `wifi` tab (see e
 script's module docstring for full phase/flag details — this is sheet surgery, not
 something run as part of the normal pipeline):
 
-- `scripts/wifi-sheet-migrate.py` — phased (`create`/`populate`/`verify`/
-  `delete-old-rows`) migration of gwifi puck + OpenMesh AP rows out of the old
-  `Google WiFi Pucks`/`Welland - IP Allocation` tabs into `wifi.welland`.
+- `scripts/wifi-sheet-migrate.py` — phased (`create`/`populate`/`rewrite-refs`/
+  `delete-old-rows`/`verify`) migration of gwifi puck + OpenMesh AP rows out of
+  the old `Google WiFi Pucks`/`Welland - IP Allocation` tabs into `wifi.welland`.
 - `scripts/wifi-sheet-scan.py` — read-only cross-tab formula and `#REF!` scanner
   used by the `verify` phase above to confirm nothing broke before/after the move.
 

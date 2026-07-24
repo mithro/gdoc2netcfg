@@ -28,7 +28,10 @@ vlan_allocations = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5
 # gwifi_pucks generator below.
 # TODO: fill after the wifi.welland tab is created (rollout step 1) — the
 # URL prefix below is the same published-CSV spreadsheet as the other
-# tabs, only the gid differs.
+# tabs, only the gid differs. Left empty (rather than commented out) so
+# `[sheets]` still lists it and the shape is visible; `gdoc2netcfg fetch`
+# will print a per-sheet "wifi: FAILED (...)" warning every run until this
+# is filled in — expected until rollout step 1, not a bug.
 wifi = ""  # e.g. "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=<TBD>&single=true&output=csv"
 # Sites tab: drives all_sites (valid "Site" values) and is cross-checked against [site]/[ipv6].
 sites = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=582797138&single=true&output=csv"

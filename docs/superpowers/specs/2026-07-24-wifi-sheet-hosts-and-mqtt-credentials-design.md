@@ -83,10 +83,13 @@ carrying the puck's fixed IP `10.X.4.(100+#)` so the existing same-IP
 interface grouping models one endpoint with two MACs:
 
 - Values are **cross-tab formulas** referencing `Google WiFi Pucks` (lookup
-  by `#`): Machine (from `Name` = `puckNN`), MAC Address (from `wan`/`lan`
-  columns), Serial, Physical Location (from `Location`), Upstream,
-  Controlled By. Single source of truth stays in the flash tab; the WiFi tab
-  cannot drift from it.
+  by `#`): MAC Address (from `wan`/`lan` columns), Serial, Physical Location
+  (from `Location`), Upstream, Controlled By. Single source of truth stays in
+  the flash tab; the WiFi tab cannot drift from it. Machine/Name are instead
+  derived in-tab as `="puck"&TEXT(#,"00")` — the flash tab's `Name` column is
+  unreliably filled (blank for several current OpenWRT rows), so it is not a
+  usable machine-name source; this stays consistent with the `PuckData`
+  identity rule (`machine_name == f"puck{number:02d}"`).
 - `IP` = `="10.X.4." & (100 + <#ref>)` (placeholder-X convention; the
   parser's site-octet resolution handles it).
 - `Type` = `DHCP:wisp` (see Part 2 — suppresses ten64 dhcp-host bindings).

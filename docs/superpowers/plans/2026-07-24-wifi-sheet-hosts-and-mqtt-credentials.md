@@ -213,8 +213,21 @@ def build_logins(secret: str, hosts: list[Host]) -> dict[str, str]:
 
 Order per spec Part 4; prod reads old rows until step 3.
 
-1. `scripts/wifi-sheet-migrate.py create` + `populate`; publish tab to CSV; put its URL in both sites' `gdoc2netcfg.toml` (`wifi` source) — prod still ignores it (old code).
+1. `scripts/wifi-sheet-migrate.py create` + `populate --hardware-map hardware-map.json --snapshot snapshot.json` (both flags required on `populate`; `--snapshot` is also required — pointed at the same file — on every later phase: `rewrite-refs --snapshot snapshot.json`, `delete-old-rows --snapshot snapshot.json`, `verify --snapshot snapshot.json`). `hardware-map.json` maps every `openmesh-*` machine to its family (`"OM2P"` or `"OM2P-LC"`); populate fails loud on any machine missing from it. The fleet is 2x OM2P + 4x OM2P-LC — the operator must fill in which unit is which before running populate:
+
+   ```json
+   {
+     "openmesh-ab-30": "OM2P|OM2P-LC",
+     "openmesh-ab-38": "OM2P|OM2P-LC",
+     "openmesh-94-98": "OM2P|OM2P-LC",
+     "openmesh-95-80": "OM2P|OM2P-LC",
+     "openmesh-95-88": "OM2P|OM2P-LC",
+     "openmesh-96-00": "OM2P|OM2P-LC"
+   }
+   ```
+
+   Publish tab to CSV; put its URL in both sites' `gdoc2netcfg.toml` (`wifi` source) — prod still ignores it (old code).
 2. Merge PR; deploy to ten64 welland (`sudo -E git pull`); `fetch`; `generate --force`; **diff review** of `internal/generated/`, `external/generated/`, and `pucks.json` (expect: puck host-records identical, OpenMesh `.wifi` renames, no puck dhcp-host lines, `pucks.json` byte-identical); `make deploy-*`; same for monarto (expect only OpenMesh `.wifi` renames).
-3. `rewrite-refs` → `delete-old-rows` → `verify`; re-`fetch` both sites; re-`generate`; confirm no diff beyond intended.
+3. `rewrite-refs --snapshot snapshot.json` → `delete-old-rows --snapshot snapshot.json` → `verify --snapshot snapshot.json`; re-`fetch` both sites; re-`generate`; confirm no diff beyond intended.
 4. Set `[gwifi]`/`[wisp] mqtt_secret` on welland ten64; `gwifi register-broker --dry-run` then real; `wisp register-broker`; verify logins connect.
 5. Deploy `pucks.json` to wisp; confirm gwifi-netboot still resolves identities (byte-identical file ⇒ no-op).

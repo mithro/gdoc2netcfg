@@ -39,6 +39,7 @@ from google.oauth2 import service_account
 DEFAULT_SPREADSHEET_ID = "1fFm2irzmnLb7RQNmAi4DmAm2_c61wrd5A2j3ZzdqIWE"
 SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets"
 DEFAULT_SA_PATH = Path.home() / ".config" / "gale-fleet" / "sheets-sa.json"
+REQUEST_TIMEOUT = 60  # seconds; every network call below is a single small REST request
 
 # A formula references another tab if it contains a quoted-or-bare sheet
 # name immediately followed by '!' (e.g. "'IoT'!F1" or "Sheet1!A1").
@@ -61,6 +62,7 @@ def list_tabs(token: str, spreadsheet_id: str) -> list[dict]:
         f"{SHEETS_API}/{spreadsheet_id}",
         headers={"Authorization": f"Bearer {token}"},
         params={"fields": "sheets.properties"},
+        timeout=REQUEST_TIMEOUT,
     )
     resp.raise_for_status()
     return [s["properties"] for s in resp.json().get("sheets", [])]
@@ -76,6 +78,7 @@ def fetch_values(
         url,
         headers={"Authorization": f"Bearer {token}"},
         params={"valueRenderOption": render},
+        timeout=REQUEST_TIMEOUT,
     )
     resp.raise_for_status()
     return resp.json().get("values", [])

@@ -80,6 +80,111 @@ IP_ALLOC_VALUES = [
 
 HARDWARE_MAP = {"openmesh-ab-30": "OM2P-LC"}
 
+# All 6 OpenMesh blocks, complete and in OPENMESH_MACHINES_IN_ORDER order
+# (live scan, 2026-07-24, rows 337-378 of the real sheet) -- used to test
+# the "clean, no drift" case of the block-shape validator. Header is at
+# index 0 (local row 1); the first OpenMesh row (openmesh-ab-30 lan) is at
+# index 1 (local row 2).
+FULL_IP_ALLOC_VALUES = [
+    IP_ALLOC_HEADER,
+    ["", "openmesh-ab-30", "lan",
+     "https://ct4.cloudtrax.com/monitor/nodes?network_id=530264#1627518",
+     0, "Monarto - Power Meter Box", "", "", 5, "AC:86:74:0D:AB:30",
+     "10.X.5.40", "", "2404:e80:a137:X05::40"],
+    ["", "openmesh-ab-30", "poe", "", 1, "", "", "", 10,
+     "AC:86:74:0D:AB:31", "10.X.10.40", "", "2404:e80:a137:X10::40"],
+    ["", "openmesh-ab-30", "manage", "", 2, "", "", "", 10,
+     "AC:86:74:0D:AB:32", "10.X.11.40", "", "2404:e80:a137:X11::40"],
+    ["", "openmesh-ab-30", "wifi-roam", "", 3, "", "", "", 20,
+     "AC:86:74:0d:AB:33", "10.X.20.40", "", "2404:e80:a137:X20::40"],
+    ["", "openmesh-ab-30", "wifi-guest", "", 4, "", "", "", 99,
+     "AC:86:74:0d:AB:34", "10.X.99.40", "", "2404:e80:a137:X99::40"],
+    ["", "openmesh-ab-30", "wifi-iot", "", 5, "", "", "", 90,
+     "AC:86:74:0D:AB:35", "10.X.90.40", "", "2404:e80:a137:X90::40"],
+    ["", "openmesh-ab-30", "wifi-raw", "", 7, "", "", "", "Q",
+     "AC:86:74:0D:AB:37", "10.X.12.40", "", "2404:e80:a137:X12::40"],
+    ["", "openmesh-ab-38", "lan",
+     "https://ct4.cloudtrax.com/monitor/nodes?network_id=530264#1627517",
+     8, "Welland - Tim's Bedroom", "", "", 5, "AC:86:74:0D:AB:38",
+     "10.X.5.41", "", "2404:e80:a137:X05::41"],
+    ["", "openmesh-ab-38", "poe", "", 9, "", "", "", 10,
+     "AC:86:74:0D:AB:39", "10.X.10.41", "", "2404:e80:a137:X10::41"],
+    ["", "openmesh-ab-38", "manage", "", "A / 10", "", "", "", 10,
+     "AC:86:74:0D:AB:3A", "10.X.11.41", "", "2404:e80:a137:X11::41"],
+    ["", "openmesh-ab-38", "wifi-roam", "", "B / 11", "", "", "", 20,
+     "AC:86:74:0D:AB:3B", "10.X.20.41", "", "2404:e80:a137:X20::41"],
+    ["", "openmesh-ab-38", "wifi-guest", "", "C / 12", "", "", "", 99,
+     "AC:86:74:0D:AB:3C", "10.X.99.41", "", "2404:e80:a137:X99::41"],
+    ["", "openmesh-ab-38", "wifi-iot", "", "D / 13", "", "", "", 90,
+     "AC:86:74:0D:AB:3D", "10.X.90.41", "", "2404:e80:a137:X90::41"],
+    ["", "openmesh-ab-38", "wifi-raw", "", "F / 15", "", "", "", "Q",
+     "AC:86:74:0D:AB:3F", "10.X.12.41", "", "2404:e80:a137:X12::41"],
+    ["", "openmesh-94-98", "lan",
+     "https://ct4.cloudtrax.com/monitor/nodes?network_id=530264#1627552",
+     8, "Monarto - Purple Bedroom", "", "", "Q", "AC:86:74:07:94:98",
+     "10.X.5.42", "", "2404:e80:a137:X05::42"],
+    ["", "openmesh-94-98", "poe", "", 9, "", "", "", "Q",
+     "AC:86:74:07:94:99", "10.X.10.42", "", "2404:e80:a137:X10::42"],
+    ["", "openmesh-94-98", "manage", "", "A / 10", "", "", "", "Q",
+     "AC:86:74:07:94:9A", "10.X.11.42", "", "2404:e80:a137:X11::42"],
+    ["", "openmesh-94-98", "wifi-roam", "", "B / 11", "", "", "", 20,
+     "AC:86:74:07:94:9B", "10.X.20.42", "", "2404:e80:a137:X20::42"],
+    ["", "openmesh-94-98", "wifi-guest", "", "C / 12", "", "", "", 99,
+     "AC:86:74:07:94:9C", "10.X.99.42", "", "2404:e80:a137:X99::42"],
+    ["", "openmesh-94-98", "wifi-iot", "", "D / 13", "", "", "", 90,
+     "AC:86:74:07:94:9D", "10.X.90.42", "", "2404:e80:a137:X90::42"],
+    ["", "openmesh-94-98", "wifi-raw", "", "F / 15", "", "", "", "Q",
+     "AC:86:74:07:94:9F", "10.X.12.42", "", "2404:e80:a137:X12::42"],
+    ["", "openmesh-95-80", "lan",
+     "https://ct4.cloudtrax.com/monitor/nodes?network_id=530264#1627519",
+     0, "Monarto - Back Corner Room", "", "", 5, "AC:86:74:07:95:80",
+     "10.X.5.43", "", "2404:e80:a137:X05::43"],
+    ["", "openmesh-95-80", "poe", "", 1, "", "", "", 10,
+     "AC:86:74:07:95:81", "10.X.10.43", "", "2404:e80:a137:X10::43"],
+    ["", "openmesh-95-80", "manage", "", 2, "", "", "", 10,
+     "AC:86:74:07:95:82", "10.X.11.43", "", "2404:e80:a137:X11::43"],
+    ["", "openmesh-95-80", "wifi-roam", "", 3, "", "", "", 20,
+     "AC:86:74:07:95:83", "10.X.20.43", "", "2404:e80:a137:X20::43"],
+    ["", "openmesh-95-80", "wifi-guest", "", 4, "", "", "", 99,
+     "AC:86:74:07:95:84", "10.X.99.43", "", "2404:e80:a137:X99::43"],
+    ["", "openmesh-95-80", "wifi-iot", "", 5, "", "", "", 90,
+     "AC:86:74:07:95:85", "10.X.90.43", "", "2404:e80:a137:X90::43"],
+    ["", "openmesh-95-80", "wifi-raw", "", 7, "", "", "", "Q",
+     "AC:86:74:07:95:87", "10.X.12.43", "", "2404:e80:a137:X12::43"],
+    ["", "openmesh-95-88", "lan",
+     "https://ct4.cloudtrax.com/monitor/nodes?network_id=530264#1627520",
+     8, "Monarto - Back Door near Shed", "", "", 5, "AC:86:74:07:95:88",
+     "10.X.5.44", "", "2404:e80:a137:X05::44"],
+    ["", "openmesh-95-88", "poe", "", 9, "", "", "", 10,
+     "AC:86:74:07:95:89", "10.X.10.44", "", "2404:e80:a137:X10::44"],
+    ["", "openmesh-95-88", "manage", "", "A / 10", "", "", "", 10,
+     "AC:86:74:07:95:8A", "10.X.11.44", "", "2404:e80:a137:X11::44"],
+    ["", "openmesh-95-88", "wifi-roam", "", "B / 11", "", "", "", 20,
+     "AC:86:74:07:95:8B", "10.X.20.44", "", "2404:e80:a137:X20::44"],
+    ["", "openmesh-95-88", "wifi-guest", "", "C / 12", "", "", "", 99,
+     "AC:86:74:07:95:8C", "10.X.99.44", "", "2404:e80:a137:X99::44"],
+    ["", "openmesh-95-88", "wifi-iot", "", "D / 13", "", "", "", 90,
+     "AC:86:74:07:95:8D", "10.X.90.44", "", "2404:e80:a137:X90::44"],
+    ["", "openmesh-95-88", "wifi-raw", "", "F / 15", "", "", "", "Q",
+     "AC:86:74:07:95:8F", "10.X.12.44", "", "2404:e80:a137:X12::44"],
+    ["", "openmesh-96-00", "lan",
+     "https://ct4.cloudtrax.com/monitor/nodes?network_id=530264#1627521",
+     0, "Welland - Back Shed", "", "", 5, "AC:86:74:07:96:00",
+     "10.X.5.45", "", "2404:e80:a137:X05::45"],
+    ["", "openmesh-96-00", "poe", "", 1, "", "", "", 10,
+     "AC:86:74:07:96:01", "10.X.10.45", "", "2404:e80:a137:X10::45"],
+    ["", "openmesh-96-00", "manage", "", 2, "", "", "", 10,
+     "AC:86:74:07:96:02", "10.X.11.45", "", "2404:e80:a137:X11::45"],
+    ["", "openmesh-96-00", "wifi-roam", "", 3, "", "", "", 20,
+     "AC:86:74:07:96:03", "10.X.20.45", "", "2404:e80:a137:X20::45"],
+    ["", "openmesh-96-00", "wifi-guest", "", 4, "", "", "", 99,
+     "AC:86:74:07:96:04", "10.X.99.45", "", "2404:e80:a137:X99::45"],
+    ["", "openmesh-96-00", "wifi-iot", "", 5, "", "", "", 90,
+     "AC:86:74:07:96:05", "10.X.90.45", "", "2404:e80:a137:X90::45"],
+    ["", "openmesh-96-00", "wifi-raw", "", 7, "", "", "", "Q",
+     "AC:86:74:07:96:07", "10.X.12.45", "", "2404:e80:a137:X12::45"],
+]
+
 
 # ---------------------------------------------------------------------------
 # col_letter / header_index
@@ -239,6 +344,21 @@ class TestBuildOpenmeshRows:
         with pytest.raises(ValueError, match="empty"):
             wsm.build_openmesh_rows([], HARDWARE_MAP)
 
+    def test_formula_cell_fails_loud(self):
+        # If ip_alloc_values were fetched with render=FORMULA instead of
+        # UNFORMATTED_VALUE, a formula cell would be pasted as a live
+        # formula via USER_ENTERED and silently re-evaluate in the new tab.
+        # This is the backstop that catches it.
+        poisoned = [
+            IP_ALLOC_HEADER,
+            ["", "openmesh-ab-30", "lan", "", 0,
+             "='Some Other Tab'!A1",  # Location cell holding a live formula
+             "", "", 5, "AC:86:74:0D:AB:30", "10.X.5.40", "",
+             "2404:e80:a137:X05::40"],
+        ]
+        with pytest.raises(ValueError, match="live formula.*UNFORMATTED_VALUE"):
+            wsm.build_openmesh_rows(poisoned, HARDWARE_MAP)
+
 
 # ---------------------------------------------------------------------------
 # compute_new_tab_rows -- puck rows + openmesh rows combined
@@ -281,6 +401,93 @@ class TestOpenmeshDeleteRange:
 
     def test_single_block(self):
         assert wsm.openmesh_delete_range(10, 7, 1) == (10, 16)
+
+
+class TestValidateOpenmeshRange:
+    """delete-old-rows' stale-snapshot-position guard."""
+
+    def test_clean_range_has_no_violations(self):
+        machine_col = IP_ALLOC_HEADER.index("Machine")
+        violations = wsm.validate_openmesh_range(FULL_IP_ALLOC_VALUES, machine_col, 2, 43)
+        assert violations == []
+
+    def test_non_openmesh_row_inside_range_is_a_violation(self):
+        machine_col = IP_ALLOC_HEADER.index("Machine")
+        rows = [row[:] for row in FULL_IP_ALLOC_VALUES]
+        rows[5] = ["", "some-other-machine", "eth0"]  # was openmesh-ab-30 row
+        violations = wsm.validate_openmesh_range(rows, machine_col, 2, 43)
+        assert len(violations) == 1
+        assert "row 6" in violations[0]
+        assert "not an OpenMesh row" in violations[0]
+
+    def test_openmesh_row_outside_range_is_a_violation(self):
+        machine_col = IP_ALLOC_HEADER.index("Machine")
+        rows = [
+            IP_ALLOC_HEADER,
+            ["", "not-openmesh", "eth0"],  # row 2 -- outside the range below
+            ["", "openmesh-in-range", "lan"],  # row 3 -- inside [3, 3]
+            ["", "openmesh-leaked-out", "lan"],  # row 4 -- OUTSIDE [3, 3]
+        ]
+        violations = wsm.validate_openmesh_range(rows, machine_col, first_row=3, last_row=3)
+        assert len(violations) == 1
+        assert "row 4" in violations[0]
+        assert "OUTSIDE the delete range" in violations[0]
+
+    def test_row_shift_detected(self):
+        # Simulates the exact scenario the coordinator flagged: rows shifted
+        # (one row inserted before the block) so the snapshot's [first,last]
+        # no longer lines up with the real OpenMesh rows.
+        machine_col = IP_ALLOC_HEADER.index("Machine")
+        shifted = [FULL_IP_ALLOC_VALUES[0], ["", "new-inserted-machine", ""]] + (
+            FULL_IP_ALLOC_VALUES[1:]
+        )
+        # Snapshot still thinks OpenMesh starts at row 2 (the stale position).
+        violations = wsm.validate_openmesh_range(shifted, machine_col, 2, 43)
+        assert violations  # drift detected, not silently accepted
+
+
+class TestValidateOpenmeshBlockShape:
+    """populate/rewrite-refs' block order+contiguity+size guard."""
+
+    def test_clean_six_blocks_has_no_violations(self):
+        assert wsm.validate_openmesh_block_shape(FULL_IP_ALLOC_VALUES, first_row=2) == []
+
+    def test_wrong_machine_at_a_slot_is_detected(self):
+        rows = [row[:] for row in FULL_IP_ALLOC_VALUES]
+        rows[1][1] = "openmesh-wrong-machine"  # was openmesh-ab-30's first row
+        violations = wsm.validate_openmesh_block_shape(rows, first_row=2)
+        assert any("row 2" in v and "openmesh-ab-30" in v for v in violations)
+
+    def test_out_of_order_blocks_detected(self):
+        # Swap the first two blocks' machine names -- contiguity/size intact,
+        # but the ORDER OPENMESH_MACHINES_IN_ORDER assumes is now wrong.
+        rows = [row[:] for row in FULL_IP_ALLOC_VALUES]
+        for i in range(1, 8):
+            rows[i][1], rows[i + 7][1] = rows[i + 7][1], rows[i][1]
+        violations = wsm.validate_openmesh_block_shape(rows, first_row=2)
+        assert len(violations) >= 14  # both swapped blocks' 7 rows each mismatch
+
+    def test_short_block_detected(self):
+        # Delete one row from the first block -- everything after shifts up
+        # by one, breaking the assumed 7-row block size/contiguity.
+        rows = [row[:] for row in FULL_IP_ALLOC_VALUES]
+        del rows[2]  # remove openmesh-ab-30's 'poe' row
+        violations = wsm.validate_openmesh_block_shape(rows, first_row=2)
+        assert violations
+
+    def test_extra_openmesh_row_outside_span_detected(self):
+        rows = [row[:] for row in FULL_IP_ALLOC_VALUES]
+        rows.append(["", "openmesh-extra-unexpected", "lan"])
+        violations = wsm.validate_openmesh_block_shape(rows, first_row=2)
+        assert any("openmesh-extra-unexpected" in v for v in violations)
+
+    def test_missing_header_fails_loud(self):
+        with pytest.raises(ValueError, match="Welland - IP Allocation.*Machine"):
+            wsm.validate_openmesh_block_shape([["Site"]], first_row=2)
+
+    def test_empty_tab_fails_loud(self):
+        with pytest.raises(ValueError, match="empty"):
+            wsm.validate_openmesh_block_shape([], first_row=2)
 
 
 class TestRewriteRefFormulas:

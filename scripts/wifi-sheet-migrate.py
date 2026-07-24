@@ -21,15 +21,30 @@ migration, NOT something this task/PR performs):
   2. ``populate``         — write puck + OpenMesh rows below the header, and
                             save a snapshot (``--snapshot``) of iot.welland's
                             evaluated values + the old sheet's OpenMesh row
-                            positions, needed by phases 3-4.
+                            positions, needed by phases 3-4. Refuses if a
+                            fresh scan shows the OpenMesh block no longer
+                            matches ``OPENMESH_MACHINES_IN_ORDER``'s assumed
+                            order/contiguity/7-row shape (see
+                            ``validate_openmesh_block_shape``). OpenMesh rows
+                            are fetched with ``UNFORMATTED_VALUE`` (not
+                            ``FORMULA``) and checked cell-by-cell for stray
+                            ``=`` formulas before being copied by value.
   3. ``rewrite-refs``     — repoint iot.welland's 6 formulas (rows 24-29,
                             column H) at the new tab's Physical Location
                             cells, using the snapshot from `populate`.
+                            Re-runs the same block-shape check against a
+                            FRESH fetch first (rows may have shifted since
+                            `populate` ran).
   4. ``delete-old-rows``  — delete the OpenMesh blocks from
                             ``Welland - IP Allocation``. REFUSES to run
                             unless a fresh formula scan shows zero remaining
                             references into that range (i.e. `rewrite-refs`
-                            has actually landed).
+                            has actually landed) AND a fresh values fetch
+                            confirms the snapshot's row range still holds
+                            exactly the OpenMesh rows and nothing else (see
+                            ``validate_openmesh_range``) — protects against
+                            rows shifting during the rollout hold between
+                            `populate` and this phase.
   5. ``verify``           — full formula scan (zero #REF!, zero refs into
                             the deleted range) + confirms iot.welland's
                             evaluated values are unchanged vs the snapshot +
@@ -68,6 +83,7 @@ from gdoc2netcfg.sources.parser import find_header_row, parse_csv
 DEFAULT_SPREADSHEET_ID = "1fFm2irzmnLb7RQNmAi4DmAm2_c61wrd5A2j3ZzdqIWE"
 SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets"
 DEFAULT_SA_PATH = Path.home() / ".config" / "gale-fleet" / "sheets-sa.json"
+REQUEST_TIMEOUT = 60  # seconds; every network call below is a single small REST request
 
 NEW_TAB_TITLE = "wifi.welland - WiFi Infrastructure"
 NEW_TAB_HEADER = [
@@ -261,6 +277,12 @@ def build_openmesh_rows(
     order). ``Site`` is preserved as-is (today blank == all sites).
     ``Hardware`` is looked up per-machine in ``hardware_map`` -- fails loud
     for any openmesh machine missing from the map.
+
+    ``ip_alloc_values`` MUST be fetched with ``valueRenderOption=UNFORMATTED_VALUE``
+    (not ``FORMULA``): a formula cell copied verbatim would be pasted as a
+    live formula via ``USER_ENTERED`` and silently re-evaluate in the new
+    tab. As a backstop, every copied cell is checked and this fails loud if
+    any of them still starts with ``=``.
     """
     if not ip_alloc_values:
         raise ValueError(f"{IP_ALLOC_TAB_TITLE}: tab is empty (no header row)")
@@ -271,11 +293,20 @@ def build_openmesh_rows(
     }
 
     def get(row: list, name: str) -> str:
-        return _cell(row, idx[name])
+        value = _cell(row, idx[name])
+        if value.startswith("="):
+            raise ValueError(
+                f"{IP_ALLOC_TAB_TITLE}: machine {machine!r} column {name!r} is a "
+                f"live formula ({value!r}) -- ip_alloc_values must be fetched "
+                "with valueRenderOption=UNFORMATTED_VALUE, not FORMULA, before "
+                "copying (a formula pasted via USER_ENTERED would silently "
+                "re-evaluate in the new tab)"
+            )
+        return value
 
     rows: list[list[str]] = []
     for data_row in ip_alloc_values[1:]:
-        machine = get(data_row, "Machine")
+        machine = _cell(data_row, idx["Machine"])
         if not machine.startswith(OPENMESH_MACHINE_PREFIX):
             continue
         if machine not in hardware_map:
@@ -330,6 +361,88 @@ def openmesh_block_first_rows(start_row: int, block_size: int, num_blocks: int) 
 def openmesh_delete_range(first_row: int, block_size: int, num_blocks: int) -> tuple[int, int]:
     """Inclusive 1-based (first_row, last_row) spanning every OpenMesh block."""
     return (first_row, first_row + block_size * num_blocks - 1)
+
+
+def validate_openmesh_range(
+    rows: list[list[str]], machine_col: int, first_row: int, last_row: int
+) -> list[str]:
+    """Return violation descriptions (empty == OK) for the "the delete range IS
+    the OpenMesh block, and nothing else" invariant.
+
+    ``rows`` is the FULL, freshly-fetched 'Welland - IP Allocation' values
+    (element 0 == sheet row 1 -- i.e. absolute, 1-based row numbering).
+    Checks, against those fresh values:
+
+    (a) every row in ``[first_row, last_row]`` (inclusive) has a Machine
+        value starting with ``OPENMESH_MACHINE_PREFIX``, and
+    (b) no row OUTSIDE that range does either.
+
+    This guards against rows shifting in the live sheet during the rollout
+    hold between `populate` (which computed the range from a snapshot taken
+    earlier) and `delete-old-rows` actually running -- a snapshot-derived
+    range is only safe to delete if it still matches reality.
+    """
+    violations: list[str] = []
+    for i, row in enumerate(rows, start=1):
+        machine = _cell(row, machine_col)
+        is_openmesh = machine.startswith(OPENMESH_MACHINE_PREFIX)
+        in_range = first_row <= i <= last_row
+        if in_range and not is_openmesh:
+            violations.append(
+                f"row {i} is inside the delete range [{first_row}, {last_row}] "
+                f"but Machine={machine!r} is not an OpenMesh row"
+            )
+        elif is_openmesh and not in_range:
+            violations.append(
+                f"row {i} (Machine={machine!r}) is an OpenMesh row OUTSIDE the "
+                f"delete range [{first_row}, {last_row}]"
+            )
+    return violations
+
+
+def validate_openmesh_block_shape(ip_alloc_values: list[list[str]], first_row: int) -> list[str]:
+    """Return violation descriptions (empty == OK) for the block-shape contract
+    that `populate` and `rewrite-refs` both silently assume:
+    ``OPENMESH_MACHINES_IN_ORDER`` appears as exactly-``OPENMESH_BLOCK_SIZE``-row
+    contiguous, in-order blocks starting at ``first_row``.
+
+    ``ip_alloc_values`` is the FULL, freshly-fetched 'Welland - IP Allocation'
+    values (element 0 == sheet row 1, so row numbers are absolute/1-based).
+    The header row is located with
+    ``gdoc2netcfg.sources.parser.find_header_row`` rather than assumed at
+    index 0 -- the live sheet has a metadata row (IPv6 prefix) above the
+    real header. ``first_row`` is the absolute row of the first block's
+    first row (e.g. the snapshot's ``ip_alloc_openmesh_first_row``).
+
+    Checks per-slot machine identity (drift: a row holds the wrong machine,
+    a block is short/long, or blocks are out of order) AND -- via
+    ``validate_openmesh_range`` -- that no OpenMesh row exists outside the
+    expected span.
+    """
+    if not ip_alloc_values:
+        raise ValueError(f"{IP_ALLOC_TAB_TITLE}: tab is empty (no header row)")
+    header_idx = find_header_row(ip_alloc_values)
+    machine_col = header_index(
+        ip_alloc_values[header_idx], "Machine", sheet_label=IP_ALLOC_TAB_TITLE
+    )
+    expected_first_rows = openmesh_block_first_rows(
+        first_row, OPENMESH_BLOCK_SIZE, len(OPENMESH_MACHINES_IN_ORDER)
+    )
+    last_row = expected_first_rows[-1] + OPENMESH_BLOCK_SIZE - 1
+
+    violations: list[str] = []
+    for machine, block_start in zip(OPENMESH_MACHINES_IN_ORDER, expected_first_rows):
+        for offset in range(OPENMESH_BLOCK_SIZE):
+            row_num = block_start + offset
+            row = ip_alloc_values[row_num - 1] if row_num - 1 < len(ip_alloc_values) else []
+            actual = _cell(row, machine_col)
+            if actual != machine:
+                violations.append(
+                    f"row {row_num}: expected Machine={machine!r} "
+                    f"(block position {offset + 1}/{OPENMESH_BLOCK_SIZE}), found {actual!r}"
+                )
+    violations.extend(validate_openmesh_range(ip_alloc_values, machine_col, first_row, last_row))
+    return violations
 
 
 def rewrite_ref_formulas(new_tab_openmesh_start_row: int) -> dict[int, str]:
@@ -435,7 +548,10 @@ class SheetsClient:
 
     def list_tabs(self) -> list[dict]:
         resp = requests.get(
-            self._base, headers=self._headers, params={"fields": "sheets.properties"}
+            self._base,
+            headers=self._headers,
+            params={"fields": "sheets.properties"},
+            timeout=REQUEST_TIMEOUT,
         )
         resp.raise_for_status()
         return [s["properties"] for s in resp.json().get("sheets", [])]
@@ -443,7 +559,12 @@ class SheetsClient:
     def get_values(self, tab_title: str, rng: str = "", render: str = "FORMULA") -> list[list[str]]:
         quoted = "'" + tab_title.replace("'", "''") + "'" + (f"!{rng}" if rng else "")
         url = f"{self._base}/values/{requests.utils.quote(quoted)}"
-        resp = requests.get(url, headers=self._headers, params={"valueRenderOption": render})
+        resp = requests.get(
+            url,
+            headers=self._headers,
+            params={"valueRenderOption": render},
+            timeout=REQUEST_TIMEOUT,
+        )
         resp.raise_for_status()
         return resp.json().get("values", [])
 
@@ -455,12 +576,18 @@ class SheetsClient:
             headers=self._headers,
             params={"valueInputOption": "USER_ENTERED"},
             json={"values": values},
+            timeout=REQUEST_TIMEOUT,
         )
         resp.raise_for_status()
 
     def batch_update(self, requests_body: list[dict]) -> dict:
         url = f"{self._base}:batchUpdate"
-        resp = requests.post(url, headers=self._headers, json={"requests": requests_body})
+        resp = requests.post(
+            url,
+            headers=self._headers,
+            json={"requests": requests_body},
+            timeout=REQUEST_TIMEOUT,
+        )
         resp.raise_for_status()
         return resp.json()
 
@@ -506,9 +633,29 @@ def cmd_populate(
     hardware_map = json.loads(hardware_map_path.read_text())
 
     flash_values = client.get_values(FLASH_TAB_TITLE)
-    all_ip_alloc = client.get_values(IP_ALLOC_TAB_TITLE)
+    # UNFORMATTED_VALUE, not FORMULA: OpenMesh rows are copied by VALUE into
+    # the new tab. Fetching formulas here would paste them as live formulas
+    # via USER_ENTERED and silently re-evaluate in the new tab (see
+    # build_openmesh_rows, which also asserts no copied cell starts with "=").
+    all_ip_alloc = client.get_values(IP_ALLOC_TAB_TITLE, render="UNFORMATTED_VALUE")
     header_idx = find_header_row(all_ip_alloc)
     ip_alloc_values = all_ip_alloc[header_idx:]
+
+    ip_alloc_openmesh_first_row = find_row_index(
+        all_ip_alloc,
+        header_index(all_ip_alloc[header_idx], "Machine", sheet_label=IP_ALLOC_TAB_TITLE),
+        OPENMESH_MACHINES_IN_ORDER[0],
+    )
+    shape_violations = validate_openmesh_block_shape(all_ip_alloc, ip_alloc_openmesh_first_row)
+    if shape_violations:
+        print(
+            f"REFUSING to populate: {IP_ALLOC_TAB_TITLE!r} OpenMesh block shape has "
+            "drifted from what OPENMESH_MACHINES_IN_ORDER assumes:",
+            file=sys.stderr,
+        )
+        for v in shape_violations:
+            print(f"  {v}", file=sys.stderr)
+        return 1
 
     rows, openmesh_start_row = compute_new_tab_rows(flash_values, ip_alloc_values, hardware_map)
 
@@ -524,11 +671,6 @@ def cmd_populate(
     # Snapshot: iot.welland's current evaluated values + the old sheet's
     # OpenMesh row positions -- needed by rewrite-refs/delete-old-rows/verify.
     iot_evaluated = client.get_values(IOT_TAB_TITLE, "A1:Z250", render="FORMATTED_VALUE")
-    ip_alloc_openmesh_first_row = find_row_index(
-        all_ip_alloc,
-        header_index(all_ip_alloc[header_idx], "Machine", sheet_label=IP_ALLOC_TAB_TITLE),
-        OPENMESH_MACHINES_IN_ORDER[0],
-    )
     snapshot = {
         "iot_range": "A1:Z250",
         "iot_evaluated_values": iot_evaluated,
@@ -550,6 +692,24 @@ def cmd_populate(
 
 def cmd_rewrite_refs(client: SheetsClient, *, snapshot_path: Path, dry_run: bool) -> int:
     snapshot = json.loads(snapshot_path.read_text())
+
+    # Re-validate the block-shape contract against a FRESH fetch: the
+    # snapshot's row positions were captured at `populate` time, and rows may
+    # have shifted in the old sheet during the rollout hold since then.
+    all_ip_alloc = client.get_values(IP_ALLOC_TAB_TITLE, render="UNFORMATTED_VALUE")
+    shape_violations = validate_openmesh_block_shape(
+        all_ip_alloc, snapshot["ip_alloc_openmesh_first_row"]
+    )
+    if shape_violations:
+        print(
+            f"REFUSING to rewrite-refs: {IP_ALLOC_TAB_TITLE!r} OpenMesh block shape "
+            "has drifted since populate ran:",
+            file=sys.stderr,
+        )
+        for v in shape_violations:
+            print(f"  {v}", file=sys.stderr)
+        return 1
+
     formulas = rewrite_ref_formulas(snapshot["new_tab_openmesh_start_row"])
 
     current = client.get_values(IOT_TAB_TITLE, "A1:Z35")
@@ -591,6 +751,25 @@ def cmd_delete_old_rows(client: SheetsClient, *, snapshot_path: Path, dry_run: b
         )
         for hit in remaining:
             print(f"  {hit}", file=sys.stderr)
+        return 1
+
+    # Refuse unless the range still IS exactly the OpenMesh block, against
+    # the SAME fresh fetch above: the snapshot's positions were captured at
+    # `populate` time and rows may have shifted during the rollout hold.
+    fresh_ip_alloc = tab_formulas[IP_ALLOC_TAB_TITLE]
+    fresh_header_idx = find_header_row(fresh_ip_alloc)
+    machine_col = header_index(
+        fresh_ip_alloc[fresh_header_idx], "Machine", sheet_label=IP_ALLOC_TAB_TITLE
+    )
+    range_violations = validate_openmesh_range(fresh_ip_alloc, machine_col, first_row, last_row)
+    if range_violations:
+        print(
+            f"REFUSING to delete {IP_ALLOC_TAB_TITLE!r} rows {first_row}-{last_row}: "
+            "stale snapshot positions -- fresh scan disagrees:",
+            file=sys.stderr,
+        )
+        for v in range_violations:
+            print(f"  {v}", file=sys.stderr)
         return 1
 
     print(f"Would delete {IP_ALLOC_TAB_TITLE!r} rows {first_row}-{last_row} (inclusive).")

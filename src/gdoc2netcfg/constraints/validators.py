@@ -277,20 +277,32 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
                 field="mac_address",
             ))
 
-    # Multiple MACs per IP: only allowed in roaming range
+    # mac → owning hostname (None if the MAC isn't found on any host)
+    mac_to_hostname: dict[str, str | None] = {}
+    for host in inventory.hosts:
+        for iface in host.interfaces:
+            mac_to_hostname[str(iface.mac)] = host.hostname
+
+    # Multiple MACs per IP: allowed in the roaming range or when all MACs
+    # belong to one host (e.g. a multi-port endpoint like a puck's wan+lan
+    # interfaces sharing one fixed IP).
     for ip_str, macs in inventory.ip_to_macs.items():
         is_roaming = roam_prefix and ip_str.startswith(roam_prefix)
-        if len(macs) > 1 and not is_roaming:
-            mac_list = ", ".join(f"{mac} ({name})" for mac, name in macs)
-            result.add(ConstraintViolation(
-                severity=Severity.ERROR,
-                code="ip_multiple_macs",
-                message=(
-                    f"Multiple MACs for non-roaming IP {ip_str}: {mac_list}"
-                ),
-                record_id=ip_str,
-                field="ip",
-            ))
+        if len(macs) <= 1 or is_roaming:
+            continue
+        owning_hostnames = {mac_to_hostname.get(str(mac)) for mac, _ in macs}
+        if len(owning_hostnames) == 1 and None not in owning_hostnames:
+            continue
+        mac_list = ", ".join(f"{mac} ({name})" for mac, name in macs)
+        result.add(ConstraintViolation(
+            severity=Severity.ERROR,
+            code="ip_multiple_macs",
+            message=(
+                f"Multiple MACs for non-roaming IP {ip_str}: {mac_list}"
+            ),
+            record_id=ip_str,
+            field="ip",
+        ))
 
     return result
 

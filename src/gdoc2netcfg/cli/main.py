@@ -505,6 +505,10 @@ def _build_pipeline(config):
             hosts, db.discovery.load_latest_tasmota() if db else None,
         )
 
+        from gdoc2netcfg.derivations.puck_data import enrich_hosts_with_puck_data
+
+        enrich_hosts_with_puck_data(hosts)
+
         # Validate
         result = validate_all(all_records, hosts, inventory)
         for violation in gwifi_violations:

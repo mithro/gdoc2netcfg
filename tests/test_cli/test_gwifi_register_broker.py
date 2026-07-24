@@ -44,7 +44,7 @@ def _cfg_and_hosts():
         ),
     )
     hosts = [
-        _host("puck07.gwifi", puck=True),
+        _host("puck07.wifi", puck=True),
         _host("desktop.network", puck=False),
     ]
     return config, hosts
@@ -61,7 +61,7 @@ def test_register_broker_calls_core():
     assert rc == 0
     _ssh, prefix, logins = reg.call_args.args[:3]
     assert prefix == "gwifi-"
-    assert set(logins) == {"gwifi-puck07_gwifi"}
+    assert set(logins) == {"gwifi-puck07_wifi"}
 
 
 def test_register_broker_missing_ssh_host_errors(capsys):

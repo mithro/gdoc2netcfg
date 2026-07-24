@@ -1,80 +1,68 @@
-"""Tests for the gwifi pucks identity + DNS generators."""
+"""Tests for the gwifi pucks.json identity generator.
 
-import json
+The output contract is byte-identical to the historical bespoke-pipeline
+output (tests/fixtures/pucks.json.golden, captured from the live
+wisp.welland.mithis.com deployment before the rework). These tests build
+the inventory through the REAL pipeline path — parse_csv -> build_hosts ->
+enrich_hosts_with_puck_data -> NetworkInventory — from a WiFi-sheet CSV
+fixture mirroring every puck in the golden file, and assert the generator's
+output matches the golden bytes exactly.
+"""
 
-from gdoc2netcfg.generators.gwifi_pucks import (
-    generate_gwifi_pucks,
-    generate_gwifi_pucks_dns,
-)
-from gdoc2netcfg.models.host import NetworkInventory
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from gdoc2netcfg.derivations.host_builder import build_hosts
+from gdoc2netcfg.derivations.puck_data import enrich_hosts_with_puck_data
+from gdoc2netcfg.generators.gwifi_pucks import generate_gwifi_pucks
+from gdoc2netcfg.models.addressing import IPv4Address, MACAddress
+from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory, PuckData
 from gdoc2netcfg.models.network import Site
-from gdoc2netcfg.sources.gwifi_pucks_parser import PuckRecord
+from gdoc2netcfg.sources.parser import parse_csv
+
+FIXTURES = Path(__file__).parent.parent / "fixtures"
+GOLDEN = FIXTURES / "pucks.json.golden"
+WIFI_SHEET_CSV = FIXTURES / "wifi_sheet.csv"
+
+WELLAND = Site(name="welland", domain="welland.mithis.com", site_octet=1)
 
 
-def make_inventory(pucks: list[PuckRecord]) -> NetworkInventory:
-    site = Site(name="welland", domain="welland.mithis.com")
-    return NetworkInventory(site=site, gwifi_pucks=pucks)
+def _build_puck_inventory() -> NetworkInventory:
+    """Build a NetworkInventory the way the real pipeline does.
 
-
-PUCKS = [
-    PuckRecord(number=12, name="puck12", serial="2831HW00WGD",
-               eth0="44:07:0B:01:A2:21", eth1="44:07:0B:01:A2:22",
-               ip="10.1.4.112"),
-    PuckRecord(number=4, name="puck04", serial="2831HW00VZA",
-               eth0="44:07:0B:01:87:B4", eth1="44:07:0B:01:87:B5",
-               ip="10.1.4.104"),
-]
+    parse_csv -> build_hosts -> enrich_hosts_with_puck_data -> inventory.
+    """
+    csv_text = WIFI_SHEET_CSV.read_text()
+    records = parse_csv(csv_text, "wifi")
+    hosts = build_hosts(records, WELLAND)
+    enrich_hosts_with_puck_data(hosts)
+    return NetworkInventory(site=WELLAND, hosts=hosts)
 
 
 class TestGenerateGwifiPucks:
-    def test_json_shape(self):
-        out = generate_gwifi_pucks(make_inventory(PUCKS))
-        data = json.loads(out)
-        assert data["version"] == 1
-        assert data["generated_by"] == "gdoc2netcfg"
-        assert [p["number"] for p in data["pucks"]] == [4, 12]  # sorted
-        assert data["pucks"][0] == {
-            "name": "puck04",
-            "number": 4,
-            "serial": "2831HW00VZA",
-            "eth0": "44:07:0B:01:87:B4",
-            "eth1": "44:07:0B:01:87:B5",
-            "ip": "10.1.4.104",
-        }
+    def test_matches_golden_byte_for_byte(self):
+        inventory = _build_puck_inventory()
+        out = generate_gwifi_pucks(inventory)
+        assert out == GOLDEN.read_text()
 
-    def test_deterministic_and_trailing_newline(self):
-        a = generate_gwifi_pucks(make_inventory(PUCKS))
-        b = generate_gwifi_pucks(make_inventory(list(reversed(PUCKS))))
-        assert a == b
-        assert a.endswith("\n")
+    def test_missing_lan_interface_raises_with_hostname(self):
+        wan_only = Host(
+            machine_name="puck99",
+            hostname="puck99.wifi",
+            sheet_type="WiFi",
+            interfaces=[
+                NetworkInterface(
+                    name="wan",
+                    mac=MACAddress.parse("aa:bb:cc:dd:ee:01"),
+                    ip_addresses=(IPv4Address("10.1.4.199"),),
+                ),
+            ],
+            puck_data=PuckData(number=99, serial="TESTSERIAL01"),
+        )
 
-    def test_empty(self):
-        data = json.loads(generate_gwifi_pucks(make_inventory([])))
-        assert data["pucks"] == []
-
-
-class TestGenerateGwifiPucksDns:
-    def test_host_records(self):
-        out = generate_gwifi_pucks_dns(make_inventory(PUCKS))
-        lines = [line for line in out.splitlines() if not line.startswith("#")]
-        assert lines == [
-            "host-record=puck04.wifi.welland.mithis.com,10.1.4.104",
-            "host-record=puck12.wifi.welland.mithis.com,10.1.4.112",
-        ]
-
-    def test_header_comment_names_owner(self):
-        out = generate_gwifi_pucks_dns(make_inventory(PUCKS))
-        assert out.startswith("#")
-        assert "wisp" in out  # points the reader at who owns DHCP
-
-    def test_deterministic(self):
-        a = generate_gwifi_pucks_dns(make_inventory(PUCKS))
-        b = generate_gwifi_pucks_dns(make_inventory(list(reversed(PUCKS))))
-        assert a == b
-        assert a.endswith("\n")
-
-    def test_domain_follows_site(self):
-        site = Site(name="monarto", domain="monarto.mithis.com")
-        inv = NetworkInventory(site=site, gwifi_pucks=PUCKS)
-        out = generate_gwifi_pucks_dns(inv)
-        assert "puck04.wifi.monarto.mithis.com" in out
+        inventory = NetworkInventory(site=WELLAND, hosts=[wan_only])
+        with pytest.raises(ValueError, match="puck99.wifi"):
+            generate_gwifi_pucks(inventory)

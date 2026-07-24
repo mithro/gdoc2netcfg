@@ -41,6 +41,9 @@ uv run gdoc2netcfg tasmota show            # Show cached Tasmota device data
 uv run gdoc2netcfg tasmota configure --dry-run --all  # Preview config changes
 uv run gdoc2netcfg tasmota configure <host>      # Push config to a specific device
 uv run gdoc2netcfg tasmota ha-status       # Check Home Assistant integration
+uv run gdoc2netcfg tasmota register-broker --dry-run  # Preview Tasmota broker login changes
+uv run gdoc2netcfg gwifi register-broker --dry-run    # Preview gwifi puck broker login changes
+uv run gdoc2netcfg wisp register-broker --dry-run     # Preview OpenWISP service broker login changes
 uv run gdoc2netcfg zigbee scan --force     # Scan Zigbee2MQTT sites via MQTT
 uv run gdoc2netcfg zigbee show             # Show cached Zigbee device data
 uv run gdoc2netcfg zigbee update-sheet --dry-run  # Preview Zigbee sheet updates

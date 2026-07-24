@@ -244,6 +244,70 @@ class TestCrossRecordConstraints:
         assert result.has_errors
         assert result.errors[0].code == "ip_multiple_macs"
 
+    def test_multiple_macs_on_non_roaming_ip_same_host_ok(self):
+        """Multiple MACs on one non-roaming IP is fine when they're both
+        interfaces of the SAME host (e.g. a puck's wan + lan ports sharing
+        one fixed IP)."""
+        hosts = [
+            _host("puck12", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.112", dhcp_name="wan-puck12"),
+                _iface(mac="aa:bb:cc:dd:ee:02", ip="10.1.4.112", dhcp_name="lan-puck12"),
+            ]),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.4.112": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wan-puck12"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:02"), "lan-puck12"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        ip_errors = [v for v in result.errors if v.code == "ip_multiple_macs"]
+        assert len(ip_errors) == 0
+
+    def test_multiple_macs_on_non_roaming_ip_different_hosts_still_error(self):
+        """Multiple MACs on one non-roaming IP from TWO different hosts
+        remains an error."""
+        hosts = [
+            _host("a", [_iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.10.1", dhcp_name="a")]),
+            _host("b", [_iface(mac="aa:bb:cc:dd:ee:02", ip="10.1.10.1", dhcp_name="b")]),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.10.1": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "a"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:02"), "b"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        assert result.has_errors
+        assert result.errors[0].code == "ip_multiple_macs"
+
+    def test_multiple_macs_on_roaming_ip_unchanged_different_hosts(self):
+        """Roaming range still allows multiple MACs from different hosts,
+        regardless of host mapping."""
+        hosts = [
+            _host("laptop", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.20.1", dhcp_name="laptop-wifi"),
+            ]),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.20.1": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "laptop-wifi"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:02"), "laptop-eth"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        ip_errors = [v for v in result.errors if v.code == "ip_multiple_macs"]
+        assert len(ip_errors) == 0
+
 
 IPV6_SITE = Site(
     name="welland",

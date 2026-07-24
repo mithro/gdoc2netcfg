@@ -40,6 +40,12 @@ def generate_gwifi_pucks(inventory: NetworkInventory) -> str:
         (h for h in inventory.hosts if h.puck_data is not None),
         key=lambda h: h.puck_data.number,
     )
+    if not pucks:
+        raise ValueError(
+            "no puck hosts found — refusing to generate an empty pucks.json "
+            "(check the 'wifi' sheet source is configured and fetched, and "
+            "that its '#'/'Serial' columns weren't renamed/removed)"
+        )
     doc = {
         "version": 1,
         "generated_by": "gdoc2netcfg",

@@ -85,3 +85,31 @@ class TestGenerateGwifiPucks:
         inventory = NetworkInventory(site=WELLAND, hosts=[lan_only])
         with pytest.raises(ValueError, match="puck98.wifi"):
             generate_gwifi_pucks(inventory)
+
+    def test_no_puck_hosts_raises_instead_of_emitting_empty_json(self):
+        # A missing/misconfigured 'wifi' sheet source, a failed fetch, or a
+        # renamed '#'/Serial column all silently leave zero hosts with
+        # puck_data -- without this guard that would produce a valid-looking
+        # but empty pucks.json, which would wipe wisp's fleet identity if
+        # deployed.
+        non_puck_host = Host(
+            machine_name="openmesh-ab-30",
+            hostname="openmesh-ab-30.wifi",
+            sheet_type="WiFi",
+            interfaces=[
+                NetworkInterface(
+                    name="lan",
+                    mac=MACAddress.parse("aa:bb:cc:dd:ee:03"),
+                    ip_addresses=(IPv4Address("10.1.5.40"),),
+                ),
+            ],
+        )
+
+        inventory = NetworkInventory(site=WELLAND, hosts=[non_puck_host])
+        with pytest.raises(ValueError, match="no puck hosts found"):
+            generate_gwifi_pucks(inventory)
+
+    def test_empty_inventory_raises(self):
+        inventory = NetworkInventory(site=WELLAND, hosts=[])
+        with pytest.raises(ValueError, match="no puck hosts found"):
+            generate_gwifi_pucks(inventory)

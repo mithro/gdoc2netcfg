@@ -29,11 +29,20 @@ migration, NOT something this task/PR performs):
                             are fetched with ``UNFORMATTED_VALUE`` (not
                             ``FORMULA``) and checked cell-by-cell for stray
                             ``=`` formulas before being copied by value.
+                            Idempotent even across a shrinking source: if a
+                            previous run left more rows than this run
+                            computes, the stale trailing rows are cleared in
+                            the same write (see
+                            ``compute_trailing_clear_range``).
   3. ``rewrite-refs``     — repoint iot.welland's 6 formulas (rows 24-29,
                             column H) at the new tab's Physical Location
-                            cells, using the snapshot from `populate`.
-                            Re-runs the same block-shape check against a
-                            FRESH fetch first (rows may have shifted since
+                            cells, using the snapshot from `populate`. First
+                            confirms the new tab actually has
+                            ``OPENMESH_MACHINES_IN_ORDER``'s machines at the
+                            targeted rows (see
+                            ``validate_new_tab_openmesh_positions``), then
+                            re-runs the OLD-tab block-shape check against a
+                            FRESH fetch (rows may have shifted since
                             `populate` ran).
   4. ``delete-old-rows``  — delete the OpenMesh blocks from
                             ``Welland - IP Allocation``. REFUSES to run
@@ -363,6 +372,26 @@ def openmesh_delete_range(first_row: int, block_size: int, num_blocks: int) -> t
     return (first_row, first_row + block_size * num_blocks - 1)
 
 
+def compute_trailing_clear_range(
+    existing_row_count: int, new_last_row: int
+) -> tuple[int, int] | None:
+    """Return the inclusive 1-based (first, last) row range to CLEAR so a
+    re-run of `populate` is truly idempotent, or None if there's nothing to
+    clear.
+
+    ``existing_row_count`` is how many rows the new tab currently holds
+    (from a plain values fetch -- the last row with ANY content);
+    ``new_last_row`` is the last row this populate run is about to write
+    (header + data). If a PREVIOUS populate wrote more rows than this run
+    computes (e.g. a puck or OpenMesh AP was removed from the source data),
+    the tail of the old write would otherwise survive as stale leftover
+    rows below the new content.
+    """
+    if existing_row_count <= new_last_row:
+        return None
+    return (new_last_row + 1, existing_row_count)
+
+
 def validate_openmesh_range(
     rows: list[list[str]], machine_col: int, first_row: int, last_row: int
 ) -> list[str]:
@@ -612,6 +641,12 @@ class SheetsClient:
         )
         resp.raise_for_status()
 
+    def clear_values(self, tab_title: str, rng: str) -> None:
+        quoted = "'" + tab_title.replace("'", "''") + "'!" + rng
+        url = f"{self._base}/values/{requests.utils.quote(quoted)}:clear"
+        resp = requests.post(url, headers=self._headers, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+
     def batch_update(self, requests_body: list[dict]) -> dict:
         url = f"{self._base}:batchUpdate"
         resp = requests.post(
@@ -700,6 +735,22 @@ def cmd_populate(
     for row in rows:
         print(f"  {row}")
 
+    # Idempotency: if a PREVIOUS populate run wrote more rows than this run
+    # computes (e.g. a puck/AP was removed from the source data), clear the
+    # stale trailing rows so a re-run leaves no leftovers below the new
+    # content.
+    tabs = client.list_tabs()
+    existing_new_tab = (
+        client.get_values(NEW_TAB_TITLE) if sheet_id_by_title(tabs, NEW_TAB_TITLE) else []
+    )
+    trailing_range = compute_trailing_clear_range(len(existing_new_tab), last_row)
+    if trailing_range:
+        print(
+            f"Would also clear stale trailing rows {trailing_range[0]}-{trailing_range[1]} "
+            f"(a previous populate run left {len(existing_new_tab)} rows; this run only needs "
+            f"{last_row})"
+        )
+
     # Snapshot: iot.welland's current evaluated values + the old sheet's
     # OpenMesh row positions -- needed by rewrite-refs/delete-old-rows/verify.
     iot_evaluated = client.get_values(IOT_TAB_TITLE, "A1:Z250", render="FORMATTED_VALUE")
@@ -717,6 +768,9 @@ def cmd_populate(
         return 0
 
     client.update_values(NEW_TAB_TITLE, f"A2:{last_col}{last_row}", rows)
+    if trailing_range:
+        client.clear_values(NEW_TAB_TITLE, f"A{trailing_range[0]}:{last_col}{trailing_range[1]}")
+        print(f"Cleared stale trailing rows {trailing_range[0]}-{trailing_range[1]}.")
     snapshot_path.write_text(json.dumps(snapshot, indent=2) + "\n")
     print(f"Wrote {len(rows)} rows; snapshot saved to {snapshot_path}")
     return 0

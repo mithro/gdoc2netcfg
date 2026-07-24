@@ -403,6 +403,30 @@ class TestOpenmeshDeleteRange:
         assert wsm.openmesh_delete_range(10, 7, 1) == (10, 16)
 
 
+class TestComputeTrailingClearRange:
+    """populate's re-run idempotency: clear stale rows below a shrunk write."""
+
+    def test_no_trailing_content_returns_none(self):
+        assert wsm.compute_trailing_clear_range(existing_row_count=10, new_last_row=10) is None
+
+    def test_existing_shorter_than_new_returns_none(self):
+        # Growing (more pucks/APs than last time) -- nothing stale to clear.
+        assert wsm.compute_trailing_clear_range(existing_row_count=10, new_last_row=61) is None
+
+    def test_existing_longer_than_new_returns_trailing_range(self):
+        # Shrinking (a puck/AP removed since the last populate run).
+        assert wsm.compute_trailing_clear_range(existing_row_count=65, new_last_row=61) == (
+            62,
+            65,
+        )
+
+    def test_single_stale_row(self):
+        assert wsm.compute_trailing_clear_range(existing_row_count=61, new_last_row=60) == (
+            61,
+            61,
+        )
+
+
 class TestValidateOpenmeshRange:
     """delete-old-rows' stale-snapshot-position guard."""
 

@@ -79,7 +79,9 @@ The system is a data pipeline in `src/gdoc2netcfg/`:
 
 ```
 Sources (sources/)     Fetch CSV from Google Sheets, cache locally, parse into DeviceRecord
-    │                  Also parses VLAN Allocations sheet (vlan_parser.py)
+    │                  One parser handles Network/IoT/WiFi sheets alike (sheet_type
+    │                  drives the hostname suffix — WiFi gets `.wifi`, same as `.iot`);
+    │                  also parses VLAN Allocations sheet (vlan_parser.py)
     │
 Derivations (derivations/)  Pure functions: IPv4→IPv6, IP→VLAN, hostname, DHCP name, DNS names,
     │                        default IP, hardware type detection, site IP remapping
@@ -116,6 +118,36 @@ The CLI (`cli/main.py`) wires the pipeline via `_build_pipeline()` which returns
 ### BMC Handling
 
 BMCs (Baseboard Management Controllers) are physically separate machines attached to a primary host. When a spreadsheet row has interface="bmc" on machine="big-storage", `build_hosts()` creates a separate host `bmc.big-storage` — not a sub-interface. The BMC gets its own hostname, DNS records, DHCP binding, and PTR entry.
+
+### WiFi Sheet Hosts (gale pucks + OpenMesh APs)
+
+The `wifi` sheet (`[sheets] wifi` in `gdoc2netcfg.toml`, welland only) is parsed by the
+standard CSV parser — there is no bespoke source module. Rows get `sheet_type="WiFi"`
+and a `.wifi` hostname/DHCP-name suffix (`dns_names.py`), exactly like `.iot`. Gale
+puck rows carry two interfaces per host (`wan` + `lan`) sharing one fixed IPv4 — an
+exception in `ip_multiple_macs` (`constraints/validators.py`) allows multiple MACs on
+one IP when every MAC belongs to the same host. Puck rows also carry `#` (puck number)
+and `Serial` extra columns on both interface rows; `puck_data.py::enrich_hosts_with_puck_data()`
+attaches a `PuckData(number, serial)` to `host.puck_data` for these rows (OpenMesh AP
+rows carry neither column, so `puck_data` stays `None`).
+`generators/gwifi_pucks.py` iterates hosts with `puck_data` set to emit `wisp/pucks.json`
+(see `[generators.gwifi_pucks]` in the toml and *Models* below).
+
+Puck (and any other wisp-DHCP-served) rows set the `Type` extra column to `DHCP:wisp`.
+`_host_dhcp_config()` in `generators/dnsmasq.py` checks this and skips `dhcp-host`
+bindings entirely for that host — DHCP for the wisp VLAN is served by wisp's own
+gwifi-netboot infrastructure, not ten64's dnsmasq. A/PTR and other DNS records still
+generate normally through the shared sections; only the DHCP binding is suppressed.
+
+Two one-off scripts support the live-sheet migration onto this `wifi` tab (see each
+script's module docstring for full phase/flag details — this is sheet surgery, not
+something run as part of the normal pipeline):
+
+- `scripts/wifi-sheet-migrate.py` — phased (`create`/`populate`/`verify`/
+  `delete-old-rows`) migration of gwifi puck + OpenMesh AP rows out of the old
+  `Google WiFi Pucks`/`Welland - IP Allocation` tabs into `wifi.welland`.
+- `scripts/wifi-sheet-scan.py` — read-only cross-tab formula and `#REF!` scanner
+  used by the `verify` phase above to confirm nothing broke before/after the move.
 
 ### IPv4→IPv6 Mapping
 
@@ -170,6 +202,7 @@ Both inherit `BaseDatabase` (`storage/base.py`): DELETE journal mode, schema ver
 - `NetworkInventory` — the complete enriched model passed to generators
 - `VLAN`, `Site` — network topology definitions in `models/network.py`, loaded from config + VLAN Allocations sheet
 - `PortLinkStatus`, `PortTrafficStats`, `SwitchData`, `SwitchDataSource` — unified switch data model in `models/switch_data.py`, populated from SNMP or NSDP sources
+- `PuckData` (`number`, `serial`) — gale puck identity, attached to `host.puck_data` by `derivations/puck_data.py`; **sheet-sourced** (from the WiFi sheet's `#`/`Serial` extra columns), unlike the scan-sourced `host.tasmota_data` (populated by the `tasmota scan` supplement)
 
 **Credential columns**: The spreadsheet may include extra columns such as `Password`, `SNMP Community`, `IPMI Username`, `IPMI Password`. These are **stripped from the world-readable cache at fetch time** and stored in the root-only `.cache/credentials.db` (see *SQLite Storage*) — they are NOT present in `Host.extra` from the cache. The `password` CLI command merges them transiently from the store onto the matched host before resolving the requested field (and so must run as root). Non-credential extra columns remain in `Host.extra` as normal.
 
@@ -352,6 +385,29 @@ The two sites forward DNS queries to each other via WireGuard tunnel (`10.98.2.1
 ### nginx
 
 Generated nginx configs are deployed to `/etc/nginx/gdoc2netcfg/` (per-host directories under `sites-available/`, plus `scripts/`, `conf.d/`, `stream.d/` for healthcheck infrastructure). Hosts are activated via symlinks: `ln -s /etc/nginx/gdoc2netcfg/sites-available/{fqdn} /etc/nginx/sites-enabled/{fqdn}`. Deployed on **both sites** (welland and monarto).
+
+### Per-device MQTT broker credentials (tasmota / gwifi / wisp)
+
+Three independent `[section] mqtt_secret` consumers derive per-device broker
+logins against the same `[homeassistant.mqtt]` Mosquitto add-on, all via the
+shared `derivations/mqtt_credentials.py` core (`username`/`password`/
+`check_collisions`/`require_strong_secret`):
+
+- `[tasmota]` — one login per Tasmota IoT device (`tas-<id>`), pushed to the
+  device itself by `tasmota configure` (see below).
+- `[gwifi]` (`derivations/gwifi_credentials.py`, prefix `gwifi-`) — one login
+  per gale puck (hosts with `puck_data` set — see *WiFi Sheet Hosts* above).
+- `[wisp]` (`derivations/wisp_credentials.py`, prefix `wisp-`) — a single
+  login for the OpenWISP service host (`machine_name == "wisp"`).
+
+`gwifi`/`wisp` only *register* logins on the broker (`gdoc2netcfg gwifi
+register-broker` / `gdoc2netcfg wisp register-broker`, both `--dry-run`-able)
+— unlike Tasmota, nothing here pushes the credential to the consuming
+service; the puck/wisp side must be configured out-of-band with the same
+derived `MqttUser`/`MqttPassword` (re-derivable from the same `mqtt_secret`).
+Each `mqtt_secret` is high-entropy (`openssl rand -hex 32`), lives only in
+the gitignored `gdoc2netcfg.toml` (kept `0600`), and must be mirrored into
+any vault that independently re-derives the same logins.
 
 ### Tasmota remote syslog
 

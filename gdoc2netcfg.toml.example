@@ -135,6 +135,24 @@ syslog_port = 514
 # override per device via the sheet's "Syslog Level" column.
 syslog_level = 2
 
+# ── Optional: gwifi puck per-device MQTT credentials ─────────
+# Broker host/port come from [homeassistant.mqtt]. mqtt_secret derives each
+# puck's MqttUser (gwifi-<id>) + MqttPassword; keep the toml 0600 (and mirror
+# into any vault that re-derives). `gdoc2netcfg gwifi register-broker`
+# registers the pre-hashed logins on the broker.
+# mqtt_secret: high-entropy (openssl rand -hex 32).
+[gwifi]
+mqtt_secret = ""
+
+# ── Optional: wisp service MQTT credentials ───────────────────
+# Broker host/port come from [homeassistant.mqtt]. mqtt_secret derives the
+# wisp service's MqttUser (wisp-<id>) + MqttPassword; keep the toml 0600 (and
+# mirror into any vault that re-derives). `gdoc2netcfg wisp register-broker`
+# registers the pre-hashed login on the broker.
+# mqtt_secret: high-entropy (openssl rand -hex 32).
+[wisp]
+mqtt_secret = ""
+
 # ── Optional: sensors2mqtt per-host MQTT credentials ─────────
 # Issues a per-host broker login for each `local` host in the Network sheet's
 # `Sensors` column (see `gdoc2netcfg sensors2mqtt`). Broker host/port come from

@@ -77,6 +77,30 @@ class TasmotaConfig:
 
 
 @dataclass
+class GwifiConfig:
+    """gwifi puck per-device MQTT credential derivation ([gwifi]).
+
+    `mqtt_secret` derives each puck's MqttUser (`gwifi-<id>`) and
+    MqttPassword (`sha256(secret+<id>)`); the broker stores the pre-hashed
+    form.
+    """
+
+    mqtt_secret: str = ""
+
+
+@dataclass
+class WispConfig:
+    """wisp service MQTT credential derivation ([wisp]).
+
+    `mqtt_secret` derives the wisp service's MqttUser (`wisp-<id>`) and
+    MqttPassword (`sha256(secret+<id>)`); the broker stores the pre-hashed
+    form.
+    """
+
+    mqtt_secret: str = ""
+
+
+@dataclass
 class Sensors2mqttConfig:
     """sensors2mqtt credential issuance settings ([sensors2mqtt]).
 
@@ -163,6 +187,8 @@ class PipelineConfig:
     cache: CacheConfig = field(default_factory=CacheConfig)
     generators: dict[str, GeneratorConfig] = field(default_factory=dict)
     tasmota: TasmotaConfig = field(default_factory=TasmotaConfig)
+    gwifi: GwifiConfig = field(default_factory=GwifiConfig)
+    wisp: WispConfig = field(default_factory=WispConfig)
     sensors2mqtt: Sensors2mqttConfig = field(default_factory=Sensors2mqttConfig)
     homeassistant: HomeAssistantConfig = field(default_factory=HomeAssistantConfig)
     zigbee: ZigbeeConfig = field(default_factory=ZigbeeConfig)
@@ -276,6 +302,22 @@ def _build_tasmota(data: dict) -> TasmotaConfig:
     )
 
 
+def _build_gwifi(data: dict) -> GwifiConfig:
+    """Build gwifi config from parsed TOML data."""
+    section = data.get("gwifi", {})
+    if not section:
+        return GwifiConfig()
+    return GwifiConfig(mqtt_secret=section.get("mqtt_secret", ""))
+
+
+def _build_wisp(data: dict) -> WispConfig:
+    """Build wisp config from parsed TOML data."""
+    section = data.get("wisp", {})
+    if not section:
+        return WispConfig()
+    return WispConfig(mqtt_secret=section.get("mqtt_secret", ""))
+
+
 def _build_sensors2mqtt(data: dict) -> Sensors2mqttConfig:
     """Build sensors2mqtt config from parsed TOML data."""
     section = data.get("sensors2mqtt", {})
@@ -346,6 +388,8 @@ def load_config(config_path: Path | str | None = None) -> PipelineConfig:
         ),
         generators=_build_generators(data),
         tasmota=_build_tasmota(data),
+        gwifi=_build_gwifi(data),
+        wisp=_build_wisp(data),
         sensors2mqtt=_build_sensors2mqtt(data),
         homeassistant=_build_homeassistant(data),
         zigbee=_build_zigbee(data),

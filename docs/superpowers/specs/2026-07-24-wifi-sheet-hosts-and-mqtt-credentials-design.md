@@ -174,8 +174,9 @@ host.
   this rests on, both enforced: the `PuckData` enrichment asserts
   machine name == `puck{number:02d}` (the old parser synthesized the name
   from `#`; the new path takes the sheet's Machine value), and MAC string
-  form must match the old uppercase-colon normalization (the `MACAddress`
-  model's canonical form — pinned by the golden test).
+  form must match the old uppercase-colon normalization — NOTE the
+  `MACAddress` model's canonical form is *lowercase*, so the generator must
+  uppercase explicitly (pinned by the golden test).
 - **DHCP suppression**: the internal dnsmasq generator skips `dhcp-host`
   bindings for hosts whose `Type` extra equals `DHCP:wisp` (wisp is the
   DHCP authority for the pucks' VLAN — netboot design D7). The value is

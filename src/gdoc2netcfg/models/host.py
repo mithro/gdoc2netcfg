@@ -458,16 +458,12 @@ class NetworkInventory:
         hosts: All hosts in the inventory
         ip_to_hostname: Precomputed IP→hostname mapping
         ip_to_macs: Precomputed IP→[(mac, dhcp_name)] mapping
-        gwifi_pucks: Gale puck identity records parsed from the 'Google
-            WiFi Pucks' sheet (list[PuckRecord]; empty when that sheet is
-            not configured). Consumed by the gwifi_pucks* generators.
     """
 
     site: Site
     hosts: list[Host] = field(default_factory=list)
     ip_to_hostname: dict[str, str] = field(default_factory=dict)
     ip_to_macs: dict[str, list[tuple[MACAddress, str]]] = field(default_factory=dict)
-    gwifi_pucks: list = field(default_factory=list)
 
     def hosts_sorted(self) -> list[Host]:
         """Return hosts sorted by reversed hostname components.

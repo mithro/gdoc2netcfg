@@ -21,10 +21,15 @@ site_octet = 1  # Second octet: 10.1.X.X for Welland, 10.2.X.X for Monarto
 network = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=1476589425&single=true&output=csv"
 iot = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=1695016218&single=true&output=csv"
 vlan_allocations = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=208407908&single=true&output=csv"
-# 'Google WiFi Pucks' tab — gale puck identity for the wisp netboot-install
-# infrastructure (welland only; see gwifi-openwrt docs). Feeds the
-# gwifi_pucks / gwifi_pucks_dns generators below.
-gwifi_pucks = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=210946497&single=true&output=csv"
+# 'wifi.welland - WiFi Infrastructure' tab — gale puck (and OpenMesh AP)
+# hosts on the wifi VLAN (welland only; see gwifi-openwrt docs). Rows are
+# parsed as ordinary hosts (sheet_type "WiFi", hostname suffix ".wifi");
+# puck rows additionally carry '#'/'Serial' extras that feed the
+# gwifi_pucks generator below.
+# TODO: fill after the wifi.welland tab is created (rollout step 1) — the
+# URL prefix below is the same published-CSV spreadsheet as the other
+# tabs, only the gid differs.
+wifi = ""  # e.g. "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=<TBD>&single=true&output=csv"
 # Sites tab: drives all_sites (valid "Site" values) and is cross-checked against [site]/[ipv6].
 sites = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=582797138&single=true&output=csv"
 # Edit URL of the same spreadsheet — used by 'zigbee update-sheet' for write access.
@@ -56,12 +61,12 @@ disabled_prefixes = [
 # VLAN Allocations spreadsheet sheet, not configured here.
 
 # ── Site-specific: each site customizes this list. Monarto runs
-# ── ["dnsmasq_internal", "dnsmasq_external", "nginx"] (no gwifi_* —
+# ── ["dnsmasq_internal", "dnsmasq_external", "nginx"] (no gwifi_pucks —
 # ── the gale puck fleet is welland-only). ─────
 [generators]
 # Which generators to enable
 enabled = ["dnsmasq_internal", "dnsmasq_external", "nagios", "nginx",
-           "gwifi_pucks", "gwifi_pucks_dns"]
+           "gwifi_pucks"]
 
 [generators.dnsmasq_internal]
 output_dir = "internal"
@@ -96,11 +101,6 @@ output = "known_hosts"
 # gwifi-netboot (see gwifi-openwrt docs/wisp-netboot-runbook.md).
 [generators.gwifi_pucks]
 output = "wisp/pucks.json"
-
-# Puck host-records (A+PTR) for ten64's internal dnsmasq — flows with the
-# normal deploy-dnsmasq-internal target since it lands in internal/.
-[generators.gwifi_pucks_dns]
-output = "internal/gwifi-pucks-dns.conf"
 
 # ── Home Assistant: the API + the one MQTT broker everything uses ─
 [homeassistant]

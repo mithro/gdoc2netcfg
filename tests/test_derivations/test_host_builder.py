@@ -86,6 +86,13 @@ class TestBuildHosts:
         assert hosts[0].hostname == "thermostat.iot"
         assert hosts[0].sheet_type == "IoT"
 
+    def test_wifi_device_hostname_suffix(self):
+        records = [_make_record(machine="puck04", sheet_name="wifi", ip="10.1.10.100")]
+        hosts = build_hosts(records, SITE)
+
+        assert hosts[0].hostname == "puck04.wifi"
+        assert hosts[0].sheet_type == "WiFi"
+
     def test_ipv6_addresses_generated(self):
         records = [_make_record()]
         hosts = build_hosts(records, SITE)

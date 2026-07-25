@@ -123,13 +123,18 @@ BMCs (Baseboard Management Controllers) are physically separate machines attache
 
 The `wifi` sheet (`[sheets] wifi` in `gdoc2netcfg.toml`, welland only) is parsed by the
 standard CSV parser — there is no bespoke source module. Rows get `sheet_type="WiFi"`
-and a `.wifi` hostname/DHCP-name suffix (`dns_names.py`), exactly like `.iot`. Gale
-puck rows carry two interfaces per host (`wan` + `lan`) sharing one fixed IPv4 — an
+and a `.wifi` hostname/DHCP-name suffix (`dns_names.py`), exactly like `.iot`. OpenWRT
+fleet puck rows carry two interfaces per host (`wan` + `lan`) sharing one fixed IPv4 — an
 exception in `ip_multiple_macs` (`constraints/validators.py`) allows multiple MACs on
-one IP when every MAC belongs to the same host. Puck rows also carry `#` (puck number)
+one IP when every MAC belongs to the same host. Fleet puck rows also carry `#` (puck number)
 and `Serial` extra columns on both interface rows; `puck_data.py::enrich_hosts_with_puck_data()`
 attaches a `PuckData(number, serial)` to `host.puck_data` for these rows (OpenMesh AP
 rows carry neither column, so `puck_data` stays `None`).
+The three STOCK Google-firmware pucks (`puck01`–`puck03`, 8 interfaces each on the
+roam VLAN) are ordinary rows with `#`/`Serial` DELIBERATELY blank — filling them in
+would make `puck_data` claim the host for wisp netboot and the `gwifi_pucks` generator
+would then fail loud on their missing `wan`/`lan` interfaces. Their serial/setup
+identity lives in the `Google WiFi Pucks` flash tab only.
 `generators/gwifi_pucks.py` iterates hosts with `puck_data` set to emit `wisp/pucks.json`
 (see `[generators.gwifi_pucks]` in the toml and *Models* below).
 
@@ -144,10 +149,13 @@ script's module docstring for full phase/flag details — this is sheet surgery,
 something run as part of the normal pipeline):
 
 - `scripts/wifi-sheet-migrate.py` — phased (`create`/`populate`/`rewrite-refs`/
-  `delete-old-rows`/`verify`) migration of gwifi puck + OpenMesh AP rows out of
-  the old `Google WiFi Pucks`/`Welland - IP Allocation` tabs into `wifi.welland`.
+  `delete-old-rows`/`verify`) migration of gwifi puck (fleet + stock) + OpenMesh AP
+  rows out of the old `Google WiFi Pucks`/`Welland - IP Allocation` tabs into
+  `wifi.welland`.
 - `scripts/wifi-sheet-scan.py` — read-only cross-tab formula and `#REF!` scanner
   used by the `verify` phase above to confirm nothing broke before/after the move.
+- `scripts/wifi-sheet-format.py` — idempotent house-style formatter for the tab
+  (banding, merges, borders, grid trim); re-run it after every `populate`.
 
 ### IPv4→IPv6 Mapping
 

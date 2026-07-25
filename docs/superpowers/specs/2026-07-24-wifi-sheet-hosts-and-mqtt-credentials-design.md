@@ -259,3 +259,24 @@ Mirrors the Tasmota shape exactly; the `Host`-based KDF core is untouched.
 - Monarto broker registration (no pucks; wisp consumer can be registered
   there when its HA integration is wanted).
 - Any change to the `Google WiFi Pucks` flash tab or the flash tooling.
+
+## Amendment (2026-07-25): stock pucks migrate too
+
+During rollout the user flagged that the `node1/2/3-wifi-google` blocks
+('Welland - IP Allocation' rows 312–335) were left behind. Decisions
+(user-confirmed 2026-07-25):
+
+- The three stock Google-firmware pucks migrate into `wifi.welland` renamed
+  to the fleet convention (`puck01`–`puck03`), keeping all 24 MACs and
+  their 10.X.20.16–39 roam-VLAN IPs. Legacy `IPv4 Alt` (192.168.86.x) and
+  `Old Interface` annotations fold into Notes.
+- Their `#`/`Serial` columns stay DELIBERATELY empty (presence is the
+  wisp-netboot `PuckData` contract; stock pucks have no `wan`/`lan`).
+  Identity (serial, MAC, setup network/code) lives in the flash tab —
+  puck03's was backfilled there from IP Allocation row 328, amending the
+  "no flash-tab changes" out-of-scope item.
+- `delete-old-rows` now removes BOTH old ranges (OpenMesh 337–378 and
+  google-node 312–335), still gated after merge + ten64 deploy.
+- The new tab's live column order ('#' first) is canonical; the tab was
+  reordered on the sheet after the first populate and the tooling now
+  follows it.

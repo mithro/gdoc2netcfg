@@ -80,12 +80,9 @@ IP_ALLOC_VALUES = [
 
 HARDWARE_MAP = {"openmesh-ab-30": "OM2P-LC"}
 
-# The three stock Google-firmware pucks' full 8-row blocks (live scan,
-# 2026-07-25, rows 312-335 of the real sheet). Note the repurposed columns:
-# 'Old Interface' holds the setup-network MAC hint / 'wlan' role notes, and
-# the setup network/code live in 'Driver'/'Password' -- those two aren't in
-# IP_ALLOC_HEADER's 16 columns, and build_stock_puck_rows doesn't read them
-# (that identity data lives in the flash tab).
+# The three ex-stock pucks' node*-wifi-google 8-row blocks (live scan,
+# 2026-07-25, rows 312-335 of the real sheet) -- still in IP Allocation
+# until delete-old-rows runs; used by the google-node block validators.
 GOOGLE_NODE_VALUES = [
     ["", "node1-wifi-google", "af-e9", "AC-1304", "", "", "", "", 20,
      "70:3A:CB:94:AF:E9", "10.X.20.16", "192.168.86.1",
@@ -438,96 +435,22 @@ class TestBuildOpenmeshRows:
 
 
 # ---------------------------------------------------------------------------
-# build_stock_puck_rows -- node*-wifi-google -> puck01-03 rename
-# ---------------------------------------------------------------------------
-
-
-class TestBuildStockPuckRows:
-    def test_produces_24_rows_in_canonical_order(self):
-        rows = wsm.build_stock_puck_rows(STOCK_IP_ALLOC_VALUES, FLASH_VALUES)
-        assert len(rows) == 24
-        assert [r[2] for r in rows] == ["puck01"] * 8 + ["puck02"] * 8 + ["puck03"] * 8
-
-    def test_node1_first_row_golden(self):
-        rows = wsm.build_stock_puck_rows(STOCK_IP_ALLOC_VALUES, FLASH_VALUES)
-        assert rows[0] == [
-            "",  # # (DELIBERATELY empty -- wisp-netboot contract, see docstring)
-            "puck01",  # Name
-            "puck01",  # Machine
-            "af-e9",  # Interface
-            "70:3A:CB:94:AF:E9",  # MAC Address
-            "10.X.20.16",  # IP
-            "",  # Type (internal dnsmasq stays DHCP authority)
-            "",  # Site (preserved blank == all sites)
-            "=IFERROR(INDEX('Google WiFi Pucks'!B:B,"
-            "MATCH(\"puck01\",'Google WiFi Pucks'!A:A,0)),\"\")",  # Physical Location
-            "gale",  # Hardware
-            "=IFERROR(INDEX('Google WiFi Pucks'!C:C,"
-            "MATCH(\"puck01\",'Google WiFi Pucks'!A:A,0)),\"\")",  # Upstream
-            "=IFERROR(INDEX('Google WiFi Pucks'!D:D,"
-            "MATCH(\"puck01\",'Google WiFi Pucks'!A:A,0)),\"\")",  # Controlled By
-            "",  # Serial (DELIBERATELY empty -- identity lives in the flash tab)
-            "AC-1304; AF:F0; was 192.168.86.1",  # Notes / Comments
-        ]
-
-    def test_second_row_keeps_old_interface_note_only(self):
-        rows = wsm.build_stock_puck_rows(STOCK_IP_ALLOC_VALUES, FLASH_VALUES)
-        af_ea = rows[1]
-        assert af_ea[3] == "af-ea"
-        assert af_ea[8] == ""  # no Physical Location formula on non-first rows
-        assert af_ea[10] == ""  # no Upstream formula either
-        assert af_ea[13] == "wlan"  # 'Old Interface' annotation preserved
-
-    def test_hash_and_serial_stay_empty_everywhere(self):
-        # Regression guard for the wisp-netboot contract: '#'+'Serial' present
-        # would make enrich_hosts_with_puck_data claim these as OpenWRT fleet
-        # pucks and the gwifi_pucks generator would then fail on missing
-        # wan/lan interfaces.
-        rows = wsm.build_stock_puck_rows(STOCK_IP_ALLOC_VALUES, FLASH_VALUES)
-        assert all(row[0] == "" for row in rows)  # '#'
-        assert all(row[12] == "" for row in rows)  # Serial
-
-    def test_partial_block_fails_loud(self):
-        # IP_ALLOC_VALUES has a single stray node3-wifi-google row (and no
-        # node1/node2 at all).
-        with pytest.raises(ValueError, match="expected exactly 8 rows"):
-            wsm.build_stock_puck_rows(IP_ALLOC_VALUES, FLASH_VALUES)
-
-    def test_formula_cell_fails_loud(self):
-        poisoned = [row[:] for row in STOCK_IP_ALLOC_VALUES]
-        poisoned[1] = poisoned[1][:]
-        poisoned[1][10] = "='Some Other Tab'!A1"  # IPv4 cell holding a live formula
-        with pytest.raises(ValueError, match="live formula.*UNFORMATTED_VALUE"):
-            wsm.build_stock_puck_rows(poisoned, FLASH_VALUES)
-
-    def test_missing_flash_name_column_fails_loud(self):
-        flash_no_name = [["Location", "Upstream"], ["Lounge", ""]]
-        with pytest.raises(ValueError, match="Google WiFi Pucks.*Name"):
-            wsm.build_stock_puck_rows(STOCK_IP_ALLOC_VALUES, flash_no_name)
-
-    def test_empty_inputs_fail_loud(self):
-        with pytest.raises(ValueError, match="empty"):
-            wsm.build_stock_puck_rows([], FLASH_VALUES)
-        with pytest.raises(ValueError, match="empty"):
-            wsm.build_stock_puck_rows(STOCK_IP_ALLOC_VALUES, [])
-
-
-# ---------------------------------------------------------------------------
 # compute_new_tab_rows -- puck rows + openmesh rows combined
 # ---------------------------------------------------------------------------
 
 
 class TestComputeNewTabRows:
-    def test_openmesh_start_row_follows_all_puck_and_stock_rows(self):
+    def test_openmesh_start_row_follows_all_puck_rows(self):
         rows, openmesh_start_row = wsm.compute_new_tab_rows(
             FLASH_VALUES, STOCK_IP_ALLOC_VALUES, HARDWARE_MAP
         )
-        # 2 fleet-puck rows (rows 2-3), 24 stock-puck rows (rows 4-27),
-        # then openmesh starts at row 28.
-        assert openmesh_start_row == 28
-        assert len(rows) == 2 + 24 + 7
-        assert rows[2][2] == "puck01"
-        assert rows[26][2] == "openmesh-ab-30"
+        # 2 fleet-puck rows (rows 2-3) then openmesh starts at row 4 --
+        # the node*-wifi-google blocks in the source contribute NOTHING
+        # (pucks 01-03 are ordinary OpenWRT flash-tab rows since
+        # 2026-07-25).
+        assert openmesh_start_row == 4
+        assert len(rows) == 2 + 7
+        assert rows[2][2] == "openmesh-ab-30"
 
 
 # ---------------------------------------------------------------------------
@@ -730,10 +653,10 @@ class TestRewriteRefFormulas:
             FLASH_VALUES, STOCK_IP_ALLOC_VALUES, HARDWARE_MAP
         )
         formulas = wsm.rewrite_ref_formulas(openmesh_start_row)
-        # openmesh-ab-30 (first machine) starts at row 28 in this fixture's
-        # new tab (2 fleet-puck + 24 stock-puck rows before it); that's
-        # exactly where rows[26] (build_openmesh_rows[0]) landed.
-        assert formulas[24] == "='wifi.welland - WiFi Infrastructure'!I28"
+        # openmesh-ab-30 (first machine) starts at row 4 in this fixture's
+        # new tab; that's exactly where rows[2] (build_openmesh_rows[0])
+        # landed.
+        assert formulas[24] == "='wifi.welland - WiFi Infrastructure'!I4"
 
 
 class TestValidateNewTabOpenmeshPositions:

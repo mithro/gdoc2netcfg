@@ -3,6 +3,30 @@
   "generated_by": "gdoc2netcfg",
   "pucks": [
     {
+      "name": "puck01",
+      "number": 1,
+      "serial": "1605HW000GM",
+      "eth0": "70:3A:CB:94:AF:E9",
+      "eth1": "70:3A:CB:94:AF:EA",
+      "ip": "10.1.4.101"
+    },
+    {
+      "name": "puck02",
+      "number": 2,
+      "serial": "1609HW00AUJ",
+      "eth0": "70:3A:CB:99:AE:B4",
+      "eth1": "70:3A:CB:99:AE:B5",
+      "ip": "10.1.4.102"
+    },
+    {
+      "name": "puck03",
+      "number": 3,
+      "serial": "1609HW00AZM",
+      "eth0": "70:3A:CB:99:B6:91",
+      "eth1": "70:3A:CB:99:B6:92",
+      "ip": "10.1.4.103"
+    },
+    {
       "name": "puck04",
       "number": 4,
       "serial": "2831HW00VZA",

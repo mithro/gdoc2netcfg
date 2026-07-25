@@ -18,8 +18,9 @@ migration, NOT something this task/PR performs):
 
   1. ``create``          — add the new tab + header row (no-op if already
                             present with an identical header).
-  2. ``populate``         — write fleet-puck + stock-puck + OpenMesh rows
-                            below the header, and
+  2. ``populate``         — write fleet-puck + OpenMesh rows below the
+                            header (all pucks incl. 01-03 are OpenWRT
+                            flash-tab rows since 2026-07-25), and
                             save a snapshot (``--snapshot``) of iot.welland's
                             evaluated values + the old sheet's OpenMesh row
                             positions, needed by phases 3-4. Refuses if a
@@ -235,14 +236,6 @@ def _lookup_formula(value_col: str, key_col: str, row: int) -> str:
     )
 
 
-def _name_lookup_formula(value_col: str, name_col: str, machine_name: str) -> str:
-    """INDEX/MATCH formula pulling `value_col` from the flash tab by literal Name."""
-    return (
-        f"=IFERROR(INDEX('{FLASH_TAB_TITLE}'!{value_col}:{value_col},"
-        f'MATCH("{machine_name}",\'{FLASH_TAB_TITLE}\'!{name_col}:{name_col},0)),"")'
-    )
-
-
 def build_puck_rows(flash_tab_values: list[list[str]], start_row: int) -> list[list[str]]:
     """Build WiFi-sheet rows (2 per OpenWRT puck: wan, lan) as cross-tab formulas.
 
@@ -310,111 +303,6 @@ def build_puck_rows(flash_tab_values: list[list[str]], start_row: int) -> list[l
             )
             row_num += 1
     return rows
-
-
-def build_stock_puck_rows(
-    ip_alloc_values: list[list[str]], flash_tab_values: list[list[str]]
-) -> list[list[str]]:
-    """Build WiFi-sheet rows for the stock Google-firmware pucks (node1/2/3-wifi-google).
-
-    ``ip_alloc_values`` is 'Welland - IP Allocation' with the header as row 0,
-    fetched with ``UNFORMATTED_VALUE`` (same no-live-formula contract as
-    ``build_openmesh_rows``). Every row whose Machine is in
-    ``GOOGLE_NODE_MACHINES_IN_ORDER`` is copied with the machine renamed to
-    its puckNN fleet name; MAC/IP/Interface come over as literal values.
-
-    Unlike the OpenWRT fleet rows, the '#' and 'Serial' columns are left
-    DELIBERATELY EMPTY: their presence is the wisp-netboot contract --
-    ``enrich_hosts_with_puck_data`` turns '#'+'Serial' into ``PuckData`` and
-    the ``gwifi_pucks`` generator then requires wan/lan interfaces, which
-    stock pucks don't have. Their serial/setup identity lives in the
-    'Google WiFi Pucks' flash tab (same single-source-of-truth as the fleet
-    rows), so Physical Location / Upstream / Controlled By are INDEX/MATCH
-    formulas into the flash tab keyed by the literal puck name -- which is
-    why ``flash_tab_values`` is needed here (column letters only).
-
-    Data preserved from columns the new tab doesn't have: the legacy Google
-    LAN address ('IPv4 Alt', e.g. 192.168.86.1) and the 'Old Interface'
-    annotation (e.g. 'wlan') are folded into Notes / Comments. 'Site' is
-    preserved as-is (blank == all sites, matching the OpenMesh handling).
-
-    Fails loud if any expected machine is missing, its block isn't exactly
-    ``GOOGLE_NODE_BLOCK_SIZE`` contiguous rows, or a copied cell is a live
-    formula.
-    """
-    if not ip_alloc_values:
-        raise ValueError(f"{IP_ALLOC_TAB_TITLE}: tab is empty (no header row)")
-    if not flash_tab_values:
-        raise ValueError(f"{FLASH_TAB_TITLE}: tab is empty (no header row)")
-    headers = ip_alloc_values[0]
-    required = _IP_ALLOC_REQUIRED_COLUMNS + ["IPv4 Alt", "Old Interface"]
-    idx = {name: header_index(headers, name, sheet_label=IP_ALLOC_TAB_TITLE) for name in required}
-
-    flash_headers = flash_tab_values[0]
-    flash_col = {
-        name: col_letter(header_index(flash_headers, name, sheet_label=FLASH_TAB_TITLE))
-        for name in ("Name", "Location", "Upstream", "Controlled By")
-    }
-
-    def get(row: list, name: str) -> str:
-        value = _cell(row, idx[name])
-        if value.startswith("="):
-            raise ValueError(
-                f"{IP_ALLOC_TAB_TITLE}: machine {machine!r} column {name!r} is a "
-                f"live formula ({value!r}) -- ip_alloc_values must be fetched "
-                "with valueRenderOption=UNFORMATTED_VALUE, not FORMULA, before "
-                "copying (a formula pasted via USER_ENTERED would silently "
-                "re-evaluate in the new tab)"
-            )
-        return value
-
-    rows_by_machine: dict[str, list[list[str]]] = {old: [] for old in GOOGLE_NODE_OLD_NAMES}
-    for data_row in ip_alloc_values[1:]:
-        machine = _cell(data_row, idx["Machine"])
-        if machine not in rows_by_machine:
-            continue
-        block = rows_by_machine[machine]
-        first = not block
-        new_name = dict(GOOGLE_NODE_MACHINES_IN_ORDER)[machine]
-        notes = "; ".join(
-            part
-            for part in (
-                get(data_row, "Notes"),
-                get(data_row, "Old Interface"),
-                f"was {get(data_row, 'IPv4 Alt')}" if get(data_row, "IPv4 Alt") else "",
-            )
-            if part
-        )
-        cells = {
-            "Name": new_name,
-            "Machine": new_name,
-            "Interface": get(data_row, "Interface"),
-            "MAC Address": get(data_row, "MAC Address"),
-            "IP": get(data_row, "IPv4"),
-            "Site": get(data_row, "Site"),  # preserved as-is, even if blank
-            "Hardware": "gale",  # stock pucks are the same gale hardware as the fleet
-            "Notes / Comments": notes,
-        }
-        if first:
-            cells["Physical Location"] = _name_lookup_formula(
-                flash_col["Location"], flash_col["Name"], new_name
-            )
-            cells["Upstream"] = _name_lookup_formula(
-                flash_col["Upstream"], flash_col["Name"], new_name
-            )
-            cells["Controlled By"] = _name_lookup_formula(
-                flash_col["Controlled By"], flash_col["Name"], new_name
-            )
-        block.append(_row_from_dict(cells))
-
-    for old, _new in GOOGLE_NODE_MACHINES_IN_ORDER:
-        n = len(rows_by_machine[old])
-        if n != GOOGLE_NODE_BLOCK_SIZE:
-            raise ValueError(
-                f"{IP_ALLOC_TAB_TITLE}: expected exactly {GOOGLE_NODE_BLOCK_SIZE} rows "
-                f"for machine {old!r}, found {n}"
-            )
-    return [row for old in GOOGLE_NODE_OLD_NAMES for row in rows_by_machine[old]]
 
 
 def build_openmesh_rows(
@@ -492,19 +380,27 @@ def compute_new_tab_rows(
     ip_alloc_values: list[list[str]],
     hardware_map: dict[str, str],
 ) -> tuple[list[list[str]], int]:
-    """Build the full (fleet puck + stock puck + OpenMesh) block for `populate`.
+    """Build the full (fleet puck + OpenMesh) block for `populate`.
 
     Returns ``(rows, openmesh_start_row)``: ``rows`` is written starting at
     the new tab's row 2 (row 1 is the header); ``openmesh_start_row`` is the
     absolute new-tab row number of the OpenMesh block's first row, needed by
-    ``rewrite_ref_formulas``. The stock Google pucks sit between the fleet
-    pucks and the OpenMesh blocks.
+    ``rewrite_ref_formulas``.
+
+    The stock Google pucks (puck01-03) briefly had their own value-copied
+    row builder here (2026-07-25 morning): at that point they still ran
+    stock firmware and lived as node*-wifi-google roam-VLAN blocks in
+    'Welland - IP Allocation'. All three were flashed to fleet firmware
+    later that day, which made them ordinary ``Firmware == "OpenWRT"``
+    flash-tab rows -- ``build_puck_rows`` picks them up like the rest of
+    the fleet, and their roam-VLAN identity retires with the old IP
+    Allocation rows (``delete-old-rows`` still removes the node blocks;
+    the GOOGLE_NODE constants/validators below exist for that phase).
     """
     puck_rows = build_puck_rows(flash_tab_values, start_row=2)
-    stock_rows = build_stock_puck_rows(ip_alloc_values, flash_tab_values)
-    openmesh_start_row = 2 + len(puck_rows) + len(stock_rows)
+    openmesh_start_row = 2 + len(puck_rows)
     openmesh_rows = build_openmesh_rows(ip_alloc_values, hardware_map)
-    return puck_rows + stock_rows + openmesh_rows, openmesh_start_row
+    return puck_rows + openmesh_rows, openmesh_start_row
 
 
 def openmesh_block_first_rows(start_row: int, block_size: int, num_blocks: int) -> list[int]:

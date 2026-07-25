@@ -1001,6 +1001,17 @@ def cmd_populate(
         print("(dry-run: not applied; snapshot not written)")
         return 0
 
+    # Unmerge before writing: values.update silently DROPS values written
+    # into non-anchor cells of a merged range, so merges left by a previous
+    # wifi-sheet-format.py run at now-shifted block positions would eat
+    # cells (observed live 2026-07-25: Physical Location values vanished
+    # when the stock pucks shifted the OpenMesh blocks down 24 rows).
+    # Re-run wifi-sheet-format.py after populate to restore the styling.
+    new_tab_sheet_id = sheet_id_by_title(tabs, NEW_TAB_TITLE)
+    if new_tab_sheet_id is not None:
+        client.batch_update([{"unmergeCells": {"range": {"sheetId": new_tab_sheet_id}}}])
+        print("Unmerged all cells (stale merges would silently eat written values).")
+
     client.update_values(NEW_TAB_TITLE, f"A2:{last_col}{last_row}", rows)
     if trailing_range:
         client.clear_values(NEW_TAB_TITLE, f"A{trailing_range[0]}:{last_col}{trailing_range[1]}")

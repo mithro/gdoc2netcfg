@@ -18,7 +18,8 @@ migration, NOT something this task/PR performs):
 
   1. ``create``          — add the new tab + header row (no-op if already
                             present with an identical header).
-  2. ``populate``         — write puck + OpenMesh rows below the header, and
+  2. ``populate``         — write fleet-puck + stock-puck + OpenMesh rows
+                            below the header, and
                             save a snapshot (``--snapshot``) of iot.welland's
                             evaluated values + the old sheet's OpenMesh row
                             positions, needed by phases 3-4. Refuses if a
@@ -44,8 +45,8 @@ migration, NOT something this task/PR performs):
                             re-runs the OLD-tab block-shape check against a
                             FRESH fetch (rows may have shifted since
                             `populate` ran).
-  4. ``delete-old-rows``  — delete the OpenMesh blocks from
-                            ``Welland - IP Allocation``. REFUSES to run
+  4. ``delete-old-rows``  — delete the OpenMesh AND node*-wifi-google blocks
+                            from ``Welland - IP Allocation``. REFUSES to run
                             unless a fresh formula scan shows zero remaining
                             references into that range (i.e. `rewrite-refs`
                             has actually landed) AND a fresh values fetch
@@ -95,7 +96,14 @@ DEFAULT_SA_PATH = Path.home() / ".config" / "gale-fleet" / "sheets-sa.json"
 REQUEST_TIMEOUT = 60  # seconds; every network call below is a single small REST request
 
 NEW_TAB_TITLE = "wifi.welland - WiFi Infrastructure"
+# Column order matches the LIVE tab: after the initial populate rollout the
+# '#' column was moved to column A on the sheet (Sheets rewrote the row
+# formulas' $-references to follow). The sheet's order is canonical --
+# cmd_create/validate_new_tab_header fail loud on any mismatch, and every
+# row builder below emits via _row_from_dict so nothing else in this script
+# depends on positions.
 NEW_TAB_HEADER = [
+    "#",
     "Name",
     "Machine",
     "Interface",
@@ -108,7 +116,6 @@ NEW_TAB_HEADER = [
     "Upstream",
     "Controlled By",
     "Serial",
-    "#",
     "Notes / Comments",
 ]
 
@@ -149,6 +156,18 @@ OPENMESH_MACHINES_IN_ORDER = [
     "openmesh-95-88",
     "openmesh-96-00",
 ]
+
+# The stock Google-firmware pucks' interface blocks in Welland - IP
+# Allocation (rows 312-335 today, 8 rows each, contiguous, in this order).
+# Migrated to the new tab under the fleet's puckNN naming (user decision,
+# 2026-07-25).
+GOOGLE_NODE_BLOCK_SIZE = 8
+GOOGLE_NODE_MACHINES_IN_ORDER = [
+    ("node1-wifi-google", "puck01"),
+    ("node2-wifi-google", "puck02"),
+    ("node3-wifi-google", "puck03"),
+]
+GOOGLE_NODE_OLD_NAMES = [old for old, _new in GOOGLE_NODE_MACHINES_IN_ORDER]
 
 IOT_TAB_TITLE = "iot.welland - IoT Devices"
 # The 6 formula cells (found by scripts/wifi-sheet-scan.py) referencing the
@@ -196,11 +215,31 @@ def _cell(row: list, index: int) -> str:
     return "" if value is None else str(value)
 
 
+def _row_from_dict(cells: dict[str, str]) -> list[str]:
+    """Serialize a {header-name: value} dict into NEW_TAB_HEADER column order.
+
+    Fails loud on any key that isn't a real column -- a typo'd key would
+    otherwise silently drop that cell's value.
+    """
+    unknown = set(cells) - set(NEW_TAB_HEADER)
+    if unknown:
+        raise ValueError(f"row dict has keys not in NEW_TAB_HEADER: {sorted(unknown)}")
+    return [cells.get(name, "") for name in NEW_TAB_HEADER]
+
+
 def _lookup_formula(value_col: str, key_col: str, row: int) -> str:
     """INDEX/MATCH formula pulling `value_col` from the flash tab by '#'."""
     return (
         f"=IFERROR(INDEX('{FLASH_TAB_TITLE}'!{value_col}:{value_col},"
         f"MATCH(${NEW_TAB_HASH_COL}{row},'{FLASH_TAB_TITLE}'!{key_col}:{key_col},0)),\"\")"
+    )
+
+
+def _name_lookup_formula(value_col: str, name_col: str, machine_name: str) -> str:
+    """INDEX/MATCH formula pulling `value_col` from the flash tab by literal Name."""
+    return (
+        f"=IFERROR(INDEX('{FLASH_TAB_TITLE}'!{value_col}:{value_col},"
+        f'MATCH("{machine_name}",\'{FLASH_TAB_TITLE}\'!{name_col}:{name_col},0)),"")'
     )
 
 
@@ -251,25 +290,131 @@ def build_puck_rows(flash_tab_values: list[list[str]], start_row: int) -> list[l
         for interface in ("wan", "lan"):
             name_formula = f'="puck"&TEXT(${NEW_TAB_HASH_COL}{row_num},"00")'
             rows.append(
-                [
-                    name_formula,  # Name
-                    name_formula,  # Machine (same source column as Name)
-                    interface,  # Interface (literal)
-                    _lookup_formula(col[interface], hash_col, row_num),  # MAC Address
-                    f'="10.X.4."&(100+${NEW_TAB_HASH_COL}{row_num})',  # IP
-                    "DHCP:wisp",  # Type (literal)
-                    "welland",  # Site (literal; pucks are welland-only)
-                    _lookup_formula(col["Location"], hash_col, row_num),  # Physical Location
-                    "gale",  # Hardware (literal; all gwifi pucks are gale hardware)
-                    _lookup_formula(col["Upstream"], hash_col, row_num),  # Upstream
-                    _lookup_formula(col["Controlled By"], hash_col, row_num),  # Controlled By
-                    _lookup_formula(col["Serial"], hash_col, row_num),  # Serial
-                    number,  # # (literal)
-                    "",  # Notes / Comments
-                ]
+                _row_from_dict(
+                    {
+                        "#": number,
+                        "Name": name_formula,
+                        "Machine": name_formula,  # same source column as Name
+                        "Interface": interface,
+                        "MAC Address": _lookup_formula(col[interface], hash_col, row_num),
+                        "IP": f'="10.X.4."&(100+${NEW_TAB_HASH_COL}{row_num})',
+                        "Type": "DHCP:wisp",
+                        "Site": "welland",  # pucks are welland-only
+                        "Physical Location": _lookup_formula(col["Location"], hash_col, row_num),
+                        "Hardware": "gale",  # all gwifi pucks are gale hardware
+                        "Upstream": _lookup_formula(col["Upstream"], hash_col, row_num),
+                        "Controlled By": _lookup_formula(col["Controlled By"], hash_col, row_num),
+                        "Serial": _lookup_formula(col["Serial"], hash_col, row_num),
+                    }
+                )
             )
             row_num += 1
     return rows
+
+
+def build_stock_puck_rows(
+    ip_alloc_values: list[list[str]], flash_tab_values: list[list[str]]
+) -> list[list[str]]:
+    """Build WiFi-sheet rows for the stock Google-firmware pucks (node1/2/3-wifi-google).
+
+    ``ip_alloc_values`` is 'Welland - IP Allocation' with the header as row 0,
+    fetched with ``UNFORMATTED_VALUE`` (same no-live-formula contract as
+    ``build_openmesh_rows``). Every row whose Machine is in
+    ``GOOGLE_NODE_MACHINES_IN_ORDER`` is copied with the machine renamed to
+    its puckNN fleet name; MAC/IP/Interface come over as literal values.
+
+    Unlike the OpenWRT fleet rows, the '#' and 'Serial' columns are left
+    DELIBERATELY EMPTY: their presence is the wisp-netboot contract --
+    ``enrich_hosts_with_puck_data`` turns '#'+'Serial' into ``PuckData`` and
+    the ``gwifi_pucks`` generator then requires wan/lan interfaces, which
+    stock pucks don't have. Their serial/setup identity lives in the
+    'Google WiFi Pucks' flash tab (same single-source-of-truth as the fleet
+    rows), so Physical Location / Upstream / Controlled By are INDEX/MATCH
+    formulas into the flash tab keyed by the literal puck name -- which is
+    why ``flash_tab_values`` is needed here (column letters only).
+
+    Data preserved from columns the new tab doesn't have: the legacy Google
+    LAN address ('IPv4 Alt', e.g. 192.168.86.1) and the 'Old Interface'
+    annotation (e.g. 'wlan') are folded into Notes / Comments. 'Site' is
+    preserved as-is (blank == all sites, matching the OpenMesh handling).
+
+    Fails loud if any expected machine is missing, its block isn't exactly
+    ``GOOGLE_NODE_BLOCK_SIZE`` contiguous rows, or a copied cell is a live
+    formula.
+    """
+    if not ip_alloc_values:
+        raise ValueError(f"{IP_ALLOC_TAB_TITLE}: tab is empty (no header row)")
+    if not flash_tab_values:
+        raise ValueError(f"{FLASH_TAB_TITLE}: tab is empty (no header row)")
+    headers = ip_alloc_values[0]
+    required = _IP_ALLOC_REQUIRED_COLUMNS + ["IPv4 Alt", "Old Interface"]
+    idx = {name: header_index(headers, name, sheet_label=IP_ALLOC_TAB_TITLE) for name in required}
+
+    flash_headers = flash_tab_values[0]
+    flash_col = {
+        name: col_letter(header_index(flash_headers, name, sheet_label=FLASH_TAB_TITLE))
+        for name in ("Name", "Location", "Upstream", "Controlled By")
+    }
+
+    def get(row: list, name: str) -> str:
+        value = _cell(row, idx[name])
+        if value.startswith("="):
+            raise ValueError(
+                f"{IP_ALLOC_TAB_TITLE}: machine {machine!r} column {name!r} is a "
+                f"live formula ({value!r}) -- ip_alloc_values must be fetched "
+                "with valueRenderOption=UNFORMATTED_VALUE, not FORMULA, before "
+                "copying (a formula pasted via USER_ENTERED would silently "
+                "re-evaluate in the new tab)"
+            )
+        return value
+
+    rows_by_machine: dict[str, list[list[str]]] = {old: [] for old in GOOGLE_NODE_OLD_NAMES}
+    for data_row in ip_alloc_values[1:]:
+        machine = _cell(data_row, idx["Machine"])
+        if machine not in rows_by_machine:
+            continue
+        block = rows_by_machine[machine]
+        first = not block
+        new_name = dict(GOOGLE_NODE_MACHINES_IN_ORDER)[machine]
+        notes = "; ".join(
+            part
+            for part in (
+                get(data_row, "Notes"),
+                get(data_row, "Old Interface"),
+                f"was {get(data_row, 'IPv4 Alt')}" if get(data_row, "IPv4 Alt") else "",
+            )
+            if part
+        )
+        cells = {
+            "Name": new_name,
+            "Machine": new_name,
+            "Interface": get(data_row, "Interface"),
+            "MAC Address": get(data_row, "MAC Address"),
+            "IP": get(data_row, "IPv4"),
+            "Site": get(data_row, "Site"),  # preserved as-is, even if blank
+            "Hardware": "gale",  # stock pucks are the same gale hardware as the fleet
+            "Notes / Comments": notes,
+        }
+        if first:
+            cells["Physical Location"] = _name_lookup_formula(
+                flash_col["Location"], flash_col["Name"], new_name
+            )
+            cells["Upstream"] = _name_lookup_formula(
+                flash_col["Upstream"], flash_col["Name"], new_name
+            )
+            cells["Controlled By"] = _name_lookup_formula(
+                flash_col["Controlled By"], flash_col["Name"], new_name
+            )
+        block.append(_row_from_dict(cells))
+
+    for old, _new in GOOGLE_NODE_MACHINES_IN_ORDER:
+        n = len(rows_by_machine[old])
+        if n != GOOGLE_NODE_BLOCK_SIZE:
+            raise ValueError(
+                f"{IP_ALLOC_TAB_TITLE}: expected exactly {GOOGLE_NODE_BLOCK_SIZE} rows "
+                f"for machine {old!r}, found {n}"
+            )
+    return [row for old in GOOGLE_NODE_OLD_NAMES for row in rows_by_machine[old]]
 
 
 def build_openmesh_rows(
@@ -324,22 +469,20 @@ def build_openmesh_rows(
                 "--hardware-map"
             )
         rows.append(
-            [
-                "",  # Name (no source column for OpenMesh)
-                machine,  # Machine
-                get(data_row, "Interface"),  # Interface
-                get(data_row, "MAC Address"),  # MAC Address
-                get(data_row, "IPv4"),  # IP
-                "",  # Type (DHCP:wisp is puck-only)
-                get(data_row, "Site"),  # Site (preserved as-is, even if blank)
-                get(data_row, "Location"),  # Physical Location
-                hardware_map[machine],  # Hardware (family, from --hardware-map)
-                "",  # Upstream (no source column for OpenMesh)
-                get(data_row, "Controlled By"),  # Controlled By
-                get(data_row, "Serial Number"),  # Serial
-                "",  # # (puck-only)
-                get(data_row, "Notes"),  # Notes / Comments
-            ]
+            _row_from_dict(
+                {
+                    "Machine": machine,
+                    "Interface": get(data_row, "Interface"),
+                    "MAC Address": get(data_row, "MAC Address"),
+                    "IP": get(data_row, "IPv4"),
+                    "Site": get(data_row, "Site"),  # preserved as-is, even if blank
+                    "Physical Location": get(data_row, "Location"),
+                    "Hardware": hardware_map[machine],  # family, from --hardware-map
+                    "Controlled By": get(data_row, "Controlled By"),
+                    "Serial": get(data_row, "Serial Number"),
+                    "Notes / Comments": get(data_row, "Notes"),
+                }
+            )
         )
     return rows
 
@@ -349,17 +492,19 @@ def compute_new_tab_rows(
     ip_alloc_values: list[list[str]],
     hardware_map: dict[str, str],
 ) -> tuple[list[list[str]], int]:
-    """Build the full (puck rows + OpenMesh rows) block for `populate`.
+    """Build the full (fleet puck + stock puck + OpenMesh) block for `populate`.
 
     Returns ``(rows, openmesh_start_row)``: ``rows`` is written starting at
     the new tab's row 2 (row 1 is the header); ``openmesh_start_row`` is the
     absolute new-tab row number of the OpenMesh block's first row, needed by
-    ``rewrite_ref_formulas``.
+    ``rewrite_ref_formulas``. The stock Google pucks sit between the fleet
+    pucks and the OpenMesh blocks.
     """
     puck_rows = build_puck_rows(flash_tab_values, start_row=2)
-    openmesh_start_row = 2 + len(puck_rows)
+    stock_rows = build_stock_puck_rows(ip_alloc_values, flash_tab_values)
+    openmesh_start_row = 2 + len(puck_rows) + len(stock_rows)
     openmesh_rows = build_openmesh_rows(ip_alloc_values, hardware_map)
-    return puck_rows + openmesh_rows, openmesh_start_row
+    return puck_rows + stock_rows + openmesh_rows, openmesh_start_row
 
 
 def openmesh_block_first_rows(start_row: int, block_size: int, num_blocks: int) -> list[int]:
@@ -411,22 +556,61 @@ def validate_openmesh_range(
     earlier) and `delete-old-rows` actually running -- a snapshot-derived
     range is only safe to delete if it still matches reality.
     """
+    return _validate_machine_range(
+        rows,
+        machine_col,
+        first_row,
+        last_row,
+        is_member=lambda m: m.startswith(OPENMESH_MACHINE_PREFIX),
+        label="an OpenMesh",
+    )
+
+
+def _validate_machine_range(
+    rows: list[list[str]],
+    machine_col: int,
+    first_row: int,
+    last_row: int,
+    *,
+    is_member,
+    label: str,
+) -> list[str]:
+    """Generic "the delete range IS this machine family, and nothing else" check.
+
+    ``is_member`` decides whether a Machine value belongs to the family being
+    deleted; ``label`` names the family in violation messages (e.g. "an
+    OpenMesh"). See ``validate_openmesh_range`` for the full contract.
+    """
     violations: list[str] = []
     for i, row in enumerate(rows, start=1):
         machine = _cell(row, machine_col)
-        is_openmesh = machine.startswith(OPENMESH_MACHINE_PREFIX)
+        member = is_member(machine)
         in_range = first_row <= i <= last_row
-        if in_range and not is_openmesh:
+        if in_range and not member:
             violations.append(
                 f"row {i} is inside the delete range [{first_row}, {last_row}] "
-                f"but Machine={machine!r} is not an OpenMesh row"
+                f"but Machine={machine!r} is not {label} row"
             )
-        elif is_openmesh and not in_range:
+        elif member and not in_range:
             violations.append(
-                f"row {i} (Machine={machine!r}) is an OpenMesh row OUTSIDE the "
+                f"row {i} (Machine={machine!r}) is {label} row OUTSIDE the "
                 f"delete range [{first_row}, {last_row}]"
             )
     return violations
+
+
+def validate_google_node_range(
+    rows: list[list[str]], machine_col: int, first_row: int, last_row: int
+) -> list[str]:
+    """``validate_openmesh_range``'s contract, for the node*-wifi-google blocks."""
+    return _validate_machine_range(
+        rows,
+        machine_col,
+        first_row,
+        last_row,
+        is_member=lambda m: m in GOOGLE_NODE_OLD_NAMES,
+        label="a node*-wifi-google",
+    )
 
 
 def validate_openmesh_block_shape(ip_alloc_values: list[list[str]], first_row: int) -> list[str]:
@@ -448,30 +632,64 @@ def validate_openmesh_block_shape(ip_alloc_values: list[list[str]], first_row: i
     ``validate_openmesh_range`` -- that no OpenMesh row exists outside the
     expected span.
     """
+    return _validate_machine_block_shape(
+        ip_alloc_values,
+        first_row,
+        machines_in_order=OPENMESH_MACHINES_IN_ORDER,
+        block_size=OPENMESH_BLOCK_SIZE,
+        range_validator=validate_openmesh_range,
+    )
+
+
+def _validate_machine_block_shape(
+    ip_alloc_values: list[list[str]],
+    first_row: int,
+    *,
+    machines_in_order: list[str],
+    block_size: int,
+    range_validator,
+) -> list[str]:
+    """Generic per-slot block-shape check; see ``validate_openmesh_block_shape``.
+
+    ``range_validator`` is the matching family-range validator (e.g.
+    ``validate_openmesh_range``) used for the "no family row outside the
+    expected span" half of the contract.
+    """
     if not ip_alloc_values:
         raise ValueError(f"{IP_ALLOC_TAB_TITLE}: tab is empty (no header row)")
     header_idx = find_header_row(ip_alloc_values)
     machine_col = header_index(
         ip_alloc_values[header_idx], "Machine", sheet_label=IP_ALLOC_TAB_TITLE
     )
-    expected_first_rows = openmesh_block_first_rows(
-        first_row, OPENMESH_BLOCK_SIZE, len(OPENMESH_MACHINES_IN_ORDER)
-    )
-    last_row = expected_first_rows[-1] + OPENMESH_BLOCK_SIZE - 1
+    expected_first_rows = openmesh_block_first_rows(first_row, block_size, len(machines_in_order))
+    last_row = expected_first_rows[-1] + block_size - 1
 
     violations: list[str] = []
-    for machine, block_start in zip(OPENMESH_MACHINES_IN_ORDER, expected_first_rows):
-        for offset in range(OPENMESH_BLOCK_SIZE):
+    for machine, block_start in zip(machines_in_order, expected_first_rows):
+        for offset in range(block_size):
             row_num = block_start + offset
             row = ip_alloc_values[row_num - 1] if row_num - 1 < len(ip_alloc_values) else []
             actual = _cell(row, machine_col)
             if actual != machine:
                 violations.append(
                     f"row {row_num}: expected Machine={machine!r} "
-                    f"(block position {offset + 1}/{OPENMESH_BLOCK_SIZE}), found {actual!r}"
+                    f"(block position {offset + 1}/{block_size}), found {actual!r}"
                 )
-    violations.extend(validate_openmesh_range(ip_alloc_values, machine_col, first_row, last_row))
+    violations.extend(range_validator(ip_alloc_values, machine_col, first_row, last_row))
     return violations
+
+
+def validate_google_node_block_shape(
+    ip_alloc_values: list[list[str]], first_row: int
+) -> list[str]:
+    """``validate_openmesh_block_shape``'s contract, for the node*-wifi-google blocks."""
+    return _validate_machine_block_shape(
+        ip_alloc_values,
+        first_row,
+        machines_in_order=GOOGLE_NODE_OLD_NAMES,
+        block_size=GOOGLE_NODE_BLOCK_SIZE,
+        range_validator=validate_google_node_range,
+    )
 
 
 def rewrite_ref_formulas(new_tab_openmesh_start_row: int) -> dict[int, str]:
@@ -708,10 +926,11 @@ def cmd_populate(
     header_idx = find_header_row(all_ip_alloc)
     ip_alloc_values = all_ip_alloc[header_idx:]
 
+    machine_col = header_index(
+        all_ip_alloc[header_idx], "Machine", sheet_label=IP_ALLOC_TAB_TITLE
+    )
     ip_alloc_openmesh_first_row = find_row_index(
-        all_ip_alloc,
-        header_index(all_ip_alloc[header_idx], "Machine", sheet_label=IP_ALLOC_TAB_TITLE),
-        OPENMESH_MACHINES_IN_ORDER[0],
+        all_ip_alloc, machine_col, OPENMESH_MACHINES_IN_ORDER[0]
     )
     shape_violations = validate_openmesh_block_shape(all_ip_alloc, ip_alloc_openmesh_first_row)
     if shape_violations:
@@ -721,6 +940,18 @@ def cmd_populate(
             file=sys.stderr,
         )
         for v in shape_violations:
+            print(f"  {v}", file=sys.stderr)
+        return 1
+
+    ip_alloc_google_first_row = find_row_index(all_ip_alloc, machine_col, GOOGLE_NODE_OLD_NAMES[0])
+    google_violations = validate_google_node_block_shape(all_ip_alloc, ip_alloc_google_first_row)
+    if google_violations:
+        print(
+            f"REFUSING to populate: {IP_ALLOC_TAB_TITLE!r} node*-wifi-google block "
+            "shape has drifted from what GOOGLE_NODE_MACHINES_IN_ORDER assumes:",
+            file=sys.stderr,
+        )
+        for v in google_violations:
             print(f"  {v}", file=sys.stderr)
         return 1
 
@@ -760,6 +991,9 @@ def cmd_populate(
         "ip_alloc_openmesh_first_row": ip_alloc_openmesh_first_row,
         "ip_alloc_openmesh_block_size": OPENMESH_BLOCK_SIZE,
         "ip_alloc_openmesh_num_blocks": len(OPENMESH_MACHINES_IN_ORDER),
+        "ip_alloc_google_first_row": ip_alloc_google_first_row,
+        "ip_alloc_google_block_size": GOOGLE_NODE_BLOCK_SIZE,
+        "ip_alloc_google_num_blocks": len(GOOGLE_NODE_MACHINES_IN_ORDER),
         "new_tab_openmesh_start_row": openmesh_start_row,
     }
 
@@ -833,49 +1067,81 @@ def cmd_rewrite_refs(client: SheetsClient, *, snapshot_path: Path, dry_run: bool
     return 0
 
 
-def cmd_delete_old_rows(client: SheetsClient, *, snapshot_path: Path, dry_run: bool) -> int:
-    snapshot = json.loads(snapshot_path.read_text())
-    first_row, last_row = openmesh_delete_range(
+def snapshot_delete_ranges(snapshot: dict) -> list[tuple[str, int, int]]:
+    """The (label, first_row, last_row) IP-Allocation ranges `delete-old-rows` removes.
+
+    A pre-stock-puck snapshot (no ``ip_alloc_google_*`` keys) fails loud with
+    KeyError -- re-run `populate` to refresh it.
+    """
+    openmesh = openmesh_delete_range(
         snapshot["ip_alloc_openmesh_first_row"],
         snapshot["ip_alloc_openmesh_block_size"],
         snapshot["ip_alloc_openmesh_num_blocks"],
     )
+    google = openmesh_delete_range(
+        snapshot["ip_alloc_google_first_row"],
+        snapshot["ip_alloc_google_block_size"],
+        snapshot["ip_alloc_google_num_blocks"],
+    )
+    return [
+        ("OpenMesh", openmesh[0], openmesh[1]),
+        ("node*-wifi-google", google[0], google[1]),
+    ]
 
-    # Refuse unless a fresh scan shows zero remaining references into the range.
+
+_RANGE_VALIDATORS = {
+    "OpenMesh": validate_openmesh_range,
+    "node*-wifi-google": validate_google_node_range,
+}
+
+
+def cmd_delete_old_rows(client: SheetsClient, *, snapshot_path: Path, dry_run: bool) -> int:
+    snapshot = json.loads(snapshot_path.read_text())
+    ranges = snapshot_delete_ranges(snapshot)
+
     tabs = [t["title"] for t in client.list_tabs()]
     tab_formulas = {title: client.get_values(title) for title in tabs}
-    remaining = find_formula_refs_into_range(tab_formulas, IP_ALLOC_TAB_TITLE, first_row, last_row)
-    if remaining:
-        print(
-            f"REFUSING to delete {IP_ALLOC_TAB_TITLE!r} rows {first_row}-{last_row}: "
-            f"{len(remaining)} formula(s) still reference this range "
-            "(run rewrite-refs first):",
-            file=sys.stderr,
-        )
-        for hit in remaining:
-            print(f"  {hit}", file=sys.stderr)
-        return 1
-
-    # Refuse unless the range still IS exactly the OpenMesh block, against
-    # the SAME fresh fetch above: the snapshot's positions were captured at
-    # `populate` time and rows may have shifted during the rollout hold.
     fresh_ip_alloc = tab_formulas[IP_ALLOC_TAB_TITLE]
     fresh_header_idx = find_header_row(fresh_ip_alloc)
     machine_col = header_index(
         fresh_ip_alloc[fresh_header_idx], "Machine", sheet_label=IP_ALLOC_TAB_TITLE
     )
-    range_violations = validate_openmesh_range(fresh_ip_alloc, machine_col, first_row, last_row)
-    if range_violations:
-        print(
-            f"REFUSING to delete {IP_ALLOC_TAB_TITLE!r} rows {first_row}-{last_row}: "
-            "stale snapshot positions -- fresh scan disagrees:",
-            file=sys.stderr,
-        )
-        for v in range_violations:
-            print(f"  {v}", file=sys.stderr)
-        return 1
 
-    print(f"Would delete {IP_ALLOC_TAB_TITLE!r} rows {first_row}-{last_row} (inclusive).")
+    for label, first_row, last_row in ranges:
+        # Refuse unless a fresh scan shows zero remaining references into the range.
+        remaining = find_formula_refs_into_range(
+            tab_formulas, IP_ALLOC_TAB_TITLE, first_row, last_row
+        )
+        if remaining:
+            print(
+                f"REFUSING to delete {IP_ALLOC_TAB_TITLE!r} rows {first_row}-{last_row} "
+                f"({label}): {len(remaining)} formula(s) still reference this range "
+                "(run rewrite-refs first):",
+                file=sys.stderr,
+            )
+            for hit in remaining:
+                print(f"  {hit}", file=sys.stderr)
+            return 1
+
+        # Refuse unless the range still IS exactly this machine family's block,
+        # against the SAME fresh fetch above: the snapshot's positions were
+        # captured at `populate` time and rows may have shifted during the
+        # rollout hold.
+        range_violations = _RANGE_VALIDATORS[label](
+            fresh_ip_alloc, machine_col, first_row, last_row
+        )
+        if range_violations:
+            print(
+                f"REFUSING to delete {IP_ALLOC_TAB_TITLE!r} rows {first_row}-{last_row} "
+                f"({label}): stale snapshot positions -- fresh scan disagrees:",
+                file=sys.stderr,
+            )
+            for v in range_violations:
+                print(f"  {v}", file=sys.stderr)
+            return 1
+
+        print(f"Would delete {IP_ALLOC_TAB_TITLE!r} rows {first_row}-{last_row} ({label}).")
+
     if dry_run:
         print("(dry-run: not applied)")
         return 0
@@ -883,21 +1149,24 @@ def cmd_delete_old_rows(client: SheetsClient, *, snapshot_path: Path, dry_run: b
     sheet_id = sheet_id_by_title(client.list_tabs(), IP_ALLOC_TAB_TITLE)
     if sheet_id is None:
         raise ValueError(f"{IP_ALLOC_TAB_TITLE!r} not found")
-    client.batch_update(
-        [
-            {
-                "deleteDimension": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "dimension": "ROWS",
-                        "startIndex": first_row - 1,
-                        "endIndex": last_row,
-                    }
+    # One batch, higher range first: deleting later rows never shifts earlier
+    # ones, so descending order keeps every request's indices valid.
+    requests_body = [
+        {
+            "deleteDimension": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "ROWS",
+                    "startIndex": first_row - 1,
+                    "endIndex": last_row,
                 }
             }
-        ]
-    )
-    print(f"Deleted rows {first_row}-{last_row}.")
+        }
+        for _label, first_row, last_row in sorted(ranges, key=lambda r: -r[1])
+    ]
+    client.batch_update(requests_body)
+    for label, first_row, last_row in ranges:
+        print(f"Deleted rows {first_row}-{last_row} ({label}).")
     return 0
 
 
@@ -918,19 +1187,20 @@ def cmd_verify(client: SheetsClient, *, snapshot_path: Path) -> int:
     else:
         print("OK: no #REF! errors anywhere.")
 
-    first_row, last_row = openmesh_delete_range(
-        snapshot["ip_alloc_openmesh_first_row"],
-        snapshot["ip_alloc_openmesh_block_size"],
-        snapshot["ip_alloc_openmesh_num_blocks"],
-    )
-    remaining = find_formula_refs_into_range(tab_formulas, IP_ALLOC_TAB_TITLE, first_row, last_row)
-    if remaining:
-        ok = False
-        print(f"FAIL: {len(remaining)} formula(s) still reference the deleted range:")
-        for hit in remaining:
-            print(f"  {hit}")
-    else:
-        print("OK: no references into the deleted range.")
+    for label, first_row, last_row in snapshot_delete_ranges(snapshot):
+        remaining = find_formula_refs_into_range(
+            tab_formulas, IP_ALLOC_TAB_TITLE, first_row, last_row
+        )
+        if remaining:
+            ok = False
+            print(
+                f"FAIL: {len(remaining)} formula(s) still reference the deleted "
+                f"{label} range (rows {first_row}-{last_row}):"
+            )
+            for hit in remaining:
+                print(f"  {hit}")
+        else:
+            print(f"OK: no references into the deleted {label} range.")
 
     current_iot = client.get_values(IOT_TAB_TITLE, snapshot["iot_range"], render="FORMATTED_VALUE")
     if current_iot != snapshot["iot_evaluated_values"]:
@@ -964,14 +1234,19 @@ def main(argv: list[str] | None = None) -> int:
 
     snapshot_help = "Path to the populate snapshot JSON"
 
-    pop = sub.add_parser("populate", help="Write puck + OpenMesh rows; save a snapshot")
+    pop = sub.add_parser(
+        "populate", help="Write fleet-puck + stock-puck + OpenMesh rows; save a snapshot"
+    )
     pop.add_argument("--hardware-map", type=Path, required=True, help="JSON: machine -> hardware")
     pop.add_argument("--snapshot", type=Path, required=True, help="Path to write the snapshot JSON")
 
     rw = sub.add_parser("rewrite-refs", help="Repoint iot.welland's 6 formulas at the new tab")
     rw.add_argument("--snapshot", type=Path, required=True, help=snapshot_help)
 
-    dele = sub.add_parser("delete-old-rows", help="Delete the OpenMesh blocks from the old tab")
+    dele = sub.add_parser(
+        "delete-old-rows",
+        help="Delete the OpenMesh + node*-wifi-google blocks from the old tab",
+    )
     dele.add_argument("--snapshot", type=Path, required=True, help=snapshot_help)
 
     ver = sub.add_parser("verify", help="Full post-migration verification")

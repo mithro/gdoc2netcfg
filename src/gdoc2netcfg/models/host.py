@@ -334,11 +334,13 @@ class TasmotaData:
 class WifiData:
     """Typed wifi-device identity lifted from the WiFi sheet's extra columns.
 
-    Populated by the wifi_data derivation from the `#` (device number) and
+    Populated by the wifi_data derivation from the `#` (puck number) and
     `Serial` extra columns present on WiFi-sheet rows. Present only on
     netboot-managed devices (today: the gale-puck fleet), whose two
-    interface rows carry identical values via sheet formulas. OpenMesh and
-    stock rows on the same sheet carry neither column, so their `wifi_data`
+    interface rows carry identical values via sheet formulas. The `#`
+    column also fixes the machine name (a row with `#`=N must be named
+    `puckNN`), so today only gale pucks can carry it. OpenMesh and stock
+    rows on the same sheet carry neither column, so their `wifi_data`
     stays None.
 
     Attributes:

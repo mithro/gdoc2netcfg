@@ -127,16 +127,16 @@ and a `.wifi` hostname/DHCP-name suffix (`dns_names.py`), exactly like `.iot`. O
 fleet puck rows carry two interfaces per host (`wan` + `lan`) sharing one fixed IPv4 — an
 exception in `ip_multiple_macs` (`constraints/validators.py`) allows multiple MACs on
 one IP when every MAC belongs to the same host. Fleet puck rows also carry `#` (puck number)
-and `Serial` extra columns on both interface rows; `puck_data.py::enrich_hosts_with_puck_data()`
-attaches a `PuckData(number, serial)` to `host.puck_data` for these rows (OpenMesh AP
-rows carry neither column, so `puck_data` stays `None`).
+and `Serial` extra columns on both interface rows; `wifi_data.py::enrich_hosts_with_wifi_data()`
+attaches a `WifiData(number, serial)` to `host.wifi_data` for these rows (OpenMesh AP
+rows carry neither column, so `wifi_data` stays `None`).
 The three STOCK Google-firmware pucks (`puck01`–`puck03`, 8 interfaces each on the
 roam VLAN) are ordinary rows with `#`/`Serial` DELIBERATELY blank — filling them in
-would make `puck_data` claim the host for wisp netboot and the `gwifi_pucks` generator
+would make `wifi_data` claim the host for wisp netboot and the `wifi` generator
 would then fail loud on their missing `wan`/`lan` interfaces. Their serial/setup
 identity lives in the `Google WiFi Pucks` flash tab only.
-`generators/gwifi_pucks.py` iterates hosts with `puck_data` set to emit `wisp/pucks.json`
-(see `[generators.gwifi_pucks]` in the toml and *Models* below).
+`generators/wifi.py` iterates hosts with `wifi_data` set to emit `wisp/pucks.json`
+(see `[generators.wifi]` in the toml and *Models* below).
 
 Puck (and any other wisp-DHCP-served) rows set the `Type` extra column to `DHCP:wisp`.
 `_host_dhcp_config()` in `generators/dnsmasq.py` checks this and skips `dhcp-host`
@@ -210,7 +210,7 @@ Both inherit `BaseDatabase` (`storage/base.py`): DELETE journal mode, schema ver
 - `NetworkInventory` — the complete enriched model passed to generators
 - `VLAN`, `Site` — network topology definitions in `models/network.py`, loaded from config + VLAN Allocations sheet
 - `PortLinkStatus`, `PortTrafficStats`, `SwitchData`, `SwitchDataSource` — unified switch data model in `models/switch_data.py`, populated from SNMP or NSDP sources
-- `PuckData` (`number`, `serial`) — gale puck identity, attached to `host.puck_data` by `derivations/puck_data.py`; **sheet-sourced** (from the WiFi sheet's `#`/`Serial` extra columns), unlike the scan-sourced `host.tasmota_data` (populated by the `tasmota scan` supplement)
+- `WifiData` (`number`, `serial`) — wifi-device identity attached to `host.wifi_data` by `derivations/wifi_data.py`; **sheet-sourced** (from the WiFi sheet's `#`/`Serial` extra columns), unlike the scan-sourced `host.tasmota_data` (populated by the `tasmota scan` supplement)
 
 **Credential columns**: The spreadsheet may include extra columns such as `Password`, `SNMP Community`, `IPMI Username`, `IPMI Password`. These are **stripped from the world-readable cache at fetch time** and stored in the root-only `.cache/credentials.db` (see *SQLite Storage*) — they are NOT present in `Host.extra` from the cache. The `password` CLI command merges them transiently from the store onto the matched host before resolving the requested field (and so must run as root). Non-credential extra columns remain in `Host.extra` as normal.
 
@@ -394,7 +394,7 @@ The two sites forward DNS queries to each other via WireGuard tunnel (`10.98.2.1
 
 Generated nginx configs are deployed to `/etc/nginx/gdoc2netcfg/` (per-host directories under `sites-available/`, plus `scripts/`, `conf.d/`, `stream.d/` for healthcheck infrastructure). Hosts are activated via symlinks: `ln -s /etc/nginx/gdoc2netcfg/sites-available/{fqdn} /etc/nginx/sites-enabled/{fqdn}`. Deployed on **both sites** (welland and monarto).
 
-### Per-device MQTT broker credentials (tasmota / gwifi / wisp)
+### Per-device MQTT broker credentials (tasmota / wifi / wisp)
 
 Three independent `[section] mqtt_secret` consumers derive per-device broker
 logins against the same `[homeassistant.mqtt]` Mosquitto add-on, all via the
@@ -403,12 +403,17 @@ shared `derivations/mqtt_credentials.py` core (`username`/`password`/
 
 - `[tasmota]` — one login per Tasmota IoT device (`tas-<id>`), pushed to the
   device itself by `tasmota configure` (see below).
-- `[gwifi]` (`derivations/gwifi_credentials.py`, prefix `gwifi-`) — one login
-  per gale puck (hosts with `puck_data` set — see *WiFi Sheet Hosts* above).
+- `[wifi]` (`derivations/wifi_credentials.py`, prefix `wifi-`) — one login
+  per WiFi-sheet host (`sheet_type == "WiFi"` — see *WiFi Sheet Hosts*
+  above): fleet pucks, stock pucks, and OpenMesh APs (tenwrt too, once it
+  has a wifi-tab row). Some of these devices can't consume the login yet
+  (stock pucks are still on Google firmware; OpenMesh APs have no MQTT
+  client) — they're registered anyway as deliberate spares, the same
+  precedent as the sensors2mqtt SDR Pis.
 - `[wisp]` (`derivations/wisp_credentials.py`, prefix `wisp-`) — a single
   login for the OpenWISP service host (`machine_name == "wisp"`).
 
-`gwifi`/`wisp` only *register* logins on the broker (`gdoc2netcfg gwifi
+`wifi`/`wisp` only *register* logins on the broker (`gdoc2netcfg wifi
 register-broker` / `gdoc2netcfg wisp register-broker`, both `--dry-run`-able)
 — unlike Tasmota, nothing here pushes the credential to the consuming
 service; the puck/wisp side must be configured out-of-band with the same

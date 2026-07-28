@@ -34,8 +34,8 @@ def select_wifi_hosts(hosts: list[Host]) -> list[Host]:
 
 def build_logins(secret: str, hosts: list[Host]) -> dict[str, str]:
     """`{wifi-<id>: sha256(secret+<id>)}` for every WiFi-sheet host. Fails
-    loud on a weak secret, a node_id collision among the selected hosts, or
-    an empty selection."""
+    loud on a weak secret, an empty selection, or a node_id collision among
+    the selected hosts."""
     require_strong_secret(secret)
     selected = select_wifi_hosts(hosts)
     if not selected:

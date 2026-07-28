@@ -14,6 +14,10 @@ sheet's '#'/'Serial' extra columns) identifies which hosts are pucks.
 The output is deterministic (sorted by puck number, no timestamps) so
 deploys are idempotent and diffs are clean.
 
+Named ``wifi`` because it consumes the WiFi sheet; it emits only the
+netboot-managed pucks (hosts with ``wifi_data``) -- OpenMesh/stock rows on
+the same sheet are skipped.
+
 See gwifi-openwrt docs/wisp-netboot-install-design.md (sections 5.3, D7).
 """
 

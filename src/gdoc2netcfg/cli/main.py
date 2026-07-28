@@ -2348,7 +2348,7 @@ def cmd_sensors2mqtt_status(args: argparse.Namespace) -> int:
 
 
 def cmd_wifi_register_broker(args: argparse.Namespace) -> int:
-    """Register wifi-device broker logins on the HA Mosquitto add-on."""
+    """Register WiFi-device broker logins on the HA Mosquitto add-on."""
     from gdoc2netcfg.derivations.wifi_credentials import PREFIX, build_logins
     from gdoc2netcfg.supplements.mqtt_broker import register_logins
 
@@ -3149,11 +3149,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # wifi (with subcommands)
     wifi_parser = subparsers.add_parser(
-        "wifi", help="wifi infrastructure MQTT credentials",
+        "wifi", help="WiFi infrastructure MQTT credentials",
     )
     wifi_subparsers = wifi_parser.add_subparsers(dest="wifi_command")
     wifi_rb = wifi_subparsers.add_parser(
-        "register-broker", help="Register wifi-device broker logins on HA Mosquitto",
+        "register-broker", help="Register WiFi-device broker logins on HA Mosquitto",
     )
     wifi_rb.add_argument("--dry-run", action="store_true", help="Show changes without applying")
     wifi_rb.add_argument(

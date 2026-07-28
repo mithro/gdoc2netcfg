@@ -1,6 +1,6 @@
 """Gale puck identity generator for the wisp netboot infrastructure.
 
-``generate_gwifi_pucks`` produces ``pucks.json``, deployed to
+``generate_wifi`` produces ``pucks.json``, deployed to
 wisp:/etc/gwifi-netboot/pucks.json. Identity only: names, serials, MACs,
 fixed IPs. All runtime state (arming, installs, phone-home) is
 wisp-internal.
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from gdoc2netcfg.models.host import Host
 
 
-def generate_gwifi_pucks(inventory: NetworkInventory) -> str:
+def generate_wifi(inventory: NetworkInventory) -> str:
     """Generate the pucks.json identity file for wisp's gwifi-netboot.
 
     Iterates hosts carrying ``wifi_data`` (attached by

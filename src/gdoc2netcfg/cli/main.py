@@ -630,7 +630,7 @@ def _get_generator(name: str):
         "nginx": ("gdoc2netcfg.generators.nginx", "generate_nginx"),
         "topology": ("gdoc2netcfg.generators.topology", "generate_topology"),
         "known_hosts": ("gdoc2netcfg.generators.known_hosts", "generate_known_hosts"),
-        "gwifi_pucks": ("gdoc2netcfg.generators.gwifi_pucks", "generate_gwifi_pucks"),
+        "wifi": ("gdoc2netcfg.generators.wifi", "generate_wifi"),
     }
     if name not in generators:
         return None

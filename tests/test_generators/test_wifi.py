@@ -1,4 +1,4 @@
-"""Tests for the gwifi pucks.json identity generator.
+"""Tests for the wifi generator (pucks.json identity generator).
 
 The output contract is byte-identical to the historical bespoke-pipeline
 output (tests/fixtures/pucks.json.golden, captured from the live
@@ -17,7 +17,7 @@ import pytest
 
 from gdoc2netcfg.derivations.host_builder import build_hosts
 from gdoc2netcfg.derivations.wifi_data import enrich_hosts_with_wifi_data
-from gdoc2netcfg.generators.gwifi_pucks import generate_gwifi_pucks
+from gdoc2netcfg.generators.wifi import generate_wifi
 from gdoc2netcfg.models.addressing import IPv4Address, MACAddress
 from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory, WifiData
 from gdoc2netcfg.models.network import Site
@@ -42,10 +42,10 @@ def _build_puck_inventory() -> NetworkInventory:
     return NetworkInventory(site=WELLAND, hosts=hosts)
 
 
-class TestGenerateGwifiPucks:
+class TestGenerateWifi:
     def test_matches_golden_byte_for_byte(self):
         inventory = _build_puck_inventory()
-        out = generate_gwifi_pucks(inventory)
+        out = generate_wifi(inventory)
         assert out == GOLDEN.read_text()
 
     def test_missing_lan_interface_raises_with_hostname(self):
@@ -65,7 +65,7 @@ class TestGenerateGwifiPucks:
 
         inventory = NetworkInventory(site=WELLAND, hosts=[wan_only])
         with pytest.raises(ValueError, match="puck99.wifi"):
-            generate_gwifi_pucks(inventory)
+            generate_wifi(inventory)
 
     def test_missing_wan_interface_raises_with_hostname(self):
         lan_only = Host(
@@ -84,7 +84,7 @@ class TestGenerateGwifiPucks:
 
         inventory = NetworkInventory(site=WELLAND, hosts=[lan_only])
         with pytest.raises(ValueError, match="puck98.wifi"):
-            generate_gwifi_pucks(inventory)
+            generate_wifi(inventory)
 
     def test_no_puck_hosts_raises_instead_of_emitting_empty_json(self):
         # A missing/misconfigured 'wifi' sheet source, a failed fetch, or a
@@ -107,9 +107,9 @@ class TestGenerateGwifiPucks:
 
         inventory = NetworkInventory(site=WELLAND, hosts=[non_puck_host])
         with pytest.raises(ValueError, match="no puck hosts found"):
-            generate_gwifi_pucks(inventory)
+            generate_wifi(inventory)
 
     def test_empty_inventory_raises(self):
         inventory = NetworkInventory(site=WELLAND, hosts=[])
         with pytest.raises(ValueError, match="no puck hosts found"):
-            generate_gwifi_pucks(inventory)
+            generate_wifi(inventory)

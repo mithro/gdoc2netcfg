@@ -1,4 +1,4 @@
-"""Tests for wifi-device identity derivation from WiFi-sheet extra columns."""
+"""Tests for WiFi-device identity derivation from WiFi-sheet extra columns."""
 import pytest
 
 from gdoc2netcfg.derivations.wifi_data import enrich_hosts_with_wifi_data

@@ -1,4 +1,4 @@
-"""Tests for wifi-device credential derivation."""
+"""Tests for WiFi-device credential derivation."""
 import hashlib
 
 import pytest

@@ -2,7 +2,7 @@
 import argparse
 from unittest.mock import patch
 
-from gdoc2netcfg.cli.main import cmd_wifi_register_broker
+from gdoc2netcfg.cli.main import cmd_wifi_register_broker, main
 from gdoc2netcfg.config import (
     CacheConfig,
     HomeAssistantConfig,
@@ -81,3 +81,8 @@ def test_register_broker_empty_secret_errors(capsys):
                return_value=(None, hosts, None, None)):
         rc = cmd_wifi_register_broker(args)
     assert rc == 1 and "secret" in capsys.readouterr().err.lower()
+
+
+def test_wifi_no_subcommand_prints_help(capsys):
+    assert main(["wifi"]) == 0
+    assert "register-broker" in capsys.readouterr().out

@@ -56,11 +56,19 @@ class TestBuildWifi:
         cfg = _build_wifi({})
         assert cfg.mqtt_secret == ""
 
+    def test_empty_section_gives_defaults(self):
+        cfg = _build_wifi({"wifi": {}})
+        assert cfg.mqtt_secret == ""
+
     def test_parses_secret(self):
         cfg = _build_wifi({"wifi": {
             "mqtt_secret": "0123456789abcdef0123456789abcdef",
         }})
         assert cfg.mqtt_secret == "0123456789abcdef0123456789abcdef"
+
+    def test_stale_gwifi_section_raises(self):
+        with pytest.raises(ValueError, match=r"renamed to \[wifi\]"):
+            _build_wifi({"gwifi": {"mqtt_secret": "x"}})
 
 
 class TestBuildWisp:

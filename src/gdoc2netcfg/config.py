@@ -304,6 +304,8 @@ def _build_tasmota(data: dict) -> TasmotaConfig:
 
 def _build_wifi(data: dict) -> WifiConfig:
     """Build wifi config from parsed TOML data."""
+    if "gwifi" in data:
+        raise ValueError("[gwifi] was renamed to [wifi]; update your gdoc2netcfg.toml")
     section = data.get("wifi", {})
     if not section:
         return WifiConfig()

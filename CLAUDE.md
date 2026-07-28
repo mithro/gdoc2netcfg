@@ -128,8 +128,8 @@ fleet puck rows carry two interfaces per host (`wan` + `lan`) sharing one fixed 
 exception in `ip_multiple_macs` (`constraints/validators.py`) allows multiple MACs on
 one IP when every MAC belongs to the same host. Fleet puck rows also carry `#` (puck number)
 and `Serial` extra columns on both interface rows; `wifi_data.py::enrich_hosts_with_wifi_data()`
-attaches a `WifiData(number, serial)` to `host.wifi_data` for these rows. Rows without
-both columns (the OpenMesh APs) get no `wifi_data` and stay out of `pucks.json`; rows
+attaches a `WifiData(number, serial)` to `host.wifi_data` for these rows. Rows with
+neither column (the OpenMesh APs) get no `wifi_data` and stay out of `pucks.json`; rows
 with them must be machine-named `puckNN` matching `#` (checked in
 `enrich_hosts_with_wifi_data()`, every run) and carry both `wan`/`lan` interfaces
 (checked in `generators/wifi.py::_puck_entry`, at generate time). Today all 12 fleet

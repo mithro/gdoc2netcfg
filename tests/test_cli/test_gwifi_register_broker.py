@@ -15,14 +15,14 @@ from gdoc2netcfg.models.host import Host, NetworkInterface, WifiData
 from gdoc2netcfg.models.network import Site
 
 
-def _host(hostname, puck=False):
+def _host(hostname, puck=False, sheet_type="WiFi"):
     wifi_data = None
     if puck:
         wifi_data = WifiData(number=7, serial="SN0007")
     return Host(
         machine_name=hostname.split(".")[0],
         hostname=hostname,
-        sheet_type="WiFi",
+        sheet_type=sheet_type,
         interfaces=[NetworkInterface(
             name=None,
             mac=MACAddress.parse("aa:bb:cc:dd:ee:ff"),
@@ -45,7 +45,7 @@ def _cfg_and_hosts():
     )
     hosts = [
         _host("puck07.wifi", puck=True),
-        _host("desktop.network", puck=False),
+        _host("desktop.network", puck=False, sheet_type="Network"),
     ]
     return config, hosts
 
@@ -60,8 +60,8 @@ def test_register_broker_calls_core():
         rc = cmd_gwifi_register_broker(args)
     assert rc == 0
     _ssh, prefix, logins = reg.call_args.args[:3]
-    assert prefix == "gwifi-"
-    assert set(logins) == {"gwifi-puck07_wifi"}
+    assert prefix == "wifi-"
+    assert set(logins) == {"wifi-puck07_wifi"}
 
 
 def test_register_broker_missing_ssh_host_errors(capsys):

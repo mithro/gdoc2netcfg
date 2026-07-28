@@ -1,0 +1,43 @@
+"""wifi-device per-device MQTT credential derivation.
+
+Pure. Selects ALL WiFi-sheet hosts (`sheet_type == 'WiFi'`) — gale pucks,
+OpenMesh APs, and future wifi infrastructure — and builds the
+`{wifi-<id>: password}` map for `register-broker`, reusing the shared
+credential core.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from gdoc2netcfg.derivations.mqtt_credentials import (
+    check_collisions,
+    password,
+    require_strong_secret,
+    username,
+)
+
+if TYPE_CHECKING:
+    from gdoc2netcfg.models.host import Host
+
+PREFIX = "wifi-"
+
+
+def select_wifi_hosts(hosts: list[Host]) -> list[Host]:
+    """All WiFi-sheet hosts (pucks, OpenMesh APs, future wifi infrastructure)."""
+    return [h for h in hosts if h.sheet_type == "WiFi"]
+
+
+def build_logins(secret: str, hosts: list[Host]) -> dict[str, str]:
+    """`{wifi-<id>: sha256(secret+<id>)}` for every WiFi-sheet host. Fails
+    loud on a weak secret, a node_id collision, or an empty selection among
+    the selected hosts."""
+    require_strong_secret(secret)
+    selected = select_wifi_hosts(hosts)
+    if not selected:
+        raise ValueError(
+            "no WiFi-sheet hosts found — check the [sheets] wifi source is "
+            "configured and fetched"
+        )
+    check_collisions(selected)
+    return {username(PREFIX, h): password(secret, h) for h in selected}

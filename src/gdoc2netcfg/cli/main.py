@@ -2349,7 +2349,7 @@ def cmd_sensors2mqtt_status(args: argparse.Namespace) -> int:
 
 def cmd_gwifi_register_broker(args: argparse.Namespace) -> int:
     """Register gwifi puck broker logins on the HA Mosquitto add-on."""
-    from gdoc2netcfg.derivations.gwifi_credentials import PREFIX, build_logins
+    from gdoc2netcfg.derivations.wifi_credentials import PREFIX, build_logins
     from gdoc2netcfg.supplements.mqtt_broker import register_logins
 
     config = _load_config(args)

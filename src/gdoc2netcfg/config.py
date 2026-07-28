@@ -78,7 +78,7 @@ class TasmotaConfig:
 
 @dataclass
 class WifiConfig:
-    """wifi-device per-device MQTT credential derivation ([wifi]).
+    """WiFi-device per-device MQTT credential derivation ([wifi]).
 
     `mqtt_secret` derives each WiFi-sheet host's MqttUser (`wifi-<id>`) and
     MqttPassword (`sha256(secret+<id>)`); the broker stores the pre-hashed

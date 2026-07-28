@@ -1,7 +1,7 @@
-"""wifi-device per-device MQTT credential derivation.
+"""WiFi-device per-device MQTT credential derivation.
 
 Pure. Selects ALL WiFi-sheet hosts (`sheet_type == 'WiFi'`) — gale pucks,
-OpenMesh APs, and future wifi infrastructure — and builds the
+OpenMesh APs, and future WiFi infrastructure — and builds the
 `{wifi-<id>: password}` map for `register-broker`, reusing the shared
 credential core.
 
@@ -28,7 +28,7 @@ PREFIX = "wifi-"
 
 
 def select_wifi_hosts(hosts: list[Host]) -> list[Host]:
-    """All WiFi-sheet hosts (pucks, OpenMesh APs, future wifi infrastructure)."""
+    """All WiFi-sheet hosts (pucks, OpenMesh APs, future WiFi infrastructure)."""
     return [h for h in hosts if h.sheet_type == "WiFi"]
 
 

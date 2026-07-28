@@ -42,7 +42,7 @@ uv run gdoc2netcfg tasmota configure --dry-run --all  # Preview config changes
 uv run gdoc2netcfg tasmota configure <host>      # Push config to a specific device
 uv run gdoc2netcfg tasmota ha-status       # Check Home Assistant integration
 uv run gdoc2netcfg tasmota register-broker --dry-run  # Preview Tasmota broker login changes
-uv run gdoc2netcfg wifi register-broker --dry-run     # Preview wifi-device broker login changes
+uv run gdoc2netcfg wifi register-broker --dry-run     # Preview WiFi-device broker login changes
 uv run gdoc2netcfg wisp register-broker --dry-run     # Preview OpenWISP service broker login changes
 uv run gdoc2netcfg zigbee scan --force     # Scan Zigbee2MQTT sites via MQTT
 uv run gdoc2netcfg zigbee show             # Show cached Zigbee device data
@@ -128,14 +128,12 @@ fleet puck rows carry two interfaces per host (`wan` + `lan`) sharing one fixed 
 exception in `ip_multiple_macs` (`constraints/validators.py`) allows multiple MACs on
 one IP when every MAC belongs to the same host. Fleet puck rows also carry `#` (puck number)
 and `Serial` extra columns on both interface rows; `wifi_data.py::enrich_hosts_with_wifi_data()`
-attaches a `WifiData(number, serial)` to `host.wifi_data` for these rows (OpenMesh AP
-rows carry neither column, so `wifi_data` stays `None`).
-All 12 fleet pucks (`puck01`–`puck12`) are on OpenWRT and follow this shape — ordinary
-two-interface (`wan`+`lan`) rows with `#`/`Serial` filled in, all present in
-`wisp/pucks.json`. A WiFi-sheet row WITHOUT `#`/`Serial` (e.g. the OpenMesh AP rows)
-gets no `wifi_data` and stays out of `pucks.json`; a row WITH them must have both
-`wan`/`lan` interfaces and be machine-named `puckNN` to match its `#` — the pipeline
-fails loud otherwise (see `enrich_hosts_with_wifi_data()`).
+attaches a `WifiData(number, serial)` to `host.wifi_data` for these rows. Rows without
+both columns (the OpenMesh APs) get no `wifi_data` and stay out of `pucks.json`; rows
+with them must be machine-named `puckNN` matching `#` (checked in
+`enrich_hosts_with_wifi_data()`, every run) and carry both `wan`/`lan` interfaces
+(checked in `generators/wifi.py::_puck_entry`, at generate time). Today all 12 fleet
+pucks (`puck01`–`puck12`) qualify.
 `generators/wifi.py` iterates hosts with `wifi_data` set to emit `wisp/pucks.json`
 (see `[generators.wifi]` in the toml and *Models* below).
 
@@ -150,8 +148,8 @@ script's module docstring for full phase/flag details — this is sheet surgery,
 something run as part of the normal pipeline):
 
 - `scripts/wifi-sheet-migrate.py` — phased (`create`/`populate`/`rewrite-refs`/
-  `delete-old-rows`/`verify`) migration of gale puck + OpenMesh AP
-  rows out of the old `Google WiFi Pucks`/`Welland - IP Allocation` tabs into
+  `delete-old-rows`/`verify`) migration of gale puck + OpenMesh AP rows out
+  of the old `Google WiFi Pucks`/`Welland - IP Allocation` tabs into
   `wifi.welland`.
 - `scripts/wifi-sheet-scan.py` — read-only cross-tab formula and `#REF!` scanner
   used by the `verify` phase above to confirm nothing broke before/after the move.
@@ -211,7 +209,7 @@ Both inherit `BaseDatabase` (`storage/base.py`): DELETE journal mode, schema ver
 - `NetworkInventory` — the complete enriched model passed to generators
 - `VLAN`, `Site` — network topology definitions in `models/network.py`, loaded from config + VLAN Allocations sheet
 - `PortLinkStatus`, `PortTrafficStats`, `SwitchData`, `SwitchDataSource` — unified switch data model in `models/switch_data.py`, populated from SNMP or NSDP sources
-- `WifiData` (`number`, `serial`) — wifi-device identity attached to `host.wifi_data` by `derivations/wifi_data.py`; **sheet-sourced** (from the WiFi sheet's `#`/`Serial` extra columns), unlike the scan-sourced `host.tasmota_data` (populated by the `tasmota scan` supplement)
+- `WifiData` (`number`, `serial`) — WiFi-device identity attached to `host.wifi_data` by `derivations/wifi_data.py`; **sheet-sourced** (from the WiFi sheet's `#`/`Serial` extra columns), unlike the scan-sourced `host.tasmota_data` (populated by the `tasmota scan` supplement)
 
 **Credential columns**: The spreadsheet may include extra columns such as `Password`, `SNMP Community`, `IPMI Username`, `IPMI Password`. These are **stripped from the world-readable cache at fetch time** and stored in the root-only `.cache/credentials.db` (see *SQLite Storage*) — they are NOT present in `Host.extra` from the cache. The `password` CLI command merges them transiently from the store onto the matched host before resolving the requested field (and so must run as root). Non-credential extra columns remain in `Host.extra` as normal.
 
@@ -416,7 +414,7 @@ shared `derivations/mqtt_credentials.py` core (`username`/`password`/
 `wifi`/`wisp` only *register* logins on the broker (`gdoc2netcfg wifi
 register-broker` / `gdoc2netcfg wisp register-broker`, both `--dry-run`-able)
 — unlike Tasmota, nothing here pushes the credential to the consuming
-service; the puck/wisp side must be configured out-of-band with the same
+service; the device/wisp side must be configured out-of-band with the same
 derived `MqttUser`/`MqttPassword` (re-derivable from the same `mqtt_secret`).
 Each `mqtt_secret` is high-entropy (`openssl rand -hex 32`), lives only in
 the gitignored `gdoc2netcfg.toml` (kept `0600`), and must be mirrored into

@@ -1,4 +1,4 @@
-"""wifi-device identity derivation from WiFi-sheet extra columns.
+"""WiFi-device identity derivation from WiFi-sheet extra columns.
 
 Pure. Reads the `#` (puck number) and `Serial` extra columns that WiFi-sheet
 rows carry for netboot-managed devices (both interface rows carry identical

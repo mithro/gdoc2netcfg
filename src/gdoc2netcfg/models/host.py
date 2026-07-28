@@ -332,7 +332,7 @@ class TasmotaData:
 
 @dataclass(frozen=True)
 class WifiData:
-    """Typed wifi-device identity lifted from the WiFi sheet's extra columns.
+    """Typed WiFi-device identity lifted from the WiFi sheet's extra columns.
 
     Populated by the wifi_data derivation from the `#` (puck number) and
     `Serial` extra columns present on WiFi-sheet rows. Present only on

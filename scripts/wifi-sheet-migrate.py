@@ -1142,7 +1142,7 @@ def main(argv: list[str] | None = None) -> int:
     snapshot_help = "Path to the populate snapshot JSON"
 
     pop = sub.add_parser(
-        "populate", help="Write fleet-puck + stock-puck + OpenMesh rows; save a snapshot"
+        "populate", help="Write fleet-puck + OpenMesh rows; save a snapshot"
     )
     pop.add_argument("--hardware-map", type=Path, required=True, help="JSON: machine -> hardware")
     pop.add_argument("--snapshot", type=Path, required=True, help="Path to write the snapshot JSON")

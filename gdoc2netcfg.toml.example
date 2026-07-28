@@ -25,7 +25,7 @@ vlan_allocations = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5
 # hosts on the wifi VLAN (welland only; see gwifi-openwrt docs). Rows are
 # parsed as ordinary hosts (sheet_type "WiFi", hostname suffix ".wifi");
 # puck rows additionally carry '#'/'Serial' extras that feed the
-# `[generators.wifi]` generator below.
+# `wifi` generator (`[generators.wifi]`, below).
 wifi = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=1724224613&single=true&output=csv"
 # Sites tab: drives all_sites (valid "Site" values) and is cross-checked against [site]/[ipv6].
 sites = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=582797138&single=true&output=csv"
@@ -132,7 +132,7 @@ syslog_port = 514
 # override per device via the sheet's "Syslog Level" column.
 syslog_level = 2
 
-# ── Optional: wifi-device per-device MQTT credentials ─────────
+# ── Optional: WiFi-device per-device MQTT credentials ─────────
 # Broker host/port come from [homeassistant.mqtt]. mqtt_secret derives each
 # device's MqttUser (wifi-<id>) + MqttPassword; keep the toml 0600 (and mirror
 # into any vault that re-derives). `gdoc2netcfg wifi register-broker`

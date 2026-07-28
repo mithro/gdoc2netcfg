@@ -5,9 +5,9 @@ OpenMesh APs, and future wifi infrastructure — and builds the
 `{wifi-<id>: password}` map for `register-broker`, reusing the shared
 credential core.
 
-Logins are issued even for devices that cannot consume them yet (stock
-pucks on Google firmware, OpenMesh APs) — deliberate spare logins, same
-precedent as the sensors2mqtt SDR Pis.
+Logins are issued even for devices that cannot consume them yet (OpenMesh
+APs have no MQTT client) — deliberate spare logins, same precedent as the
+sensors2mqtt SDR Pis.
 """
 
 from __future__ import annotations

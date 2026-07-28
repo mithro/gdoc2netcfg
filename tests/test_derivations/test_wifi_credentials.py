@@ -29,13 +29,14 @@ def test_prefix():
 
 
 def test_selects_all_wifi_sheet_hosts():
-    """OpenMesh-style rows (no wifi_data) and stock pucks get logins too."""
+    """Any WiFi-sheet row gets a login, whether or not it carries #/Serial
+    (i.e. whether or not it has wifi_data) -- OpenMesh rows have neither."""
     puck = make_host("puck04.wifi", sheet_type="WiFi", wifi_data=WifiData(4, "SER04"))
     openmesh = make_host("om2p-kitchen.wifi", sheet_type="WiFi")   # wifi_data=None
-    stock = make_host("puck01.wifi", sheet_type="WiFi")            # wifi_data=None
+    openmesh2 = make_host("om2p-lounge.wifi", sheet_type="WiFi")   # wifi_data=None
     network = make_host("ten64", sheet_type="Network")
-    logins = build_logins(SECRET, [puck, openmesh, stock, network])
-    assert set(logins) == {"wifi-puck04_wifi", "wifi-om2p_kitchen_wifi", "wifi-puck01_wifi"}
+    logins = build_logins(SECRET, [puck, openmesh, openmesh2, network])
+    assert set(logins) == {"wifi-puck04_wifi", "wifi-om2p_kitchen_wifi", "wifi-om2p_lounge_wifi"}
 
 
 def test_empty_selection_fails_loud():

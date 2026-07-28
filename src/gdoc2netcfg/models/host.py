@@ -339,9 +339,8 @@ class WifiData:
     netboot-managed devices (today: the gale-puck fleet), whose two
     interface rows carry identical values via sheet formulas. The `#`
     column also fixes the machine name (a row with `#`=N must be named
-    `puckNN`), so today only gale pucks can carry it. OpenMesh and stock
-    rows on the same sheet carry neither column, so their `wifi_data`
-    stays None.
+    `puckNN`), so today only gale pucks can carry it. Rows that carry no
+    `#`/`Serial` (e.g. the OpenMesh APs) leave `wifi_data` as None.
 
     Attributes:
         number: Device number parsed from the `#` column (1..99).

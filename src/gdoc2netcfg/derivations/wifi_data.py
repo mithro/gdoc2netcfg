@@ -3,7 +3,7 @@
 Pure. Reads the `#` (puck number) and `Serial` extra columns that WiFi-sheet
 rows carry for netboot-managed devices (both interface rows carry identical
 values via sheet formulas) and attaches a typed `WifiData` to the host.
-OpenMesh and stock hosts on the same sheet carry neither column and are left
+OpenMesh hosts on the same sheet carry neither column and are left
 with `wifi_data is None`. Fails loud on partial data, malformed numbers,
 machine-name mismatches, and cross-host duplicates -- these all indicate a
 sheet data-entry error.

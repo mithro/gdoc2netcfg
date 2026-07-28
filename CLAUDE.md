@@ -130,11 +130,12 @@ one IP when every MAC belongs to the same host. Fleet puck rows also carry `#` (
 and `Serial` extra columns on both interface rows; `wifi_data.py::enrich_hosts_with_wifi_data()`
 attaches a `WifiData(number, serial)` to `host.wifi_data` for these rows (OpenMesh AP
 rows carry neither column, so `wifi_data` stays `None`).
-The three STOCK Google-firmware pucks (`puck01`–`puck03`, 8 interfaces each on the
-roam VLAN) are ordinary rows with `#`/`Serial` DELIBERATELY blank — filling them in
-would make `wifi_data` claim the host for wisp netboot and the `wifi` generator
-would then fail loud on their missing `wan`/`lan` interfaces. Their serial/setup
-identity lives in the `Google WiFi Pucks` flash tab only.
+All 12 fleet pucks (`puck01`–`puck12`) are on OpenWRT and follow this shape — ordinary
+two-interface (`wan`+`lan`) rows with `#`/`Serial` filled in, all present in
+`wisp/pucks.json`. A WiFi-sheet row WITHOUT `#`/`Serial` (e.g. the OpenMesh AP rows)
+gets no `wifi_data` and stays out of `pucks.json`; a row WITH them must have both
+`wan`/`lan` interfaces and be machine-named `puckNN` to match its `#` — the pipeline
+fails loud otherwise (see `enrich_hosts_with_wifi_data()`).
 `generators/wifi.py` iterates hosts with `wifi_data` set to emit `wisp/pucks.json`
 (see `[generators.wifi]` in the toml and *Models* below).
 
@@ -149,7 +150,7 @@ script's module docstring for full phase/flag details — this is sheet surgery,
 something run as part of the normal pipeline):
 
 - `scripts/wifi-sheet-migrate.py` — phased (`create`/`populate`/`rewrite-refs`/
-  `delete-old-rows`/`verify`) migration of gwifi puck (fleet + stock) + OpenMesh AP
+  `delete-old-rows`/`verify`) migration of gale puck + OpenMesh AP
   rows out of the old `Google WiFi Pucks`/`Welland - IP Allocation` tabs into
   `wifi.welland`.
 - `scripts/wifi-sheet-scan.py` — read-only cross-tab formula and `#REF!` scanner
@@ -405,11 +406,10 @@ shared `derivations/mqtt_credentials.py` core (`username`/`password`/
   device itself by `tasmota configure` (see below).
 - `[wifi]` (`derivations/wifi_credentials.py`, prefix `wifi-`) — one login
   per WiFi-sheet host (`sheet_type == "WiFi"` — see *WiFi Sheet Hosts*
-  above): fleet pucks, stock pucks, and OpenMesh APs (tenwrt too, once it
-  has a wifi-tab row). Some of these devices can't consume the login yet
-  (stock pucks are still on Google firmware; OpenMesh APs have no MQTT
-  client) — they're registered anyway as deliberate spares, the same
-  precedent as the sensors2mqtt SDR Pis.
+  above): today the 12 fleet pucks and the OpenMesh APs (tenwrt too, once
+  it has a wifi-tab row). The OpenMesh APs can't consume the login yet (no
+  MQTT client on them) — they're registered anyway as deliberate spares,
+  the same precedent as the sensors2mqtt SDR Pis.
 - `[wisp]` (`derivations/wisp_credentials.py`, prefix `wisp-`) — a single
   login for the OpenWISP service host (`machine_name == "wisp"`).
 

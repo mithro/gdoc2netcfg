@@ -70,6 +70,7 @@
 - Rename: `src/gdoc2netcfg/derivations/gwifi_credentials.py` → `src/gdoc2netcfg/derivations/wifi_credentials.py`
 - Rename: `tests/test_derivations/test_gwifi_credentials.py` → `tests/test_derivations/test_wifi_credentials.py`
 - Modify: `src/gdoc2netcfg/cli/main.py` (~2319: import)
+- Modify: `tests/test_cli/test_gwifi_register_broker.py` — it asserts `prefix == "gwifi-"` and `set(logins) == {"gwifi-puck07_wifi"}` (lines ~63–64), so it breaks in THIS task; update those expectations here (the file itself is renamed in Task 5)
 
 - [ ] **Step 1: Rename first (mechanical).** `git mv` both files; inside: module docstring → "wifi-device per-device MQTT credential derivation… selects ALL WiFi-sheet hosts (`sheet_type == 'WiFi'`)"; `PREFIX = "gwifi-"` → `PREFIX = "wifi-"`; update test imports + expected `wifi-` usernames; `cli/main.py` import → `from gdoc2netcfg.derivations.wifi_credentials import PREFIX, build_logins`.
 - [ ] **Step 2: Write the failing tests** in `tests/test_derivations/test_wifi_credentials.py` (follow the existing test style/fixtures in that file — hosts are built the same way the current tests build puck hosts):
@@ -103,7 +104,7 @@ def select_wifi_hosts(hosts: list[Host]) -> list[Host]:
 ```
 
   and in `build_logins`, after selection: `if not selected: raise ValueError("no WiFi-sheet hosts found — check the [sheets] wifi source is configured and fetched")`. Keep `require_strong_secret` + `check_collisions(selected)`.
-- [ ] **Step 5: Run to verify pass.** `uv run pytest tests/test_derivations/test_wifi_credentials.py -v` — all pass. Any pre-existing test asserting puck-only selection must be updated to the broadened semantics (that's the approved behavior change, not a regression).
+- [ ] **Step 5: Run to verify pass.** `uv run pytest tests/test_derivations/test_wifi_credentials.py -v` — all pass. Any pre-existing test asserting puck-only selection must be updated to the broadened semantics (that's the approved behavior change, not a regression). **Gotcha:** in both `test_gwifi_register_broker.py` and the renamed credentials test, the existing `_host()` helper hardcodes `sheet_type="WiFi"` even for *negative* hosts (`desktop.network`, `desktop`) — under broadened selection those would now get logins. Give the negative hosts `sheet_type="Network"` so they remain a meaningful exclusion case; do NOT just widen the assertion.
 - [ ] **Step 6: Full verify + commit.** `uv run pytest && uv run ruff check src/ tests/ scripts/`. `git add -A && git commit -m "wifi_credentials: rename from gwifi + broaden to all WiFi-sheet hosts"`
 
 ### Task 5: CLI rename (`gwifi register-broker` → `wifi register-broker`)
@@ -130,7 +131,21 @@ def select_wifi_hosts(hosts: list[Host]) -> list[Host]:
 
 ### Task 7: Acceptance sweep + push + PR update
 
-- [ ] **Step 1: Acceptance grep.** Run: `rg -in "gwifi" --glob '!docs/superpowers/**' .` — every remaining hit must be an *external* gwifi-named thing this repo doesn't own: the `gwifi-netboot` service on wisp, the `gwifi-openwrt` repo/docs references, `wisp/pucks.json` content? (regenerate not needed — contains no "gwifi"). Anything else = missed rename, fix it. Also `rg -n "PuckData|puck_data|select_pucks|GwifiConfig" src/ tests/` → zero hits.
+- [ ] **Step 1: Acceptance grep.** Run: `rg -in "gwifi" --glob '!docs/superpowers/**' .` — every remaining hit must be an *external* gwifi-named thing this repo doesn't own: the `gwifi-netboot` service on wisp, the `gwifi-openwrt` repo/docs references, and prose/paths in `scripts/wifi-sheet-migrate.py` / `wifi-sheet-scan.py` ("gwifi puck" sheet-surgery prose, the `/home/tim/local/gwifi/` seed-script path) — all expected to remain. Anything else = missed rename, fix it. Also `rg -n "PuckData|puck_data|select_pucks|GwifiConfig" src/ tests/` → zero hits.
 - [ ] **Step 2: Full suite.** `uv run pytest` (expect ≥1937 passing, plus the 2 new credential tests) and `uv run ruff check src/ tests/ scripts/` — clean.
 - [ ] **Step 3: Push.** `git push origin wifi-sheet-hosts` (never force-push).
 - [ ] **Step 4: Update PR #18.** `gh pr edit 18 --title "WiFi sheet hosts: wifi.welland tab as host source + per-device MQTT credentials"`; edit the body: "per-puck" → "per-device", `[gwifi]`→`[wifi]`, `gdoc2netcfg gwifi register-broker`→`gdoc2netcfg wifi register-broker`, generator key `gwifi_pucks`→`wifi`, and add a Rollout-state bullet noting credential selection now covers all WiFi-sheet hosts (pucks + OpenMesh + future tenwrt row). Add a PR comment summarizing the rename (spec: `docs/superpowers/specs/2026-07-28-wifi-rename-design.md`).
+
+---
+
+## Follow-up work (out of scope for this plan)
+
+- **WiFi-device remote syslog** (user request, 2026-07-29): replicate the
+  tasmota/network-device remote-syslog functionality for the wifi devices
+  (pucks, OpenMesh APs, tenwrt) — per-device log files on the site router à la
+  `/var/log/tasmota/<hostname>.log` (rsyslog drop-in + logrotate +
+  `make deploy-syslog`), with device-side `log_ip`-style configuration. Needs
+  its own brainstorm/spec: the receive side mirrors the existing rsyslog
+  pattern, but the push side differs per device class (pucks/tenwrt are
+  OpenWISP-templated in `gwifi-openwrt`, not pushed by gdoc2netcfg the way
+  `tasmota configure` is; OpenMesh APs differ again).

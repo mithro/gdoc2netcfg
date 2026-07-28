@@ -2,7 +2,7 @@
 through cli/main.py::_get_generator to an importable (module, func).
 
 This mechanically guards against generator-key renames drifting apart from
-the example config (e.g. the gwifi_pucks -> wifi rename): if a key in
+the example config (e.g. the wifi generator's earlier key): if a key in
 `[generators] enabled` stops resolving, `_get_generator` returns None and
 `cmd_generate` only warns at runtime -- this test turns that into a hard
 failure at test time.

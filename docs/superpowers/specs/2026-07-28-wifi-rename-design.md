@@ -30,7 +30,7 @@ match the name.
 | Enrichment | `derivations/puck_data.py::enrich_hosts_with_puck_data()` | `derivations/wifi_data.py::enrich_hosts_with_wifi_data()` |
 | Generator | `generators/gwifi_pucks.py::generate_gwifi_pucks`, registry/toml key `gwifi_pucks` | `generators/wifi.py::generate_wifi`, registry/toml key `wifi` (`[generators.wifi]`) |
 | Tests | `test_gwifi_credentials.py`, `test_gwifi_register_broker.py`, `test_gwifi_pucks.py`, puck_data tests | renamed to match the new module names |
-| Docs/example | CLAUDE.md sections, `gdoc2netcfg.toml.example` | updated to the new names |
+| Docs/example | CLAUDE.md sections, README.md (the `gwifi_pucks` generator mention), `gdoc2netcfg.toml.example` | updated to the new names |
 
 Internal renames track the surface renames throughout (variables like `pucks`,
 `puck_entry`, docstrings). Where prose genuinely means the gale-puck hardware or
@@ -84,8 +84,10 @@ def select_wifi_hosts(hosts: list[Host]) -> list[Host]:
   register-broker CLI dry-run/apply, credential derivation).
 - New: OpenMesh-row host (no `wifi_data`) receives a `wifi-` login;
   stock-puck host receives a login; empty selection raises;
-  no `gwifi` identifier remains (`rg -i gwifi src/ tests/` clean except
-  deliberate prose references to gale-puck hardware and historical docs).
+  no `gwifi` identifier remains: `rg -i gwifi --glob '!docs/superpowers/**'`
+  over the whole repo is clean except deliberate references to *external*
+  gwifi-named things that this repo does not own (the `gwifi-netboot` service
+  on wisp, the gale-puck hardware in prose, git history).
 
 ## Rollout
 

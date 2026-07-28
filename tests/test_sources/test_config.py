@@ -209,7 +209,7 @@ class TestSensors2mqttConfig:
         assert c.sensors2mqtt.freshness_seconds == 900
 
 
-class TestGwifiConfig:
+class TestWifiConfig:
     def _write(self, tmp_path, body):
         p = tmp_path / "gdoc2netcfg.toml"
         p.write_text(body)
@@ -219,13 +219,13 @@ class TestGwifiConfig:
         from gdoc2netcfg.config import load_config
         c = load_config(self._write(tmp_path,
             '[site]\nname="t"\ndomain="t.example"\n\n'
-            '[gwifi]\nmqtt_secret="s"\n'))
-        assert c.gwifi.mqtt_secret == "s"
+            '[wifi]\nmqtt_secret="s"\n'))
+        assert c.wifi.mqtt_secret == "s"
 
     def test_defaults(self, tmp_path):
         from gdoc2netcfg.config import load_config
         c = load_config(self._write(tmp_path, '[site]\nname="t"\ndomain="t.example"\n'))
-        assert c.gwifi.mqtt_secret == ""
+        assert c.wifi.mqtt_secret == ""
 
 
 class TestWispConfig:

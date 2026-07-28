@@ -2361,7 +2361,7 @@ def cmd_gwifi_register_broker(args: argparse.Namespace) -> int:
     _records, hosts, _inventory, _result = _build_pipeline(config)
 
     try:
-        logins = build_logins(config.gwifi.mqtt_secret, hosts)
+        logins = build_logins(config.wifi.mqtt_secret, hosts)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1

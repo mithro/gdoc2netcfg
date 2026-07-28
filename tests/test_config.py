@@ -2,7 +2,7 @@
 
 import pytest
 
-from gdoc2netcfg.config import _build_gwifi, _build_tasmota, _build_wisp
+from gdoc2netcfg.config import _build_tasmota, _build_wifi, _build_wisp
 
 
 class TestBuildTasmota:
@@ -51,13 +51,13 @@ class TestBuildTasmota:
             _build_tasmota({"tasmota": {"syslog_level": 2.0}})
 
 
-class TestBuildGwifi:
+class TestBuildWifi:
     def test_missing_section_gives_defaults(self):
-        cfg = _build_gwifi({})
+        cfg = _build_wifi({})
         assert cfg.mqtt_secret == ""
 
     def test_parses_secret(self):
-        cfg = _build_gwifi({"gwifi": {
+        cfg = _build_wifi({"wifi": {
             "mqtt_secret": "0123456789abcdef0123456789abcdef",
         }})
         assert cfg.mqtt_secret == "0123456789abcdef0123456789abcdef"

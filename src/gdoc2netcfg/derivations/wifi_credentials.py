@@ -4,6 +4,10 @@ Pure. Selects ALL WiFi-sheet hosts (`sheet_type == 'WiFi'`) — gale pucks,
 OpenMesh APs, and future wifi infrastructure — and builds the
 `{wifi-<id>: password}` map for `register-broker`, reusing the shared
 credential core.
+
+Logins are issued even for devices that cannot consume them yet (stock
+pucks on Google firmware, OpenMesh APs) — deliberate spare logins, same
+precedent as the sensors2mqtt SDR Pis.
 """
 
 from __future__ import annotations
@@ -30,8 +34,8 @@ def select_wifi_hosts(hosts: list[Host]) -> list[Host]:
 
 def build_logins(secret: str, hosts: list[Host]) -> dict[str, str]:
     """`{wifi-<id>: sha256(secret+<id>)}` for every WiFi-sheet host. Fails
-    loud on a weak secret, a node_id collision, or an empty selection among
-    the selected hosts."""
+    loud on a weak secret, a node_id collision among the selected hosts, or
+    an empty selection."""
     require_strong_secret(secret)
     selected = select_wifi_hosts(hosts)
     if not selected:

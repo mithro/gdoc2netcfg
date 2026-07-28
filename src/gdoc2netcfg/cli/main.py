@@ -2343,12 +2343,12 @@ def cmd_sensors2mqtt_status(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Subcommand: gwifi register-broker
+# Subcommand: wifi register-broker
 # ---------------------------------------------------------------------------
 
 
-def cmd_gwifi_register_broker(args: argparse.Namespace) -> int:
-    """Register gwifi puck broker logins on the HA Mosquitto add-on."""
+def cmd_wifi_register_broker(args: argparse.Namespace) -> int:
+    """Register wifi-device broker logins on the HA Mosquitto add-on."""
     from gdoc2netcfg.derivations.wifi_credentials import PREFIX, build_logins
     from gdoc2netcfg.supplements.mqtt_broker import register_logins
 
@@ -3147,16 +3147,16 @@ def main(argv: list[str] | None = None) -> int:
     reg.add_argument("--dry-run", action="store_true", help="Show changes without applying")
     reg.add_argument("--prune", action="store_true", help="Remove logins not in current host list")
 
-    # gwifi (with subcommands)
-    gwifi_parser = subparsers.add_parser(
-        "gwifi", help="gwifi puck MQTT credentials",
+    # wifi (with subcommands)
+    wifi_parser = subparsers.add_parser(
+        "wifi", help="wifi infrastructure MQTT credentials",
     )
-    gwifi_subparsers = gwifi_parser.add_subparsers(dest="gwifi_command")
-    gwifi_rb = gwifi_subparsers.add_parser(
-        "register-broker", help="Register gwifi puck broker logins on HA Mosquitto",
+    wifi_subparsers = wifi_parser.add_subparsers(dest="wifi_command")
+    wifi_rb = wifi_subparsers.add_parser(
+        "register-broker", help="Register wifi-device broker logins on HA Mosquitto",
     )
-    gwifi_rb.add_argument("--dry-run", action="store_true", help="Show changes without applying")
-    gwifi_rb.add_argument(
+    wifi_rb.add_argument("--dry-run", action="store_true", help="Show changes without applying")
+    wifi_rb.add_argument(
         "--prune", action="store_true", help="Remove logins not in current device list",
     )
 
@@ -3338,12 +3338,12 @@ def main(argv: list[str] | None = None) -> int:
             s2m_parser.print_help()
             return 0
 
-    # Handle gwifi subcommands
-    if args.command == "gwifi":
-        if args.gwifi_command == "register-broker":
-            return cmd_gwifi_register_broker(args)
+    # Handle wifi subcommands
+    if args.command == "wifi":
+        if args.wifi_command == "register-broker":
+            return cmd_wifi_register_broker(args)
         else:
-            gwifi_parser.print_help()
+            wifi_parser.print_help()
             return 0
 
     # Handle wisp subcommands

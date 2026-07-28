@@ -1,8 +1,8 @@
-"""Tests for `gwifi register-broker`."""
+"""Tests for `wifi register-broker`."""
 import argparse
 from unittest.mock import patch
 
-from gdoc2netcfg.cli.main import cmd_gwifi_register_broker
+from gdoc2netcfg.cli.main import cmd_wifi_register_broker
 from gdoc2netcfg.config import (
     CacheConfig,
     HomeAssistantConfig,
@@ -15,10 +15,7 @@ from gdoc2netcfg.models.host import Host, NetworkInterface, WifiData
 from gdoc2netcfg.models.network import Site
 
 
-def _host(hostname, puck=False, sheet_type="WiFi"):
-    wifi_data = None
-    if puck:
-        wifi_data = WifiData(number=7, serial="SN0007")
+def _host(hostname, sheet_type="WiFi", wifi_data=None):
     return Host(
         machine_name=hostname.split(".")[0],
         hostname=hostname,
@@ -44,8 +41,8 @@ def _cfg_and_hosts():
         ),
     )
     hosts = [
-        _host("puck07.wifi", puck=True),
-        _host("desktop.network", puck=False, sheet_type="Network"),
+        _host("puck07.wifi", wifi_data=WifiData(number=7, serial="SN0007")),
+        _host("desktop.network", sheet_type="Network"),
     ]
     return config, hosts
 
@@ -57,7 +54,7 @@ def test_register_broker_calls_core():
          patch("gdoc2netcfg.cli.main._build_pipeline",
                return_value=(None, hosts, None, None)), \
          patch("gdoc2netcfg.supplements.mqtt_broker.register_logins") as reg:
-        rc = cmd_gwifi_register_broker(args)
+        rc = cmd_wifi_register_broker(args)
     assert rc == 0
     _ssh, prefix, logins = reg.call_args.args[:3]
     assert prefix == "wifi-"
@@ -71,7 +68,7 @@ def test_register_broker_missing_ssh_host_errors(capsys):
     with patch("gdoc2netcfg.cli.main._load_config", return_value=config), \
          patch("gdoc2netcfg.cli.main._build_pipeline",
                return_value=(None, hosts, None, None)):
-        rc = cmd_gwifi_register_broker(args)
+        rc = cmd_wifi_register_broker(args)
     assert rc == 1 and "ssh_host" in capsys.readouterr().err.lower()
 
 
@@ -82,5 +79,5 @@ def test_register_broker_empty_secret_errors(capsys):
     with patch("gdoc2netcfg.cli.main._load_config", return_value=config), \
          patch("gdoc2netcfg.cli.main._build_pipeline",
                return_value=(None, hosts, None, None)):
-        rc = cmd_gwifi_register_broker(args)
+        rc = cmd_wifi_register_broker(args)
     assert rc == 1 and "secret" in capsys.readouterr().err.lower()

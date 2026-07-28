@@ -7,8 +7,8 @@ wisp-internal.
 
 Puck identity is now sourced from ordinary WiFi-sheet hosts (two
 interfaces per puck, named 'wan' and 'lan', sharing one IPv4) rather than
-the old bespoke 'Google WiFi Pucks' sheet/parser. ``host.puck_data``
-(attached by ``derivations.puck_data.enrich_hosts_with_puck_data`` from the
+the old bespoke 'Google WiFi Pucks' sheet/parser. ``host.wifi_data``
+(attached by ``derivations.wifi_data.enrich_hosts_with_wifi_data`` from the
 sheet's '#'/'Serial' extra columns) identifies which hosts are pucks.
 
 The output is deterministic (sorted by puck number, no timestamps) so
@@ -31,14 +31,14 @@ if TYPE_CHECKING:
 def generate_gwifi_pucks(inventory: NetworkInventory) -> str:
     """Generate the pucks.json identity file for wisp's gwifi-netboot.
 
-    Iterates hosts carrying ``puck_data`` (attached by
-    ``enrich_hosts_with_puck_data``), sorted by puck number. Each puck host
+    Iterates hosts carrying ``wifi_data`` (attached by
+    ``enrich_hosts_with_wifi_data``), sorted by puck number. Each puck host
     must have exactly one interface named 'wan' and one named 'lan' — a
     missing interface raises ``ValueError`` naming the host.
     """
     pucks = sorted(
-        (h for h in inventory.hosts if h.puck_data is not None),
-        key=lambda h: h.puck_data.number,
+        (h for h in inventory.hosts if h.wifi_data is not None),
+        key=lambda h: h.wifi_data.number,
     )
     if not pucks:
         raise ValueError(
@@ -73,8 +73,8 @@ def _puck_entry(host: Host) -> dict[str, object]:
         ) from e
     return {
         "name": host.machine_name,
-        "number": host.puck_data.number,
-        "serial": host.puck_data.serial,
+        "number": host.wifi_data.number,
+        "serial": host.wifi_data.serial,
         "eth0": str(wan.mac).upper(),
         "eth1": str(lan.mac).upper(),
         "ip": str(wan_ipv4),

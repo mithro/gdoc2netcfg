@@ -11,14 +11,14 @@ from gdoc2netcfg.config import (
     PipelineConfig,
 )
 from gdoc2netcfg.models.addressing import IPv4Address, MACAddress
-from gdoc2netcfg.models.host import Host, NetworkInterface, PuckData
+from gdoc2netcfg.models.host import Host, NetworkInterface, WifiData
 from gdoc2netcfg.models.network import Site
 
 
 def _host(hostname, puck=False):
-    puck_data = None
+    wifi_data = None
     if puck:
-        puck_data = PuckData(number=7, serial="SN0007")
+        wifi_data = WifiData(number=7, serial="SN0007")
     return Host(
         machine_name=hostname.split(".")[0],
         hostname=hostname,
@@ -29,7 +29,7 @@ def _host(hostname, puck=False):
             ip_addresses=(IPv4Address("10.1.6.7"),),
             dhcp_name=hostname,
         )],
-        puck_data=puck_data,
+        wifi_data=wifi_data,
     )
 
 

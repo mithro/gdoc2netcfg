@@ -1,25 +1,26 @@
-"""gwifi puck identity derivation from WiFi-sheet extra columns.
+"""wifi-device identity derivation from WiFi-sheet extra columns.
 
 Pure. Reads the `#` (puck number) and `Serial` extra columns that WiFi-sheet
-rows carry for gwifi pucks (both interface rows carry identical values via
-sheet formulas) and attaches a typed `PuckData` to the host. OpenMesh hosts
-on the same sheet carry neither column and are left with `puck_data is None`.
-Fails loud on partial data, malformed numbers, machine-name mismatches, and
-cross-host duplicates -- these all indicate a sheet data-entry error.
+rows carry for netboot-managed devices (both interface rows carry identical
+values via sheet formulas) and attaches a typed `WifiData` to the host.
+OpenMesh and stock hosts on the same sheet carry neither column and are left
+with `wifi_data is None`. Fails loud on partial data, malformed numbers,
+machine-name mismatches, and cross-host duplicates -- these all indicate a
+sheet data-entry error.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from gdoc2netcfg.models.host import PuckData
+from gdoc2netcfg.models.host import WifiData
 
 if TYPE_CHECKING:
     from gdoc2netcfg.models.host import Host
 
 
-def enrich_hosts_with_puck_data(hosts: list[Host]) -> None:
-    """Attach PuckData to WiFi-sheet hosts carrying '#' + 'Serial' extras.
+def enrich_hosts_with_wifi_data(hosts: list[Host]) -> None:
+    """Attach WifiData to WiFi-sheet hosts carrying '#' + 'Serial' extras.
 
     Both interface rows of a puck carry the same values (sheet formulas), so
     equal duplicates within one host are fine. Raises ValueError on partial
@@ -63,4 +64,4 @@ def enrich_hosts_with_puck_data(hosts: list[Host]) -> None:
             )
         seen_numbers[number] = host.hostname
         seen_serials[serial] = host.hostname
-        host.puck_data = PuckData(number=number, serial=serial)
+        host.wifi_data = WifiData(number=number, serial=serial)

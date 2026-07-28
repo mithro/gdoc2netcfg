@@ -252,7 +252,7 @@ def build_puck_rows(flash_tab_values: list[list[str]], start_row: int) -> list[l
     rows (puck04, 05, 08, 09) -- it is a free-text nickname field, filled in
     inconsistently, not a reliable machine-name source. The number->name
     mapping is otherwise already the fleet's identity convention (see
-    ``derivations/puck_data.py``'s ``f"puck{number:02d}"`` check), so
+    ``derivations/wifi_data.py``'s ``f"puck{number:02d}"`` check), so
     deriving it here keeps the sheet self-consistent even when that column
     is empty.
 

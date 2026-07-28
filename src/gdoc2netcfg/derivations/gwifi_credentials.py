@@ -1,7 +1,7 @@
 """gwifi puck per-device MQTT credential derivation.
 
-Pure. Selects the gwifi puck devices (those carrying `PuckData`, attached by
-`puck_data.enrich_hosts_with_puck_data`) and builds the `{gwifi-<id>: password}`
+Pure. Selects the gwifi puck devices (those carrying `WifiData`, attached by
+`wifi_data.enrich_hosts_with_wifi_data`) and builds the `{gwifi-<id>: password}`
 map for `register-broker`, reusing the shared credential core.
 """
 
@@ -23,8 +23,8 @@ PREFIX = "gwifi-"
 
 
 def select_pucks(hosts: list[Host]) -> list[Host]:
-    """gwifi pucks = hosts with puck identity data (`host.puck_data`)."""
-    return [h for h in hosts if h.puck_data is not None]
+    """gwifi pucks = hosts with puck identity data (`host.wifi_data`)."""
+    return [h for h in hosts if h.wifi_data is not None]
 
 
 def build_logins(secret: str, hosts: list[Host]) -> dict[str, str]:

@@ -480,9 +480,9 @@ def _build_pipeline(config):
             hosts, db.discovery.load_latest_tasmota() if db else None,
         )
 
-        from gdoc2netcfg.derivations.puck_data import enrich_hosts_with_puck_data
+        from gdoc2netcfg.derivations.wifi_data import enrich_hosts_with_wifi_data
 
-        enrich_hosts_with_puck_data(hosts)
+        enrich_hosts_with_wifi_data(hosts)
 
         # Validate
         result = validate_all(all_records, hosts, inventory)

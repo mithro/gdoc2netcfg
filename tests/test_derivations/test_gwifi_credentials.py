@@ -9,19 +9,19 @@ from gdoc2netcfg.derivations.gwifi_credentials import (
     select_pucks,
 )
 from gdoc2netcfg.models.addressing import IPv4Address, MACAddress
-from gdoc2netcfg.models.host import Host, NetworkInterface, PuckData
+from gdoc2netcfg.models.host import Host, NetworkInterface, WifiData
 
 
 def _host(hostname, puck=False):
-    puck_data = None
+    wifi_data = None
     if puck:
-        puck_data = PuckData(number=4, serial="2831HW00VZA")
+        wifi_data = WifiData(number=4, serial="2831HW00VZA")
     return Host(
         machine_name=hostname.split(".")[0], hostname=hostname,
         sheet_type="WiFi", interfaces=[NetworkInterface(
             name=None, mac=MACAddress.parse("aa:bb:cc:dd:ee:ff"),
             ip_addresses=(IPv4Address("10.1.6.10"),), dhcp_name=hostname)],
-        puck_data=puck_data,
+        wifi_data=wifi_data,
     )
 
 
@@ -29,7 +29,7 @@ def test_prefix():
     assert PREFIX == "gwifi-"
 
 
-def test_select_pucks_only_puck_data():
+def test_select_pucks_only_wifi_data():
     hosts = [_host("puck04.wifi", puck=True), _host("desktop", puck=False)]
     assert [h.hostname for h in select_pucks(hosts)] == ["puck04.wifi"]
 

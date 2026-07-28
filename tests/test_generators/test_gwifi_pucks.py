@@ -4,7 +4,7 @@ The output contract is byte-identical to the historical bespoke-pipeline
 output (tests/fixtures/pucks.json.golden, captured from the live
 wisp.welland.mithis.com deployment before the rework). These tests build
 the inventory through the REAL pipeline path — parse_csv -> build_hosts ->
-enrich_hosts_with_puck_data -> NetworkInventory — from a WiFi-sheet CSV
+enrich_hosts_with_wifi_data -> NetworkInventory — from a WiFi-sheet CSV
 fixture mirroring every puck in the golden file, and assert the generator's
 output matches the golden bytes exactly.
 """
@@ -16,10 +16,10 @@ from pathlib import Path
 import pytest
 
 from gdoc2netcfg.derivations.host_builder import build_hosts
-from gdoc2netcfg.derivations.puck_data import enrich_hosts_with_puck_data
+from gdoc2netcfg.derivations.wifi_data import enrich_hosts_with_wifi_data
 from gdoc2netcfg.generators.gwifi_pucks import generate_gwifi_pucks
 from gdoc2netcfg.models.addressing import IPv4Address, MACAddress
-from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory, PuckData
+from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory, WifiData
 from gdoc2netcfg.models.network import Site
 from gdoc2netcfg.sources.parser import parse_csv
 
@@ -33,12 +33,12 @@ WELLAND = Site(name="welland", domain="welland.mithis.com", site_octet=1)
 def _build_puck_inventory() -> NetworkInventory:
     """Build a NetworkInventory the way the real pipeline does.
 
-    parse_csv -> build_hosts -> enrich_hosts_with_puck_data -> inventory.
+    parse_csv -> build_hosts -> enrich_hosts_with_wifi_data -> inventory.
     """
     csv_text = WIFI_SHEET_CSV.read_text()
     records = parse_csv(csv_text, "wifi")
     hosts = build_hosts(records, WELLAND)
-    enrich_hosts_with_puck_data(hosts)
+    enrich_hosts_with_wifi_data(hosts)
     return NetworkInventory(site=WELLAND, hosts=hosts)
 
 
@@ -60,7 +60,7 @@ class TestGenerateGwifiPucks:
                     ip_addresses=(IPv4Address("10.1.4.199"),),
                 ),
             ],
-            puck_data=PuckData(number=99, serial="TESTSERIAL01"),
+            wifi_data=WifiData(number=99, serial="TESTSERIAL01"),
         )
 
         inventory = NetworkInventory(site=WELLAND, hosts=[wan_only])
@@ -79,7 +79,7 @@ class TestGenerateGwifiPucks:
                     ip_addresses=(IPv4Address("10.1.4.198"),),
                 ),
             ],
-            puck_data=PuckData(number=98, serial="TESTSERIAL02"),
+            wifi_data=WifiData(number=98, serial="TESTSERIAL02"),
         )
 
         inventory = NetworkInventory(site=WELLAND, hosts=[lan_only])
@@ -89,7 +89,7 @@ class TestGenerateGwifiPucks:
     def test_no_puck_hosts_raises_instead_of_emitting_empty_json(self):
         # A missing/misconfigured 'wifi' sheet source, a failed fetch, or a
         # renamed '#'/Serial column all silently leave zero hosts with
-        # puck_data -- without this guard that would produce a valid-looking
+        # wifi_data -- without this guard that would produce a valid-looking
         # but empty pucks.json, which would wipe wisp's fleet identity if
         # deployed.
         non_puck_host = Host(

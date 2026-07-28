@@ -48,7 +48,7 @@
 - [ ] **Step 2: Registry.** In `cli/main.py` ~600: `"gwifi_pucks": ("gdoc2netcfg.generators.gwifi_pucks", "generate_gwifi_pucks")` → `"wifi": ("gdoc2netcfg.generators.wifi", "generate_wifi")`.
 - [ ] **Step 3: toml.example.** `[generators.gwifi_pucks]` → `[generators.wifi]` (keep `output = "wisp/pucks.json"`); `"gwifi_pucks"` in the `enabled` list → `"wifi"`; update the comment blocks at ~24–28 ("feed the `gwifi_pucks` generator" → "feed the `wifi` generator") and ~61–62 ("no gwifi_pucks" → "no wifi generator"); the ~96–98 deploy comment keeps `gwifi-netboot`/`wisp/pucks.json` verbatim.
 - [ ] **Step 4: Tests.** `git mv` the test file; update its imports and any `"gwifi_pucks"` generator-key strings to `"wifi"`. The golden byte-identity test (`test_matches_golden_byte_for_byte`) must remain logically unchanged and passing.
-- [ ] **Step 5: Verify + commit.** `uv run pytest && uv run ruff check src/ tests/ scripts/`; `rg -n "gwifi_pucks" .` → only historical docs under `docs/superpowers/`. `git add -A && git commit -m "rename: gwifi_pucks generator -> wifi"`
+- [ ] **Step 5: Verify + commit.** `uv run pytest && uv run ruff check src/ tests/ scripts/`; `rg -n "gwifi_pucks" .` → only historical docs under `docs/superpowers/` plus CLAUDE.md/README.md (those two are Task 6's job — src/, tests/, toml.example must be clean). `git add -A && git commit -m "rename: gwifi_pucks generator -> wifi"`
 
 ### Task 3: Config rename (`[gwifi]`/`GwifiConfig` → `[wifi]`/`WifiConfig`)
 
@@ -139,6 +139,17 @@ def select_wifi_hosts(hosts: list[Host]) -> list[Host]:
 ---
 
 ## Follow-up work (out of scope for this plan)
+
+- **Fail-soft unknown generator key** (Task 2 quality review, 2026-07-29):
+  `cmd_generate` warn-and-`continue`s on an unknown `enabled` key and still
+  exits 0 (`cli/main.py` ~673) — a stale/typo'd key silently stops output,
+  contrary to the repo's fail-loud rule. Pre-existing; deserves its own fix +
+  test. Mitigation landed in Task 7: a parametrized test asserting every
+  `enabled` key in `gdoc2netcfg.toml.example` resolves via `_get_generator`.
+- **Local/live `gdoc2netcfg.toml` key migration** (Task 2 spec review): the
+  gitignored dev-worktree toml (and any site toml created before merge) may
+  still say `gwifi_pucks`/`[gwifi]` — Task 7 updates the dev worktree's copy
+  and the PR body must note the rename for deploy time.
 
 - **WiFi-device remote syslog** (user request, 2026-07-29): replicate the
   tasmota/network-device remote-syslog functionality for the wifi devices

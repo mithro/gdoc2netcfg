@@ -248,8 +248,13 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
 
     Checks:
     - MAC address must not be assigned to multiple different IPs
-    - IP address uniqueness (multiple MACs on same IP only in the roaming
-      range, or when all MACs belong to one host)
+    - IP address uniqueness: multiple MACs on the same non-roaming IP are
+      allowed only when (a) all MACs belong to one host (e.g. a puck's
+      wan+lan interfaces sharing one fixed IP), or (b) every colliding
+      record pairs the identical MAC and all owning hosts share one
+      machine_name (a deliberate cross-sheet mirror, e.g. "wisp" recorded
+      as both host "wisp" and host "wisp.wifi"). Multiple MACs are always
+      allowed in the roaming range.
     """
     result = ValidationResult()
 
@@ -283,18 +288,31 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
     # different hosts — track the full set (not last-writer-wins) so that
     # collision is visible to the check below.
     mac_to_hostnames: dict[str, set[str]] = {}
+    # mac → set of machine_names that claim it. Parallel to mac_to_hostnames,
+    # used only by the cross-sheet mirror exception below (a VLAN-4 machine
+    # like "wisp" is permanently dual-recorded as hosts "wisp" and
+    # "wisp.wifi" — both share machine_name "wisp").
+    mac_to_machine_names: dict[str, set[str]] = {}
     for host in inventory.hosts:
         for iface in host.interfaces:
             mac_to_hostnames.setdefault(str(iface.mac), set()).add(host.hostname)
+            mac_to_machine_names.setdefault(
+                str(iface.mac), set()
+            ).add(host.machine_name)
 
-    # Multiple MACs per IP: allowed in the roaming range or when all MACs
+    # Multiple MACs per IP: allowed in the roaming range, or when all MACs
     # belong to one host (e.g. a multi-port endpoint like a puck's wan+lan
-    # interfaces sharing one fixed IP).
+    # interfaces sharing one fixed IP), or when every colliding record for
+    # the IP pairs the IDENTICAL MAC and all owning hosts share one
+    # machine_name (a deliberate cross-sheet mirror: an IP Allocation row
+    # and a wifi-tab formula row recording the same device under two
+    # hostnames, e.g. "wisp" and "wisp.wifi").
     for ip_str, macs in inventory.ip_to_macs.items():
         is_roaming = roam_prefix and ip_str.startswith(roam_prefix)
         if len(macs) <= 1 or is_roaming:
             continue
         owning_hostnames: set[str] = set()
+        owning_machine_names: set[str] = set()
         has_unowned_mac = False
         for mac, _ in macs:
             hostnames = mac_to_hostnames.get(str(mac))
@@ -302,7 +320,17 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
                 has_unowned_mac = True
             else:
                 owning_hostnames.update(hostnames)
+                owning_machine_names.update(
+                    mac_to_machine_names.get(str(mac), set())
+                )
         if not has_unowned_mac and len(owning_hostnames) == 1:
+            continue
+        unique_macs = {str(mac) for mac, _ in macs}
+        if (
+            not has_unowned_mac
+            and len(unique_macs) == 1
+            and len(owning_machine_names) == 1
+        ):
             continue
         mac_list = ", ".join(f"{mac} ({name})" for mac, name in macs)
         result.add(ConstraintViolation(

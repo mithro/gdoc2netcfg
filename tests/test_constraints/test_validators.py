@@ -25,9 +25,9 @@ def _record(machine="desktop", mac="aa:bb:cc:dd:ee:ff", ip="10.1.10.1", extra=No
     )
 
 
-def _host(hostname, interfaces):
+def _host(hostname, interfaces, machine_name=None):
     return Host(
-        machine_name=hostname,
+        machine_name=hostname if machine_name is None else machine_name,
         hostname=hostname,
         interfaces=interfaces,
     )
@@ -349,6 +349,84 @@ class TestCrossRecordConstraints:
         result = validate_cross_record_constraints(inv)
         ip_errors = [v for v in result.errors if v.code == "ip_multiple_macs"]
         assert len(ip_errors) == 0
+
+    def test_cross_sheet_mirror_identical_mac_ip_same_machine_name_ok(self):
+        """Cross-sheet mirror: the IP Allocation row (host 'wisp') and the
+        wifi-tab formula row (host 'wisp.wifi') record the IDENTICAL
+        (MAC, IP) pair under one machine_name ('wisp'). This is a
+        deliberate permanent duplication (spec 2026-07-29 wifi-sheet
+        tenwrt-site-merge §3b), not a data-entry error."""
+        hosts = [
+            _host("wisp", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="wisp"),
+            ], machine_name="wisp"),
+            _host("wisp.wifi", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="wisp.wifi"),
+            ], machine_name="wisp"),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.4.2": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wisp"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wisp.wifi"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        ip_errors = [v for v in result.errors if v.code == "ip_multiple_macs"]
+        assert len(ip_errors) == 0
+
+    def test_cross_sheet_mirror_different_machine_name_still_error(self):
+        """Same MAC+IP pair recorded twice, but the two hosts have
+        DIFFERENT machine_names — this is not a recognized mirror and must
+        still error."""
+        hosts = [
+            _host("wisp", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="wisp"),
+            ], machine_name="wisp"),
+            _host("other.wifi", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="other.wifi"),
+            ], machine_name="other"),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.4.2": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wisp"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "other.wifi"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        assert result.has_errors
+        assert result.errors[0].code == "ip_multiple_macs"
+
+    def test_cross_sheet_mirror_same_machine_name_different_macs_still_error(self):
+        """Same machine_name on both hosts, but the MACs on the IP are
+        DIFFERENT — not an identical-pair mirror, and not the single-host
+        puck exception either (two distinct hostnames), so this must still
+        error."""
+        hosts = [
+            _host("wisp", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="wisp"),
+            ], machine_name="wisp"),
+            _host("wisp.wifi", [
+                _iface(mac="aa:bb:cc:dd:ee:02", ip="10.1.4.2", dhcp_name="wisp.wifi"),
+            ], machine_name="wisp"),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.4.2": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wisp"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:02"), "wisp.wifi"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        assert result.has_errors
+        assert result.errors[0].code == "ip_multiple_macs"
 
 
 IPV6_SITE = Site(

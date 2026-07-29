@@ -198,6 +198,7 @@ class Allowlist:
             )
             for e in entries
         ]
+        self.hits = [0] * len(self.entries)
 
     @classmethod
     def load(cls, path: Path | None) -> "Allowlist":
@@ -207,13 +208,31 @@ class Allowlist:
         return cls(data.get("allow", []))
 
     def matches(self, kind: str, name: str, detail: str) -> str | None:
-        for allow_kind, pattern, detail_pattern, reason in self.entries:
+        for i, (allow_kind, pattern, detail_pattern, reason) in enumerate(
+            self.entries
+        ):
             if allow_kind != kind or not pattern.search(name):
                 continue
             if detail_pattern is not None and not detail_pattern.search(detail):
                 continue
+            self.hits[i] += 1
             return reason or "(allowlisted)"
         return None
+
+    def unused(self) -> list[tuple[str, str, str]]:
+        """Entries that matched nothing this run: (kind, pattern, reason).
+
+        An unused entry means the difference it documented no longer
+        exists (baseline caught up, or data changed) — prune it so the
+        allowlist keeps describing reality.
+        """
+        return [
+            (kind, pattern.pattern, reason)
+            for hit, (kind, pattern, _dp, reason) in zip(
+                self.hits, self.entries
+            )
+            if hit == 0
+        ]
 
 
 def run(
@@ -236,6 +255,12 @@ def run(
         else:
             unexpected += 1
             print(f"{kind.upper()} {name}  {detail}", file=out)
+
+    for kind, pattern, reason in allowlist.unused():
+        print(
+            f"UNUSED ALLOWLIST ENTRY [{kind}] {pattern}  [{reason}]",
+            file=out,
+        )
 
     print(
         f"\n{len(old.names())} old names, {len(new.names())} new names, "

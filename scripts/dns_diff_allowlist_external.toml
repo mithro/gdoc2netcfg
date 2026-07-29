@@ -69,18 +69,6 @@ detail_pattern = '^SSHFP:'
 reason = "SSHFPs consolidated at native names (site native + net natives); no longer duplicated at CNAME-owner/site iface names"
 
 [[allow]]
-kind = "changed"
-pattern = '\.welland\.mithis\.com$'
-detail_pattern = "^CAA: \\[\\] ->"
-reason = "CAA parity records added at net-anchored canonical names (ha.iot, ...)"
-
-[[allow]]
-kind = "changed"
-pattern = '\.arpa$'
-detail_pattern = "^PTR: \\['[^']+'\\] -> \\['[^']+\\.(sm|iot|int|net|pwr|store|roam|tmp|guest|wg|t-fpgas)\\.welland\\.mithis\\.com'\\]$"
-reason = "PTR targets move to the net-scoped prefix forms (design §3: today's target form, now consistently net-scoped incl. sm/global-VLAN hosts)"
-
-[[allow]]
 kind = "removed"
 pattern = '\.(iot\.iot|sm\.sm|test\.test)\.welland\.mithis\.com$'
 reason = "double-suffix junk the deployed generator emitted for suffix-named hosts (au-plug-1.iot.iot…) — net-anchored grammar removes it"
@@ -104,7 +92,29 @@ kind = "removed"
 pattern = '\.arpa$'
 reason = "the public view no longer serves internal reverse zones (10.x PTRs + v6 PTRs of RFC1918-mapped names were dnsmasq-external auth zones; design review item — pointless/leaky publicly)"
 
+
+# --- 2026-07-11 re-baseline: sheet edits newer than the redeployed /etc ---
+
 [[allow]]
 kind = "changed"
-pattern = '\.arpa$'
-reason = "remaining PTR deltas are the internal-view data findings; the public view drops reverses entirely"
+pattern = 'opi1pc-[ab]\.'
+detail_pattern = '::15[012]'
+reason = "opi1pc explicit 'IPv6 A' cells set to ::150+ post-deploy; union with the vanity ::5x (from the unchanged v4) serves both"
+
+[[allow]]
+kind = "changed"
+pattern = 'rpi5-new-13f671'
+detail_pattern = '::58'
+reason = "wlan0 row (10.X.90.58, MAC-less DNS-only) added to the sheet post-deploy"
+
+[[allow]]
+kind = "changed"
+pattern = 'sm-pcie-1\.'
+detail_pattern = '410[23]::18'
+reason = "attached rpi/esp32 rows stay modeled as interfaces (2026-07-09 ruling); their explicit v6 cells joined post-deploy"
+
+[[allow]]
+kind = "changed"
+pattern = 'ports\.sw-bb-100g'
+detail_pattern = '::110'
+reason = "ports row 10.X.16.110 added to the sheet post-deploy"

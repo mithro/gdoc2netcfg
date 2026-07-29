@@ -111,3 +111,14 @@ h.welland.mithis.com. 300 IN SSHFP 4 2 aabb
 """)
     rc, out = _run(tmp_path)
     assert rc == 0, out
+
+
+class TestUnusedEntries:
+    def test_unused_entries_reported(self):
+        allowlist = diff_dns.Allowlist([
+            {"kind": "removed", "pattern": "gone-host", "reason": "used"},
+            {"kind": "added", "pattern": "never-matches", "reason": "stale"},
+        ])
+        assert allowlist.matches("removed", "gone-host.example", "A=[...]")
+        unused = allowlist.unused()
+        assert unused == [("added", "never-matches", "stale")]

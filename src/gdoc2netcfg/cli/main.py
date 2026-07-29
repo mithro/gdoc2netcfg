@@ -2500,12 +2500,20 @@ def cmd_wifi_register_broker(args: argparse.Namespace) -> int:
 def cmd_wifi_show_login(args: argparse.Namespace) -> int:
     """Print derived WiFi-device broker logins (device-side out-of-band config).
 
-    Same derivation as `wifi register-broker` (single source of truth): reads
-    `mqtt_secret` from the site toml, so on prod this runs as root, like
-    `password`. Unlike `register-broker`, this never contacts the broker --
-    it only prints the locally-derivable username/password pair so callers
-    (e.g. `tools/fleet/set_device_vars.py`) can push it to the device/OpenWISP
-    side out-of-band. Prints secrets by design; never writes them to a file.
+    WARNING: prints raw MQTT credentials (plaintext passwords) to stdout by
+    design -- this is the only command in the tasmota/wifi/wisp family that
+    does. Same derivation as `wifi register-broker` (single source of
+    truth): reads `mqtt_secret` from the site toml, so on prod this runs as
+    root, like `password`. Unlike `register-broker`, this never contacts the
+    broker -- it only prints the locally-derivable username/password pair so
+    callers (e.g. `tools/fleet/set_device_vars.py`) can push it to the
+    device/OpenWISP side out-of-band. Never writes secrets to a file.
+
+    Requires either explicit host name(s) or `--all`: unlike `password`
+    (whose query is a required positional), `hosts` alone is `nargs="*"`, so
+    without this gate a bare invocation -- or a typo that drops the
+    argument -- would silently dump every WiFi-sheet host's plaintext
+    password. `--all` and explicit host names are mutually exclusive.
     """
     import json
 
@@ -2515,6 +2523,21 @@ def cmd_wifi_show_login(args: argparse.Namespace) -> int:
         build_logins,
         select_wifi_hosts,
     )
+
+    if args.all and args.hosts:
+        print(
+            "Error: --all cannot be combined with explicit host names",
+            file=sys.stderr,
+        )
+        return 1
+    if not args.all and not args.hosts:
+        print(
+            "Error: specify host name(s), or --all for every WiFi-sheet "
+            "host (refusing to guess -- this command prints plaintext "
+            "passwords)",
+            file=sys.stderr,
+        )
+        return 1
 
     config = _load_config(args)
     _records, hosts, _inventory, _result = _build_pipeline(config)
@@ -2533,7 +2556,7 @@ def cmd_wifi_show_login(args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    wanted = args.hosts or sorted(by_machine)
+    wanted = sorted(by_machine) if args.all else args.hosts
     unknown = [m for m in wanted if m not in by_machine]
     if unknown:
         print(f"Error: not WiFi-sheet hosts: {', '.join(unknown)}", file=sys.stderr)
@@ -3290,11 +3313,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     wifi_sl = wifi_subparsers.add_parser(
         "show-login",
-        help="Print derived WiFi-device broker logins (device-side out-of-band config)",
+        help="Print derived WiFi-device broker logins "
+             "(WARNING: prints raw MQTT credentials to stdout)",
+        description="Print derived WiFi-device broker logins (device-side "
+                     "out-of-band config). WARNING: prints raw MQTT "
+                     "credentials (plaintext passwords) to stdout; run as "
+                     "root on prod, like `password`. Never contacts the "
+                     "broker.",
     )
     wifi_sl.add_argument(
         "hosts", nargs="*",
-        help="Machine name(s) to show (default: every WiFi-sheet host)",
+        help="Machine name(s) to show (mutually exclusive with --all)",
+    )
+    wifi_sl.add_argument(
+        "--all", action="store_true",
+        help="Show every WiFi-sheet host. Required when no host names are "
+             "given -- refuses to guess, since this prints plaintext "
+             "passwords",
     )
     wifi_sl.add_argument(
         "--json", action="store_true",

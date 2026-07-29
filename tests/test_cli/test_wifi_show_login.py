@@ -74,9 +74,16 @@ def _patch(config, hosts):
 
 
 def test_show_login_all_hosts_json(capsys):
-    """No positional args -> every WiFi-sheet host, JSON output."""
+    """--all (no positional names) -> every WiFi-sheet host, JSON output.
+
+    NOTE: deviates from the plan's literal "no positional args -> every
+    WiFi host" -- a bare invocation is now a usage error instead (see
+    test_show_login_bare_invocation_errors); the all-hosts path is reached
+    via --all instead, to avoid a dropped-argument footgun that would dump
+    every plaintext password by default.
+    """
     config, hosts = _cfg_and_hosts()
-    args = argparse.Namespace(config=None, hosts=[], json=True)
+    args = argparse.Namespace(config=None, hosts=[], all=True, json=True)
     p1, p2 = _patch(config, hosts)
     with p1, p2:
         rc = cmd_wifi_show_login(args)
@@ -90,7 +97,7 @@ def test_show_login_all_hosts_json(capsys):
 def test_show_login_single_host_text(capsys):
     """A single machine name -> one 'username password' text line."""
     config, hosts = _cfg_and_hosts()
-    args = argparse.Namespace(config=None, hosts=["puck06"], json=False)
+    args = argparse.Namespace(config=None, hosts=["puck06"], all=False, json=False)
     p1, p2 = _patch(config, hosts)
     with p1, p2:
         rc = cmd_wifi_show_login(args)
@@ -102,7 +109,7 @@ def test_show_login_single_host_text(capsys):
 def test_show_login_unknown_host_errors(capsys):
     """An unknown machine name -> exit 1, error names the unknown machine."""
     config, hosts = _cfg_and_hosts()
-    args = argparse.Namespace(config=None, hosts=["puck99"], json=False)
+    args = argparse.Namespace(config=None, hosts=["puck99"], all=False, json=False)
     p1, p2 = _patch(config, hosts)
     with p1, p2:
         rc = cmd_wifi_show_login(args)
@@ -115,7 +122,7 @@ def test_show_login_non_wifi_host_is_unknown(capsys):
     """A real host from a different sheet is still 'unknown' here -- this
     command only ever knows about WiFi-sheet hosts."""
     config, hosts = _cfg_and_hosts()
-    args = argparse.Namespace(config=None, hosts=["desktop"], json=False)
+    args = argparse.Namespace(config=None, hosts=["desktop"], all=False, json=False)
     p1, p2 = _patch(config, hosts)
     with p1, p2:
         rc = cmd_wifi_show_login(args)
@@ -123,10 +130,62 @@ def test_show_login_non_wifi_host_is_unknown(capsys):
     assert "desktop" in capsys.readouterr().err
 
 
+def test_show_login_bare_invocation_errors(capsys):
+    """Neither host names nor --all -> usage error, not a fleet-wide
+    plaintext-password dump (IMPORTANT fix: this used to be the default
+    all-hosts path -- a dropped argument would have silently printed every
+    WiFi-sheet host's password)."""
+    config, hosts = _cfg_and_hosts()
+    args = argparse.Namespace(config=None, hosts=[], all=False, json=False)
+    p1, p2 = _patch(config, hosts)
+    with p1, p2:
+        rc = cmd_wifi_show_login(args)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "--all" in err
+
+
+def test_show_login_all_with_hosts_is_ambiguous_error(capsys):
+    """--all combined with explicit host names is ambiguous -> error."""
+    config, hosts = _cfg_and_hosts()
+    args = argparse.Namespace(config=None, hosts=["puck06"], all=True, json=False)
+    p1, p2 = _patch(config, hosts)
+    with p1, p2:
+        rc = cmd_wifi_show_login(args)
+    assert rc == 1
+    assert "--all" in capsys.readouterr().err
+
+
+def test_show_login_machine_name_collision_fails_loud(capsys):
+    """Two distinct WiFi-sheet Hosts sharing a machine_name -- the BMC-style
+    split shape host_builder.py can produce for other sheets -- must fail
+    loud (non-zero exit, stderr naming the colliding machine) rather than
+    the by_machine dict comprehension silently dropping one host's login."""
+    config, hosts = _cfg_and_hosts()
+    colliding = Host(
+        machine_name="puck06",  # same machine_name as hosts[0], distinct hostname
+        hostname="bmc.puck06.wifi",
+        sheet_type="WiFi",
+        interfaces=[NetworkInterface(
+            name=None,
+            mac=MACAddress.parse("aa:bb:cc:dd:ee:fe"),
+            ip_addresses=(IPv4Address("10.1.6.8"),),
+            dhcp_name="bmc.puck06.wifi",
+        )],
+    )
+    hosts = [*hosts, colliding]
+    args = argparse.Namespace(config=None, hosts=[], all=True, json=True)
+    p1, p2 = _patch(config, hosts)
+    with p1, p2:
+        rc = cmd_wifi_show_login(args)
+    assert rc == 1
+    assert "puck06" in capsys.readouterr().err
+
+
 def test_show_login_never_touches_broker(capsys):
     """This command must never register/verify against the live broker."""
     config, hosts = _cfg_and_hosts()
-    args = argparse.Namespace(config=None, hosts=[], json=True)
+    args = argparse.Namespace(config=None, hosts=[], all=True, json=True)
     p1, p2 = _patch(config, hosts)
     with p1, p2, patch(
         "gdoc2netcfg.supplements.mqtt_broker.register_logins"
@@ -140,7 +199,9 @@ def test_show_login_json_shape(capsys):
     """--json shape must be exactly {machine: {"username", "password"}} --
     no extra wrapper keys -- this is the fleet tool's parse contract."""
     config, hosts = _cfg_and_hosts()
-    args = argparse.Namespace(config=None, hosts=["puck06", "puck12"], json=True)
+    args = argparse.Namespace(
+        config=None, hosts=["puck06", "puck12"], all=False, json=True,
+    )
     p1, p2 = _patch(config, hosts)
     with p1, p2:
         rc = cmd_wifi_show_login(args)

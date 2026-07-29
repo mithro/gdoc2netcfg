@@ -183,8 +183,12 @@ MAC + same IP). User decision: keep both forever. Two code changes:
 - **Validator carve-out (`ip_multiple_macs` ONLY, ADDITIVE):** the check
   gains an OR'd second exception: a duplicate is also accepted when every
   colliding record pairs the identical (MAC, IP) AND all owning hosts
-  share one `machine_name` — a deliberate cross-sheet mirror, not a
-  data-entry error. The existing same-host multi-MAC exception (pucks:
+  share one `machine_name` AND the owning hosts span MORE THAN ONE
+  `sheet_type` (the genuine cross-sheet signal; added during review —
+  without it, a BMC split's parent/child, which legitimately share a
+  machine_name AND a sheet_type, could have a copy-paste MAC+IP typo
+  silently accepted) — a deliberate cross-sheet mirror, not a data-entry
+  error. The existing same-host multi-MAC exception (pucks:
   different MACs, ONE owning host) must keep working unchanged — this is
   an addition, not a rewrite; the implementation needs a parallel
   `mac → machine_names` map alongside the current `mac_to_hostnames`.

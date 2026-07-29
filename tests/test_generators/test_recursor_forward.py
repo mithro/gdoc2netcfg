@@ -151,3 +151,31 @@ class TestForwardZones:
         # wg/tfpgas must NOT point at a leaf gateway
         assert e[f"wg.{DOMAIN}"] == ["127.0.0.1:5300"]
         assert e[f"tfpgas.{DOMAIN}"] == ["127.0.0.1:5300"]
+
+
+class TestRecurseFlags:
+    """Zones served by dnsmasq (leaf gateways, delegated tweed, peer
+    sites) are RECURSIVE forwards: dnsmasq isn't a clean auth — names
+    missing from its local data are forwarded upstream and come back
+    without aa/SOA, which an auth-style forward treats as lame
+    (SERVFAIL). Central pdns zones stay auth-style (no recurse flag)."""
+
+    def test_leaf_zones_recurse(self):
+        yaml_text = _generate()
+        blocks = yaml_text.split("- zone: ")
+        int_block = next(b for b in blocks if b.startswith("int."))
+        assert "recurse: true" in int_block
+
+    def test_central_zones_do_not_recurse(self):
+        yaml_text = _generate()
+        blocks = yaml_text.split("- zone: ")
+        site_block = next(
+            b for b in blocks if b.startswith("welland.mithis.com")
+        )
+        assert "recurse" not in site_block
+
+    def test_delegated_net_recurses(self):
+        yaml_text = _generate()
+        blocks = yaml_text.split("- zone: ")
+        fpgas_block = next(b for b in blocks if b.startswith("fpgas."))
+        assert "recurse: true" in fpgas_block

@@ -45,6 +45,7 @@ uv run gdoc2netcfg tasmota configure <host>      # Push config to a specific dev
 uv run gdoc2netcfg tasmota ha-status       # Check Home Assistant integration
 uv run gdoc2netcfg tasmota register-broker --dry-run  # Preview Tasmota broker login changes
 uv run gdoc2netcfg wifi register-broker --dry-run     # Preview WiFi-device broker login changes
+uv run gdoc2netcfg wifi show-login --json <machine>...  # Print derived WiFi-device broker logins (never touches the broker)
 uv run gdoc2netcfg zigbee scan --force     # Scan Zigbee2MQTT sites via MQTT
 uv run gdoc2netcfg zigbee show             # Show cached Zigbee device data
 uv run gdoc2netcfg zigbee update-sheet --dry-run  # Preview Zigbee sheet updates
@@ -515,6 +516,15 @@ configured out-of-band with the same derived `MqttUser`/`MqttPassword`
 (`openssl rand -hex 32`), lives only in the gitignored `gdoc2netcfg.toml`
 (kept `0600`), and must be mirrored into any vault that independently
 re-derives the same logins.
+
+`gdoc2netcfg wifi show-login [--json] [machine ...]` prints the same
+`wifi-<id>` logins derived by `wifi register-broker` (single source of
+truth) without ever contacting the broker — the out-of-band mechanism for
+pushing the derived credential onto the device/OpenWISP side (e.g.
+`tools/fleet/set_device_vars.py` in the gwifi-openwrt repo). With no
+positional args it prints every WiFi-sheet host; `--json` emits
+`{machine: {"username", "password"}}`. Reads `mqtt_secret` from the site
+toml, so it must run as root on prod, like `password`.
 
 ### Tasmota remote syslog
 

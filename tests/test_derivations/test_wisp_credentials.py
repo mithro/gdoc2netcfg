@@ -36,8 +36,16 @@ def test_select_wisp_absent_raises():
         select_wisp([_host("ten64")])
 
 
+def test_select_wisp_picks_hostname_over_machine_name_mirror():
+    """A `wisp.wifi` mirror host sharing machine_name='wisp' (added by the
+    wifi-sheet tenwrt merge) must not be confused with the real service
+    host — selection is keyed on hostname, not machine_name."""
+    hosts = [_host("wisp"), _host("wisp.wifi", machine_name="wisp")]
+    assert select_wisp(hosts).hostname == "wisp"
+
+
 def test_select_wisp_duplicate_raises():
-    hosts = [_host("wisp"), _host("wisp.welland", machine_name="wisp")]
+    hosts = [_host("wisp"), _host("wisp", machine_name="wisp-b")]
     with pytest.raises(ValueError, match="wisp"):
         select_wisp(hosts)
 

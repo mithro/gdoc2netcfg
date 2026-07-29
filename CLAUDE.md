@@ -409,7 +409,9 @@ shared `derivations/mqtt_credentials.py` core (`username`/`password`/
   MQTT client on them) — they're registered anyway as deliberate spares,
   the same precedent as the sensors2mqtt SDR Pis.
 - `[wisp]` (`derivations/wisp_credentials.py`, prefix `wisp-`) — a single
-  login for the OpenWISP service host (`machine_name == "wisp"`).
+  login for the OpenWISP service host (`hostname == "wisp"` — keyed on
+  hostname, not machine_name, so a `wisp.wifi` mirror host sharing
+  machine_name "wisp" doesn't get confused with the real service host).
 
 `wifi`/`wisp` only *register* logins on the broker (`gdoc2netcfg wifi
 register-broker` / `gdoc2netcfg wisp register-broker`, both `--dry-run`-able)

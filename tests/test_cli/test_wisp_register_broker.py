@@ -40,7 +40,7 @@ def _cfg_and_hosts():
         ),
     )
     hosts = [
-        _host("wisp.network", machine_name="wisp"),
+        _host("wisp"),
         _host("desktop.network"),
     ]
     return config, hosts
@@ -57,7 +57,7 @@ def test_register_broker_calls_core():
     assert rc == 0
     _ssh, prefix, logins = reg.call_args.args[:3]
     assert prefix == "wisp-"
-    assert set(logins) == {"wisp-wisp_network"}
+    assert set(logins) == {"wisp-wisp"}
 
 
 def test_register_broker_missing_ssh_host_errors(capsys):

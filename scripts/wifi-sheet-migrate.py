@@ -426,42 +426,66 @@ def build_openmesh_rows(
 
 
 def _vlan_cell_is_4(value) -> bool:
-    """True if a raw IP-Alloc VLAN cell means VLAN 4, regardless of whether
-    the Sheets API returned it as an int, a float, or a str -- the live
-    column is mixed-type (see the design doc)."""
-    if value is None or value == "":
+    """True iff a raw IP-Alloc VLAN cell matches what the emitted formula's
+    own ``&""="4"`` criterion would match live: the literal int 4 (Sheets
+    renders whole numbers via string concatenation without a decimal
+    point, so ``4 & "" == "4"``) or the exact string ``"4"`` -- NOT
+    ``4.0``, ``"04"``, ``" 4"``, or anything else that would coerce
+    differently. Stricter than some hypothetical Sheets cell shapes might
+    need, but erring toward a build-time refusal here is safe; erring
+    toward silently matching (or miscounting) the wrong row is not.
+    """
+    if isinstance(value, bool):
         return False
-    try:
-        return float(value) == 4.0
-    except (TypeError, ValueError):
-        return False
+    if isinstance(value, int):
+        return value == 4
+    if isinstance(value, str):
+        return value == "4"
+    return False
 
 
-def _has_vlan4_row(
+def _vlan4_row_count(
     ip_alloc_values: list[list[str]], idx: dict[str, int], site: str, machine: str
-) -> bool:
-    """True if some data row in ``ip_alloc_values`` matches Site+Machine
-    with a VLAN-4 cell -- the existence precondition for a safe
-    ``build_infra_rows`` formula (see its docstring)."""
+) -> int:
+    """How many data rows in ``ip_alloc_values`` match Site+Machine with a
+    VLAN-4 cell -- ``build_infra_rows`` requires exactly one (0 means no
+    source row; 2+ means MATCH would silently pick whichever comes first).
+    """
+    count = 0
     for row in ip_alloc_values[1:]:
+        # Case-sensitive by design: stricter than Sheets' own
+        # case-insensitive `=` comparison, so a differently-cased
+        # Site/Machine value causes a build-time refusal here rather than
+        # silently being counted the same as (or different from) what the
+        # live formula would actually match.
         if _cell(row, idx["Site"]) != site:
             continue
         if _cell(row, idx["Machine"]) != machine:
             continue
         raw_vlan = row[idx["VLAN"]] if idx["VLAN"] < len(row) else None
         if _vlan_cell_is_4(raw_vlan):
-            return True
-    return False
+            count += 1
+    return count
 
 
 def _vlan4_lookup_formula(
     value_col: str, site_col: str, machine_col: str, vlan_col: str, site: str, machine: str
 ) -> str:
-    """INDEX/MATCH formula pulling ``value_col`` from IP_ALLOC_TAB_TITLE by
-    content: Site+Machine+VLAN==4. Content-matched (never a fixed row) and
-    column-shift-resistant (the caller derives every column letter from
-    IP_ALLOC_TAB_TITLE's own fetched header). The VLAN criterion coerces via
-    ``&""="4"`` because the live VLAN column mixes numbers and strings.
+    """Bare INDEX/MATCH formula pulling ``value_col`` from
+    IP_ALLOC_TAB_TITLE by content: Site+Machine+VLAN==4. Content-matched
+    (never a fixed row) and column-shift-resistant (the caller derives
+    every column letter from IP_ALLOC_TAB_TITLE's own fetched header). The
+    VLAN criterion coerces via ``&""="4"`` because the live VLAN column
+    mixes numbers and strings. The multiplied criteria are wrapped in
+    ARRAYFORMULA so MATCH's array-context propagation doesn't depend on an
+    implicit-array corner case.
+
+    Deliberately NO ``IFERROR`` wrapper (unlike the puck lookup formulas):
+    a deleted/renamed IP-Alloc source row must surface as a loud ``#N/A``
+    in the sheet -- and a failed ``MACAddress.parse`` at generate time --
+    not a silently blank cell. A blank cell would parse to an empty-MAC
+    record that ``build_hosts`` discards with only a WARNING, vanishing
+    DNS records and the broker login with zero hard errors anywhere.
     """
     tab = IP_ALLOC_TAB_TITLE
     criteria = (
@@ -469,7 +493,10 @@ def _vlan4_lookup_formula(
         f"('{tab}'!{machine_col}:{machine_col}=\"{machine}\")*"
         f"('{tab}'!{vlan_col}:{vlan_col}&\"\"=\"4\")"
     )
-    return f"=IFERROR(INDEX('{tab}'!{value_col}:{value_col},MATCH(1,{criteria},0)),\"\")"
+    return (
+        f"=INDEX('{tab}'!{value_col}:{value_col},"
+        f"MATCH(1,ARRAYFORMULA({criteria}),0))"
+    )
 
 
 def build_infra_rows(ip_alloc_values: list[list[str]]) -> list[list[str]]:
@@ -492,11 +519,12 @@ def build_infra_rows(ip_alloc_values: list[list[str]]) -> list[list[str]]:
     (never a hardcoded column letter, never a fixed row number -- both
     would silently break on the next row/column shift in the live sheet).
 
-    Fails loud (ValueError) if any of the six (site, machine) source rows
-    has no matching VLAN-4 row in ``ip_alloc_values`` -- emitting a formula
-    for a pair with no source row would silently evaluate to #N/A (worse,
-    masked by the IFERROR wrapper) instead of surfacing the problem here,
-    at build time.
+    Fails loud (ValueError) if any of the six (site, machine) pairs does
+    NOT have EXACTLY ONE matching VLAN-4 row in ``ip_alloc_values``: zero
+    matches would emit a formula that evaluates to #N/A; two or more would
+    emit a formula that MATCH resolves by silently picking whichever row
+    comes first, hiding an ambiguity this tool has no business resolving
+    for itself.
     """
     if not ip_alloc_values:
         raise ValueError(f"{IP_ALLOC_TAB_TITLE}: tab is empty (no header row)")
@@ -507,16 +535,19 @@ def build_infra_rows(ip_alloc_values: list[list[str]]) -> list[list[str]]:
     }
     col = {name: col_letter(i) for name, i in idx.items()}
 
-    missing = [
-        (site, machine)
+    violations = [
+        (site, machine, count)
         for site in INFRA_SITES
         for machine in INFRA_MACHINES
-        if not _has_vlan4_row(ip_alloc_values, idx, site, machine)
+        for count in [_vlan4_row_count(ip_alloc_values, idx, site, machine)]
+        if count != 1
     ]
-    if missing:
+    if violations:
         raise ValueError(
-            f"{IP_ALLOC_TAB_TITLE}: missing VLAN-4 row(s) for {missing} -- refusing to "
-            "emit infra formula(s) that would silently evaluate to #N/A"
+            f"{IP_ALLOC_TAB_TITLE}: expected exactly one VLAN-4 row per (site, machine) "
+            f"pair; got these (site, machine, count) violations: {violations} -- 0 would "
+            "emit a formula that evaluates to #N/A, 2+ would let MATCH silently pick "
+            "whichever row comes first"
         )
 
     rows: list[list[str]] = []

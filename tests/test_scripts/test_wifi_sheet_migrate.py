@@ -636,6 +636,27 @@ class TestBuildInfraRows:
         for row in rows:
             assert '&""="4"' in row[mac_col]
 
+    def test_no_iferror_wrapper(self):
+        # Review-adjudicated (task 6 follow-up): a later-deleted IP-Alloc
+        # row must surface as a loud #N/A (and a failed MACAddress.parse
+        # at generate time), not a silently blank cell that build_hosts
+        # drops with only a WARNING. Bare INDEX/MATCH, no IFERROR.
+        rows = wsm.build_infra_rows(INFRA_IP_ALLOC_VALUES)
+        mac_col = wsm.NEW_TAB_HEADER.index("MAC Address")
+        ip_col = wsm.NEW_TAB_HEADER.index("IP")
+        for row in rows:
+            for formula in (row[mac_col], row[ip_col]):
+                assert formula.startswith("=INDEX(")
+                assert "IFERROR" not in formula
+
+    def test_criteria_wrapped_in_arrayformula(self):
+        # ARRAYFORMULA around the multiplied criteria removes any doubt
+        # about MATCH's implicit array-context propagation in Sheets.
+        rows = wsm.build_infra_rows(INFRA_IP_ALLOC_VALUES)
+        mac_col = wsm.NEW_TAB_HEADER.index("MAC Address")
+        for row in rows:
+            assert "MATCH(1,ARRAYFORMULA(" in row[mac_col]
+
     def test_missing_source_row_fails_loud(self):
         # Drop the monarto/tenwrt row -- build_infra_rows must refuse to
         # emit a formula for a pair with no matching source row (it would
@@ -647,6 +668,30 @@ class TestBuildInfraRows:
         ]
         with pytest.raises(ValueError, match=r"monarto.*tenwrt"):
             wsm.build_infra_rows(rows)
+
+    def test_duplicate_vlan4_row_fails_loud(self):
+        # A SECOND VLAN-4 row for the same (site, machine) -- MATCH would
+        # silently pick the first one it finds; build_infra_rows must
+        # refuse instead of emitting a formula with ambiguous provenance.
+        dup = [row[:] for row in INFRA_IP_ALLOC_VALUES]
+        dup.append(
+            ["welland", "ten64", "eth1", "", "", "", "", "", 4,
+             "02:00:0a:01:04:99", "10.1.4.99"]
+        )
+        with pytest.raises(ValueError, match=r"welland.*ten64.*2"):
+            wsm.build_infra_rows(dup)
+
+    def test_float_vlan_cell_not_treated_as_vlan_4(self):
+        # The emitted formula's own `&""="4"` criterion matches the
+        # literal int 4 (Sheets renders whole numbers via concatenation
+        # without a decimal point) or the exact string "4" -- NOT a float
+        # 4.0. The Python-side existence/uniqueness check must agree, or
+        # it could pass a row through that wouldn't actually match live.
+        values = [row[:] for row in INFRA_IP_ALLOC_VALUES]
+        values[1] = values[1][:]  # welland/ten64, VLAN col index 8
+        values[1][8] = 4.0
+        with pytest.raises(ValueError, match=r"welland.*ten64.*0"):
+            wsm.build_infra_rows(values)
 
     def test_empty_tab_fails_loud(self):
         with pytest.raises(ValueError, match="empty"):

@@ -177,10 +177,42 @@ class TestSiteFilteredWifiSheetHosts:
         tenwrt = next(h for h in hosts if h.hostname == "tenwrt.wifi")
         assert tenwrt.wifi_data is None
 
-    def test_golden_pucks_json_still_byte_identical(self):
-        # Belt-and-braces alongside TestGenerateWifi.test_matches_golden_byte_for_byte:
-        # the broadened fixture (OpenMesh + infra rows) must not perturb
-        # pucks.json, which only ever sees hosts with wifi_data set.
-        inventory = _build_puck_inventory()
-        out = generate_wifi(inventory)
-        assert out == GOLDEN.read_text()
+    def test_infra_mirror_ips_are_site_literal(self):
+        # The fixture's infra MAC/IP cells are the EVALUATED formula values
+        # (site-literal, e.g. 10.1.4.1 at welland / 10.2.4.1 at monarto --
+        # no 'X' placeholder to resolve). Pins that resolve_site_ip's
+        # pass-through for non-X IPs is actually what's exercised here.
+        for site, octet in ((WELLAND, 1), (MONARTO, 2)):
+            hosts = _build_hosts_for_site(site)
+            by_hostname = {h.hostname: h for h in hosts}
+            for machine, last_octet in (("ten64", 1), ("wisp", 2), ("tenwrt", 3)):
+                host = by_hostname[f"{machine}.wifi"]
+                assert len(host.interfaces) == 1
+                assert str(host.interfaces[0].ipv4) == f"10.{octet}.4.{last_octet}"
+
+    def test_openmesh_hosts_have_all_seven_interfaces_at_their_own_site(self):
+        # Guards against a partial-block leak: if Site carry-forward failed
+        # to inherit onto an OpenMesh block's covered rows, those rows would
+        # read as blank-Site (all-sites) and the block would fragment --
+        # some interfaces present at every site, not just the AP's own one.
+        for site, machines in (
+            (WELLAND, ["openmesh-ab-38", "openmesh-96-00"]),
+            (
+                MONARTO,
+                [
+                    "openmesh-ab-30",
+                    "openmesh-94-98",
+                    "openmesh-95-80",
+                    "openmesh-95-88",
+                ],
+            ),
+        ):
+            hosts = _build_hosts_for_site(site)
+            by_hostname = {h.hostname: h for h in hosts}
+            for machine in machines:
+                host = by_hostname[f"{machine}.wifi"]
+                assert len(host.interfaces) == 7, (
+                    f"{host.hostname} at {site.name}: expected 7 interfaces "
+                    f"(lan/poe/manage/wifi-roam/wifi-guest/wifi-iot/wifi-raw), "
+                    f"got {len(host.interfaces)}"
+                )

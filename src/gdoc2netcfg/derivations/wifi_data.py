@@ -1,12 +1,18 @@
 """WiFi-device identity derivation from WiFi-sheet extra columns.
 
 Pure. Reads the `#` (puck number) and `Serial` extra columns that WiFi-sheet
-rows carry for netboot-managed devices (both interface rows carry identical
-values via sheet formulas) and attaches a typed `WifiData` to the host.
-OpenMesh hosts on the same sheet carry neither column and are left
-with `wifi_data is None`. Fails loud on partial data, malformed numbers,
-machine-name mismatches, and cross-host duplicates -- these all indicate a
-sheet data-entry error.
+rows carry for netboot-managed devices, and attaches a typed `WifiData` to
+the host. `host_builder.py::build_hosts()` takes a host's `extra` dict from
+`group[0]` -- the FIRST record encountered for that host, i.e. the wan row,
+since it precedes lan in the sheet -- so puck identity here depends on
+wan-row-first ordering. `#` is never merged by `wifi-sheet-format.py` (still
+present on both interface rows in the published CSV); `Serial` is one of
+the six columns that IS merged per host block, so post-format it only
+exports on the wan (anchor) row -- moot for this module either way, since
+only `group[0]`'s extras are ever read. OpenMesh hosts on the same sheet
+carry neither column and are left with `wifi_data is None`. Fails loud on
+partial data, malformed numbers, machine-name mismatches, and cross-host
+duplicates -- these all indicate a sheet data-entry error.
 """
 
 from __future__ import annotations
@@ -22,9 +28,11 @@ if TYPE_CHECKING:
 def enrich_hosts_with_wifi_data(hosts: list[Host]) -> None:
     """Attach WifiData to WiFi-sheet hosts carrying '#' + 'Serial' extras.
 
-    Both interface rows of a puck carry the same values (sheet formulas), so
-    equal duplicates within one host are fine. Raises ValueError on partial
-    data, malformed numbers, name mismatch, or cross-host duplicates.
+    `host.extra` only ever holds the wan row's values (`build_hosts()`'s
+    `group[0]`, from wan-row-first ordering in the sheet) -- the lan row's
+    own '#'/Serial are never consulted here, whether or not the sheet still
+    duplicates them. Raises ValueError on partial data, malformed numbers,
+    name mismatch, or cross-host duplicates.
     """
     seen_numbers: dict[int, str] = {}
     seen_serials: dict[str, str] = {}

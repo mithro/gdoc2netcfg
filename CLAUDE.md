@@ -142,9 +142,14 @@ drop those records from every other site's inventory.
 
 OpenWRT fleet puck rows carry two interfaces per host (`wan` + `lan`) sharing one fixed IPv4 — an
 exception in `ip_multiple_macs` (`constraints/validators.py`) allows multiple MACs on
-one IP when every MAC belongs to the same host. Fleet puck rows also carry `#` (puck number)
-and `Serial` extra columns on both interface rows; `wifi_data.py::enrich_hosts_with_wifi_data()`
-attaches a `WifiData(number, serial)` to `host.wifi_data` for these rows. Rows with
+one IP when every MAC belongs to the same host. Fleet puck rows also carry `#` (puck number,
+never merged — present on both interface rows in the published CSV) and `Serial` (one of the
+six columns `wifi-sheet-format.py` merges per host block, so post-format it only exports on
+the wan/anchor row) extra columns; `host_builder.py::build_hosts()` takes a host's `extra`
+dict from `group[0]`, the FIRST record encountered for that host — the wan row, since it
+precedes lan in the sheet — so puck identity depends on wan-row-first ordering, not on
+Serial being duplicated onto the lan row. `wifi_data.py::enrich_hosts_with_wifi_data()`
+attaches a `WifiData(number, serial)` to `host.wifi_data` from those `group[0]` extras. Rows with
 neither column (the OpenMesh APs and the VLAN-4 infra rows below) get no `wifi_data` and
 stay out of `pucks.json`; rows with them must be machine-named `puckNN` matching `#` (checked
 in `enrich_hosts_with_wifi_data()`, every run) and carry both `wan`/`lan` interfaces
@@ -329,12 +334,12 @@ Deployed on two sites, both at `/opt/gdoc2netcfg/`:
 
 | Site | Host | IP scheme | IPv6 prefix | Generators |
 |------|------|-----------|-------------|------------|
-| welland | `ten64.welland.mithis.com` (10.1.10.1) | `10.1.X.X` | `2404:e80:a137:1XX::` | internal, external, nginx, known_hosts (+ nagios, currently unused) |
+| welland | `ten64.welland.mithis.com` (10.1.10.1) | `10.1.X.X` | `2404:e80:a137:1XX::` | internal, external, nginx, known_hosts, wifi (+ nagios, currently unused) |
 | monarto | `ten64.monarto.mithis.com` (10.2.10.1) | `10.2.X.X` | `2404:e80:a137:2XX::` | internal, external, nginx |
 
 Both sites share the same Google Spreadsheet. The spreadsheet uses `10.X.Y.Z` (literal `X` in the second octet) for devices that exist at multiple sites, and a "Site" column to restrict records to a specific site. The `site_octet` in each site's `gdoc2netcfg.toml` replaces the `X` placeholder.
 
-Both sites are externally accessible (each sets its own `public_ipv4`) and run split-horizon DNS (internal **and** external dnsmasq) plus an nginx reverse proxy. The differences: welland additionally enables the `letsencrypt` generator (per-host DNS-01 certs) and `known_hosts`, whereas monarto manages its TLS certs with **certbot directly** (its `letsencrypt` generator is not enabled — see *Let's Encrypt* below). Welland's config also lists the `nagios` generator, but it is **currently unused** — nothing consumes its `nagios-switches.cfg` output.
+Both sites are externally accessible (each sets its own `public_ipv4`) and run split-horizon DNS (internal **and** external dnsmasq) plus an nginx reverse proxy. The differences: welland additionally enables the `letsencrypt` generator (per-host DNS-01 certs), `known_hosts`, and `wifi` (emits `wisp/pucks.json` — the gale puck fleet is welland-only, so monarto never enables this generator even though it now fetches the `wifi` sheet itself for its own OpenMesh/infra hosts — see *WiFi Sheet Hosts*), whereas monarto manages its TLS certs with **certbot directly** (its `letsencrypt` generator is not enabled — see *Let's Encrypt* below). Welland's config also lists the `nagios` generator, but it is **currently unused** — nothing consumes its `nagios-switches.cfg` output.
 
 ### Deploying code changes
 
@@ -451,13 +456,16 @@ shared `derivations/mqtt_credentials.py` core (`username`/`password`/
 - `[tasmota]` — one login per Tasmota IoT device (`tas-<id>`), pushed to the
   device itself by `tasmota configure` (see below).
 - `[wifi]` (`derivations/wifi_credentials.py`, prefix `wifi-`) — one login
-  per WiFi-sheet host (`sheet_type == "WiFi"` — see *WiFi Sheet Hosts*
-  above): the 12 fleet pucks, the 6 OpenMesh APs, and the three VLAN-4
-  infra mirror hosts (`ten64.wifi`/`wisp.wifi`/`tenwrt.wifi`) at each site
-  that fetches the sheet. The OpenMesh APs can't consume the login yet (no
-  MQTT client on them), and the infra mirrors aren't standalone
-  MQTT-capable devices either — all registered anyway as deliberate
-  spares, the same precedent as the sensors2mqtt SDR Pis.
+  per WiFi-sheet host in THAT SITE's inventory (`sheet_type == "WiFi"`;
+  `build_logins()` runs over one site's already-filtered hosts, not the
+  whole sheet — see *WiFi Sheet Hosts* above): welland registers 17
+  (its 12 fleet pucks + its 2 welland OpenMesh APs, ab-38/96-00 + its 3
+  VLAN-4 infra mirrors), monarto registers 7 (its 4 OpenMesh APs + its
+  own 3 infra mirrors — no pucks; no site ever sees all 6 OpenMesh APs).
+  The OpenMesh APs can't consume the login yet (no MQTT client on them),
+  and the infra mirrors aren't standalone MQTT-capable devices either —
+  all registered anyway as deliberate spares, the same precedent as the
+  sensors2mqtt SDR Pis.
 - `[wisp]` (`derivations/wisp_credentials.py`, prefix `wisp-`) — a single
   login for the OpenWISP service host (`hostname == "wisp"` — keyed on
   hostname, not machine_name, so a `wisp.wifi` mirror host sharing

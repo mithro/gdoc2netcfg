@@ -120,3 +120,76 @@ class TestParseCSV:
         records = parse_csv(csv_text, "Test")
         assert records[0].site == ""
         assert records[0].extra.get("Location") == "Back Shed"
+
+
+class TestWifiSiteCarryForward:
+    """WiFi-sheet Site carry-forward: a merged Site cell exports its value
+    only on the anchor row, so a blank Site row must inherit the Site of
+    the immediately preceding row when the machine name is unchanged
+    (contiguous block) -- but ONLY on the wifi sheet (see the module
+    docstring rationale once implemented in parser.py).
+    """
+
+    # Shared CSV shape used by every test in this class:
+    #   row0 puckA  site=welland          (explicit anchor)
+    #   row1 puckA  site=<blank>          -> should inherit welland (a)
+    #   row2 puckB  site=<blank>          -> machine changed, no inherit (b)
+    #   row3 puckB  site=<blank>          -> still blank throughout (c)
+    #   row4 puckC  site=welland          (explicit)
+    #   row5 puckC  site=monarto          -> explicit value kept, not
+    #                                        overwritten by inheritance (e)
+    CSV_TEXT = (
+        "Machine,MAC Address,IP,Site\n"
+        "puckA,aa:bb:cc:dd:ee:01,10.1.4.1,welland\n"
+        "puckA,aa:bb:cc:dd:ee:02,10.1.4.2,\n"
+        "puckB,aa:bb:cc:dd:ee:03,10.1.4.3,\n"
+        "puckB,aa:bb:cc:dd:ee:04,10.1.4.4,\n"
+        "puckC,aa:bb:cc:dd:ee:05,10.1.4.5,welland\n"
+        "puckC,aa:bb:cc:dd:ee:06,10.1.4.6,monarto\n"
+    )
+
+    def test_blank_site_inherits_within_same_machine_block(self):
+        """(a) A blank-Site row inherits the previous row's Site when the
+        machine name matches (wifi sheet)."""
+        records = parse_csv(self.CSV_TEXT, "wifi")
+        assert records[0].machine == "puckA"
+        assert records[0].site == "welland"
+        assert records[1].machine == "puckA"
+        assert records[1].site == "welland"
+
+    def test_no_inheritance_across_machine_change(self):
+        """(b) A blank-Site row does NOT inherit across a machine change,
+        even though the immediately preceding row has a (possibly
+        inherited) Site value."""
+        records = parse_csv(self.CSV_TEXT, "wifi")
+        assert records[2].machine == "puckB"
+        assert records[2].site == ""
+
+    def test_first_row_blank_block_stays_blank_throughout(self):
+        """(c) When the FIRST row of a machine block is blank, the block
+        stays blank throughout -- there is nothing to inherit."""
+        records = parse_csv(self.CSV_TEXT, "wifi")
+        assert records[2].machine == "puckB"
+        assert records[2].site == ""
+        assert records[3].machine == "puckB"
+        assert records[3].site == ""
+
+    def test_explicit_site_on_later_row_is_kept(self):
+        """(e) An explicit, different Site on a later same-machine row is
+        kept as-is -- only blank cells inherit."""
+        records = parse_csv(self.CSV_TEXT, "wifi")
+        assert records[4].machine == "puckC"
+        assert records[4].site == "welland"
+        assert records[5].machine == "puckC"
+        assert records[5].site == "monarto"
+
+    def test_network_sheet_does_not_inherit(self):
+        """(d) The SAME csv shape parsed as sheet_name='network' keeps
+        strictly per-row Site semantics -- no carry-forward."""
+        records = parse_csv(self.CSV_TEXT, "network")
+        assert records[0].site == "welland"
+        assert records[1].site == ""  # would be "welland" if inherited
+        assert records[2].site == ""
+        assert records[3].site == ""
+        assert records[4].site == "welland"
+        assert records[5].site == "monarto"

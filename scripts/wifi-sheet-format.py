@@ -101,6 +101,29 @@ def build_requests(
     if not blocks:
         raise ValueError(f"{wsm.NEW_TAB_TITLE}: no machine blocks found -- nothing to format")
 
+    # Data-collapse guard (before emitting any merge request): a merge
+    # keeps only the anchor row's value, so if a MERGE column holds two
+    # DIFFERING non-empty values within one block, merging would silently
+    # relabel/discard one of them -- e.g. a future machine-grouped infra
+    # ordering putting a welland row and a monarto row in the same 2-row
+    # block would have the merge silently relabel the second row's Site.
+    # An anchor-non-blank + covered-blank (or vice versa) pair is fine --
+    # that's the normal single-value-written-once-per-block shape.
+    for first_row, last_row, block_machine in blocks:
+        if last_row == first_row:
+            continue
+        for col_name, col in zip(MERGE_COLUMNS_PER_BLOCK, merge_cols):
+            distinct_values = {
+                wsm._cell(values[r - 1], col) for r in range(first_row, last_row + 1)
+            } - {""}
+            if len(distinct_values) > 1:
+                raise ValueError(
+                    f"{wsm.NEW_TAB_TITLE}: machine {block_machine!r} column {col_name!r} "
+                    f"has differing non-empty values within its block (rows {first_row}-"
+                    f"{last_row}): {sorted(distinct_values)} -- merging would silently "
+                    "collapse one of them"
+                )
+
     def grid_range(start_row: int, end_row: int, start_col: int = 0, end_col: int = n_cols):
         # start_* inclusive 1-based row / 0-based col; end_row inclusive.
         return {

@@ -14,11 +14,13 @@ _spec.loader.exec_module(wsf)
 
 HEADER = list(wsf.wsm.NEW_TAB_HEADER)
 MACHINE = HEADER.index("Machine")
+SITE = HEADER.index("Site")
 
 
-def _row(machine: str) -> list[str]:
+def _row(machine: str, site: str = "") -> list[str]:
     row = [""] * len(HEADER)
     row[MACHINE] = machine
+    row[SITE] = site
     return row
 
 
@@ -153,3 +155,49 @@ class TestBuildRequests:
     def test_no_blocks_fails_loud(self):
         with pytest.raises(ValueError, match="no machine blocks"):
             self._requests(values=[HEADER])
+
+
+class TestMergeColumnDataCollapseGuard:
+    """Task 5 review, sanctioned addition: a future machine-grouped infra
+    ordering could put two DIFFERENT sites' rows in one 2-row machine
+    block; merging Site would then silently relabel the second row's site.
+    build_requests must refuse before emitting any merge request."""
+
+    def _requests(self, values):
+        return wsf.build_requests(
+            sheet_id=42,
+            values=values,
+            grid_rows=len(values),
+            grid_cols=len(HEADER),
+            existing_banded_range_ids=[],
+        )
+
+    def test_differing_nonempty_values_in_a_block_raises(self):
+        values = [
+            HEADER,
+            _row("dup-machine", site="welland"),
+            _row("dup-machine", site="monarto"),
+        ]
+        with pytest.raises(ValueError, match=r"dup-machine.*Site"):
+            self._requests(values)
+
+    def test_anchor_nonblank_covered_blank_is_fine(self):
+        values = [
+            HEADER,
+            _row("m", site="welland"),
+            _row("m", site=""),
+        ]
+        self._requests(values)  # no raise
+
+    def test_anchor_blank_covered_nonblank_is_fine(self):
+        values = [
+            HEADER,
+            _row("m", site=""),
+            _row("m", site="welland"),
+        ]
+        self._requests(values)  # no raise
+
+    def test_single_row_block_never_checked(self):
+        # A 1-row block has nothing to merge/collapse regardless of content.
+        values = [HEADER, _row("solo", site="welland")]
+        self._requests(values)  # no raise

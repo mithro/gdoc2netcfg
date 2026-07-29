@@ -136,7 +136,8 @@ add the wifi sheet URL, and the `wifi` generator stays welland-only (the
 - New parser tests: carry-forward within a machine block; no inheritance
   across machine boundaries; blank-first-row block stays all-sites; existing
   per-row-Site sheets unaffected.
-- Formatter tests: border-clear request emitted first; merge requests cover
+- Formatter tests: border-clear request emitted immediately after
+  `unmergeCells`, before any other formatting request; merge requests cover
   all six columns per block.
 - Populate tests: Site overlay applied to OpenMesh rows; tenwrt row appended
   last with the exact values above.
@@ -145,13 +146,16 @@ add the wifi sheet URL, and the `wifi` generator stays welland-only (the
 
 ## Live rollout — ORDER MATTERS
 
-1. Code lands on PR #18; PR merges; **deploy to ten64 welland AND monarto**
-   (monarto's local toml gains the wifi sheet URL). The deploy must precede
-   step 3: once the formatter merges the Site column, only a
-   carry-forward-aware parser reads the covered rows correctly.
+1. Code lands on PR #18; PR merges; **deploy to ten64 welland AND monarto**.
+   The deploy must precede step 3: once the formatter merges the Site
+   column, only a carry-forward-aware parser reads the covered rows
+   correctly. Do NOT add the wifi sheet to monarto's toml yet — until
+   step 2 fills the Site column, a monarto fetch would transiently claim
+   all six APs (including welland's) at resolved 10.2 addresses.
 2. `populate` re-run (expands grid, writes Site overlay on all rows +
    tenwrt, refreshes snapshot). Safe before the deploy — values are
-   per-row-complete at this stage.
+   per-row-complete at this stage. **After this step**, add the wifi sheet
+   URL to monarto's toml.
 3. `wifi-sheet-format.py` run (clears stale borders, applies 6-column merges
    + correct block borders). Only after step 1's deploy.
 4. Verify: fresh `fetch` at both sites; welland `generate wifi --stdout`

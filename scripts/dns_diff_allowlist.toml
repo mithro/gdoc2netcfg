@@ -70,12 +70,6 @@ reason = "SSHFPs consolidated at native names (site native + net natives); no lo
 
 [[allow]]
 kind = "changed"
-pattern = '\.welland\.mithis\.com$'
-detail_pattern = "^CAA: \\[\\] ->"
-reason = "CAA parity records added at net-anchored canonical names (ha.iot, ...)"
-
-[[allow]]
-kind = "changed"
 pattern = '\.arpa$'
 detail_pattern = "^PTR: \\['[^']+'\\] -> \\['[^']+\\.(sm|iot|int|net|pwr|store|roam|tmp|guest|wg|t-fpgas)\\.welland\\.mithis\\.com'\\]$"
 reason = "PTR targets move to the net-scoped prefix forms (design §3: today's target form, now consistently net-scoped incl. sm/global-VLAN hosts)"
@@ -131,12 +125,19 @@ kind = "changed"
 pattern = '^(ipv4\.|ipv6\.)?(ports\.)?sw-bb-100g\.welland\.mithis\.com$'
 reason = "sheet addition: swp10s1 port row joins the ports aggregate"
 
-[[allow]]
-kind = "changed"
-pattern = '(sw-netgear-m7300|sw-netgear-xs748t|sw-edgecore-7512|sw-edgecore-switch|sw-cisco-shed)'
-reason = "sheet renumbering 2026-07-09: retired/spare switches moved to the 10.1.5.100+ block (not yet deployed to /etc)"
+
+# --- 2026-07-11 re-baseline: sheet edits newer than the redeployed /etc ---
+# (same classes as the external allowlist; patterns unanchored so the
+# unqualified shorts in the leaf fragments match too)
 
 [[allow]]
-kind = "removed"
-pattern = '^(1\.2|3\.3|4\.3|5\.3)\.0\.0.*ip6\.arpa$|^(21|33|34|35)\.5\.1\.10\.in-addr\.arpa$'
-reason = "old PTRs of the renumbered switches (their new PTRs are additions)"
+kind = "changed"
+pattern = 'opi1pc-[ab]'
+detail_pattern = '::15[012]'
+reason = "opi1pc explicit 'IPv6 A' cells set to ::150+ post-deploy; union with the vanity ::5x (from the unchanged v4) serves both"
+
+[[allow]]
+kind = "changed"
+pattern = 'rpi5-new-13f671'
+detail_pattern = '(::58|10\.1\.90\.58)'
+reason = "wlan0 row (10.X.90.58, MAC-less DNS-only) added to the sheet post-deploy"

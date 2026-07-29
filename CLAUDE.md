@@ -119,29 +119,69 @@ The CLI (`cli/main.py`) wires the pipeline via `_build_pipeline()` which returns
 
 BMCs (Baseboard Management Controllers) are physically separate machines attached to a primary host. When a spreadsheet row has interface="bmc" on machine="big-storage", `build_hosts()` creates a separate host `bmc.big-storage` — not a sub-interface. The BMC gets its own hostname, DNS records, DHCP binding, and PTR entry.
 
-### WiFi Sheet Hosts (gale pucks + OpenMesh APs)
+### WiFi Sheet Hosts (gale pucks + OpenMesh APs + VLAN-4 infra mirrors)
 
-The `wifi` sheet (`[sheets] wifi` in `gdoc2netcfg.toml`, welland only) is parsed by the
-standard CSV parser — there is no bespoke source module. Rows get `sheet_type="WiFi"`
-and a `.wifi` hostname/DHCP-name suffix (`dns_names.py`), exactly like `.iot`. OpenWRT
-fleet puck rows carry two interfaces per host (`wan` + `lan`) sharing one fixed IPv4 — an
+The `wifi` sheet (`[sheets] wifi` in `gdoc2netcfg.toml`, fetched by BOTH sites) is parsed
+by the standard CSV parser — there is no bespoke source module. Rows get `sheet_type="WiFi"`
+and a `.wifi` hostname/DHCP-name suffix (`dns_names.py`), exactly like `.iot`. Per-record
+Site filtering (`derivations/ip_remap.py`) gives each site only its own rows: welland gets
+the 12 fleet pucks + its 2 welland OpenMesh APs + its three `ten64.wifi`/`wisp.wifi`/
+`tenwrt.wifi` VLAN-4 mirrors (see below); monarto gets its 4 OpenMesh APs + its own three
+mirrors.
+
+**WiFi-sheet-only Site carry-forward** (`sources/parser.py::parse_csv`): the tab's Site
+column is merged per host block in the live spreadsheet (`wifi-sheet-format.py`), so a
+merged cell's value exports only on its anchor (first) row of the published CSV — covered
+rows read blank. `parse_csv` inherits the immediately preceding row's Site onto a blank-Site
+row when that row's machine name matches (a contiguous same-machine block); a genuinely
+blank first row of a block stays blank (all-sites). This inheritance is gated on
+`sheet_name.lower() == "wifi"` only — other sheets (e.g. `Welland - IP Allocation`) keep
+strictly per-row Site semantics, since they legitimately mix a non-blank anchor with blank
+all-sites continuation rows for the same machine; global inheritance there would silently
+drop those records from every other site's inventory.
+
+OpenWRT fleet puck rows carry two interfaces per host (`wan` + `lan`) sharing one fixed IPv4 — an
 exception in `ip_multiple_macs` (`constraints/validators.py`) allows multiple MACs on
 one IP when every MAC belongs to the same host. Fleet puck rows also carry `#` (puck number)
 and `Serial` extra columns on both interface rows; `wifi_data.py::enrich_hosts_with_wifi_data()`
 attaches a `WifiData(number, serial)` to `host.wifi_data` for these rows. Rows with
-neither column (the OpenMesh APs) get no `wifi_data` and stay out of `pucks.json`; rows
-with them must be machine-named `puckNN` matching `#` (checked in
-`enrich_hosts_with_wifi_data()`, every run) and carry both `wan`/`lan` interfaces
+neither column (the OpenMesh APs and the VLAN-4 infra rows below) get no `wifi_data` and
+stay out of `pucks.json`; rows with them must be machine-named `puckNN` matching `#` (checked
+in `enrich_hosts_with_wifi_data()`, every run) and carry both `wan`/`lan` interfaces
 (checked in `generators/wifi.py::_puck_entry`, at generate time). Today all 12 fleet
 pucks (`puck01`–`puck12`) qualify.
 `generators/wifi.py` iterates hosts with `wifi_data` set to emit `wisp/pucks.json`
-(see `[generators.wifi]` in the toml and *Models* below).
+(see `[generators.wifi]` in the toml — WELLAND ONLY regardless of which sites fetch the
+sheet — and *Models* below).
 
-Puck (and any other wisp-DHCP-served) rows set the `Type` extra column to `DHCP:wisp`.
-`_host_dhcp_config()` in `generators/dnsmasq.py` checks this and skips `dhcp-host`
-bindings entirely for that host — DHCP for the wisp VLAN is served by wisp's own
-gwifi-netboot infrastructure, not ten64's dnsmasq. A/PTR and other DNS records still
-generate normally through the shared sections; only the DHCP binding is suppressed.
+**VLAN-4 infra mirror rows** (`ten64`, `wisp`, `tenwrt`; one row per machine per site, six
+rows total): these record the SAME devices already present in `Welland - IP Allocation`
+under their `ten64`/`wisp`/`tenwrt` Network-sheet hostnames, permanently and deliberately.
+`wifi-sheet-migrate.py`'s `populate` phase writes their MAC/IP as spreadsheet formulas
+pulling from the IP Allocation VLAN-4 rows (single-source maintenance, matched by
+Site+Machine+VLAN==4 content, never a fixed row/column — see the script's module docstring);
+the published CSV exports the evaluated (site-literal) values. Each site therefore gains
+three extra WiFi-sheet hosts, `ten64.wifi`/`wisp.wifi`/`tenwrt.wifi`, alongside the
+pre-existing `ten64`/`wisp`/`tenwrt` Network-sheet hosts — identical MAC+IP under two
+hostnames. This is a deliberate, additive carve-out in `ip_multiple_macs`
+(`constraints/validators.py::_is_cross_sheet_mirror`): the collision is accepted only when
+every colliding record on that IP shares one MAC, the owning hosts share one `machine_name`,
+and there is exactly one owning host per `sheet_type` — so a genuine same-sheet copy-paste
+error (e.g. a BMC row accidentally cloning its parent's exact MAC+IP) still errors even when
+an unrelated genuine mirror coexists for the same machine_name. `mac_duplicate_ip` needs no
+carve-out — it only fires when one MAC maps to multiple *distinct* IPs, which an
+identical-pair mirror can never trigger. `derivations/wisp_credentials.py::select_wisp`
+matches by exact `hostname == "wisp"` (not `machine_name`) so the `wisp.wifi` mirror doesn't
+break `wisp register-broker`'s single-match assumption.
+
+`ten64`/`wisp` infra rows set `Type=static` (address configured on the device itself);
+`tenwrt` infra rows set `Type=DHCP:wisp` like the pucks (DHCP-served by wisp's
+gwifi-netboot). `_host_dhcp_config()` in `generators/dnsmasq.py` checks the `Type` extra
+column case-insensitively and skips `dhcp-host` bindings entirely for `DHCP:wisp` (DHCP for
+that VLAN is served elsewhere, not ten64's dnsmasq) or `static` (a second binding for an
+address already bound elsewhere is a FATAL dnsmasq startup error). A/PTR and other DNS
+records still generate normally through the shared sections; only the DHCP binding is
+suppressed.
 
 Two one-off scripts support the live-sheet migration onto this `wifi` tab (see each
 script's module docstring for full phase/flag details — this is sheet surgery, not
@@ -150,11 +190,19 @@ something run as part of the normal pipeline):
 - `scripts/wifi-sheet-migrate.py` — phased (`create`/`populate`/`rewrite-refs`/
   `delete-old-rows`/`verify`) migration of gale puck + OpenMesh AP rows out
   of the old `Google WiFi Pucks`/`Welland - IP Allocation` tabs into
-  `wifi.welland`.
+  `wifi.welland`; `populate` also overlays each OpenMesh row's Site and appends
+  the six VLAN-4 infra rows described above.
 - `scripts/wifi-sheet-scan.py` — read-only cross-tab formula and `#REF!` scanner
   used by the `verify` phase above to confirm nothing broke before/after the move.
 - `scripts/wifi-sheet-format.py` — idempotent house-style formatter for the tab
-  (banding, merges, borders, grid trim); re-run it after every `populate`.
+  (banding, borders, grid trim, and vertically merging six per-host columns — Site,
+  Physical Location, Hardware, Controlled By, Serial, Notes / Comments — over every
+  2+-row machine block); re-run it after every `populate` (populate's row builders
+  don't distinguish anchor from covered rows — e.g. puck rows write all six columns
+  per-row, OpenMesh rows write Site+Hardware per-row from the machine-level overlay/
+  hardware-map — so a populate-without-format intermediate state duplicates values the
+  formatter's merge then collapses back down to each block's anchor row, which is what
+  the carry-forward parser above expects to see on the published CSV).
 
 ### IPv4→IPv6 Mapping
 
@@ -404,10 +452,12 @@ shared `derivations/mqtt_credentials.py` core (`username`/`password`/
   device itself by `tasmota configure` (see below).
 - `[wifi]` (`derivations/wifi_credentials.py`, prefix `wifi-`) — one login
   per WiFi-sheet host (`sheet_type == "WiFi"` — see *WiFi Sheet Hosts*
-  above): today the 12 fleet pucks and the OpenMesh APs (tenwrt too, once
-  it has a wifi-tab row). The OpenMesh APs can't consume the login yet (no
-  MQTT client on them) — they're registered anyway as deliberate spares,
-  the same precedent as the sensors2mqtt SDR Pis.
+  above): the 12 fleet pucks, the 6 OpenMesh APs, and the three VLAN-4
+  infra mirror hosts (`ten64.wifi`/`wisp.wifi`/`tenwrt.wifi`) at each site
+  that fetches the sheet. The OpenMesh APs can't consume the login yet (no
+  MQTT client on them), and the infra mirrors aren't standalone
+  MQTT-capable devices either — all registered anyway as deliberate
+  spares, the same precedent as the sensors2mqtt SDR Pis.
 - `[wisp]` (`derivations/wisp_credentials.py`, prefix `wisp-`) — a single
   login for the OpenWISP service host (`hostname == "wisp"` — keyed on
   hostname, not machine_name, so a `wisp.wifi` mirror host sharing

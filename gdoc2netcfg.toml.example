@@ -21,11 +21,17 @@ site_octet = 1  # Second octet: 10.1.X.X for Welland, 10.2.X.X for Monarto
 network = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=1476589425&single=true&output=csv"
 iot = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=1695016218&single=true&output=csv"
 vlan_allocations = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=208407908&single=true&output=csv"
-# 'wifi.welland - WiFi Infrastructure' tab — gale puck (and OpenMesh AP)
-# hosts on the wifi VLAN (welland only; see gwifi-openwrt docs). Rows are
-# parsed as ordinary hosts (sheet_type "WiFi", hostname suffix ".wifi");
-# puck rows additionally carry '#'/'Serial' extras that feed the
-# `wifi` generator (`[generators.wifi]`, below).
+# 'wifi.welland - WiFi Infrastructure' tab — gale puck, OpenMesh AP, and
+# VLAN-4 infra-mirror (ten64/wisp/tenwrt) hosts on the wifi VLAN. BOTH
+# sites fetch this sheet: the "Site" column (with WiFi-sheet-only Site
+# carry-forward down each merged host block — see sources/parser.py)
+# filters each site to its own rows, e.g. welland gets the 12 pucks + its
+# 2 welland OpenMesh APs + ten64.wifi/wisp.wifi/tenwrt.wifi, monarto gets
+# its 4 OpenMesh APs + its own three mirrors. Rows are parsed as ordinary
+# hosts (sheet_type "WiFi", hostname suffix ".wifi"); puck rows
+# additionally carry '#'/'Serial' extras that feed the `wifi` generator
+# (`[generators.wifi]`, below) — which stays WELLAND ONLY regardless (the
+# gale puck fleet is welland-only; see the `[generators]` comment below).
 wifi = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=1724224613&single=true&output=csv"
 # Sites tab: drives all_sites (valid "Site" values) and is cross-checked against [site]/[ipv6].
 sites = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=582797138&single=true&output=csv"

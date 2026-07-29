@@ -83,11 +83,11 @@ Claude-Session: https://claude.ai/code/session_01BSHiudkQxHncLaoZeKPMDt
 
 **Files:** Modify `tests/fixtures/wifi_sheet.csv`; Test additions near the existing wifi-sheet parsing tests; Modify `gdoc2netcfg.toml.example` (~line 24: drop the "welland only" caveat), `CLAUDE.md` (*WiFi Sheet Hosts* + credentials sections gain the infra rows/Type=static/carry-forward facts).
 
-- [ ] Extend `tests/fixtures/wifi_sheet.csv` to the post-change published shape: existing 24 puck rows (now anchor-row-only for the six merged columns — blank the lan-row duplicates of Site/Hardware/Serial); + 42 OpenMesh rows mirroring the live tab (machines/MACs/IPs from the live values read in this session — anchor-row-only merged columns, Site on anchor only); + 6 infra rows with EVALUATED values (e.g. welland ten64 row: `br-wifi`, `02:00:0A:01:04:01`, `10.1.4.1`, `static`...). Keep exact column order.
-- [ ] New integration test: parse the fixture + site-filter for welland → exactly 17 hosts (named); for monarto → exactly 7. Assert `tenwrt.wifi` has no `wifi_data`; assert golden pucks.json STILL byte-identical (existing test must pass unmodified).
-- [ ] Update toml.example + CLAUDE.md per spec §4 (both sites fetch the wifi sheet; `wifi` GENERATOR stays welland-only; document `Type=static` and the six infra formula rows; carry-forward rule).
-- [ ] Full suite + ruff.
-- [ ] Commit(s): fixture+tests, then docs.
+- [x] Extend `tests/fixtures/wifi_sheet.csv` to the post-change published shape: existing 24 puck rows (now anchor-row-only for the six merged columns — blank the lan-row duplicates of Site/Hardware/Serial); + 42 OpenMesh rows mirroring the live tab (machines/MACs/IPs from the live values read in this session — anchor-row-only merged columns, Site on anchor only); + 6 infra rows with EVALUATED values (e.g. welland ten64 row: `br-wifi`, `02:00:0A:01:04:01`, `10.1.4.1`, `static`...). Keep exact column order.
+- [x] New integration test: parse the fixture + site-filter for welland → exactly 17 hosts (named); for monarto → exactly 7. Assert `tenwrt.wifi` has no `wifi_data`; assert golden pucks.json STILL byte-identical (existing test must pass unmodified).
+- [x] Update toml.example + CLAUDE.md per spec §4 (both sites fetch the wifi sheet; `wifi` GENERATOR stays welland-only; document `Type=static` and the six infra formula rows; carry-forward rule).
+- [x] Full suite + ruff.
+- [x] Commit(s): fixture+tests, then docs.
 
 ### Task 8: Acceptance + push + PR #18 update
 

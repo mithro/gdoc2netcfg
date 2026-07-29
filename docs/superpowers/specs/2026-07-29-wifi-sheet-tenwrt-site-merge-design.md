@@ -181,14 +181,16 @@ row + wifi-tab formula row → two hosts, e.g. `wisp` and `wisp.wifi`, same
 MAC + same IP). User decision: keep both forever. Two code changes:
 
 - **Validator carve-out (`ip_multiple_macs` ONLY, ADDITIVE):** the check
-  gains an OR'd second exception: a duplicate is also accepted when every
-  colliding record pairs the identical (MAC, IP) AND all owning hosts
-  share one `machine_name` AND the owning hosts span MORE THAN ONE
-  `sheet_type` (the genuine cross-sheet signal; added during review —
-  without it, a BMC split's parent/child, which legitimately share a
-  machine_name AND a sheet_type, could have a copy-paste MAC+IP typo
-  silently accepted) — a deliberate cross-sheet mirror, not a data-entry
-  error. The existing same-host multi-MAC exception (pucks:
+  gains an OR'd second exception — a deliberate cross-sheet mirror, not a
+  data-entry error. As shipped (tightened twice during review): owners are
+  derived ONLY from hosts holding an interface with the colliding
+  (MAC, IP) on THAT IP (never MAC-globally — cross-IP evidence must not
+  loosen the check); accepted when exactly one unique MAC, all owning
+  hosts share one `machine_name`, and there is exactly ONE owning host
+  per `sheet_type` (`len(hostnames) == len(sheet_types)`, ≥2 owners — a
+  span check alone let a BMC parent/child typo hide behind a coexisting
+  genuine WiFi mirror). Implementation: single `mac → list[Host]` map +
+  module-level `_is_cross_sheet_mirror` predicate. The existing same-host multi-MAC exception (pucks:
   different MACs, ONE owning host) must keep working unchanged — this is
   an addition, not a rewrite; the implementation needs a parallel
   `mac → machine_names` map alongside the current `mac_to_hostnames`.

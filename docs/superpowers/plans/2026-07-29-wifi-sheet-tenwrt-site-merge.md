@@ -23,31 +23,31 @@ Claude-Session: https://claude.ai/code/session_01BSHiudkQxHncLaoZeKPMDt
 
 **Files:** Modify `src/gdoc2netcfg/generators/dnsmasq.py` (`_host_dhcp_config`, ~line 49–74); Test `tests/test_generators/test_dnsmasq.py`.
 
-- [ ] Write failing tests: (a) host with `extra={"Type": "static"}` emits NO `dhcp-host=` line but still gets DNS records via the shared sections; (b) `"Static"`/`"STATIC"` also suppress; (c) `"dhcp:wisp"` (lowercase) also suppresses — the existing check is case-sensitive, normalize BOTH; (d) blank/absent Type still emits the binding. Follow the file's existing test style for building hosts.
-- [ ] Run: `uv run pytest tests/test_generators/test_dnsmasq.py -v` — new tests FAIL.
-- [ ] Implement: the Type comparison becomes case-insensitive and suppresses on `{"dhcp:wisp", "static"}` (e.g. `host.extra.get("Type", "").strip().lower() in _NO_DHCP_TYPES`). Update the function docstring.
-- [ ] Run tests — pass. Full `uv run pytest && uv run ruff check src/ tests/ scripts/`.
-- [ ] Commit: `dnsmasq: Type=static suppresses dhcp-host (case-insensitive with DHCP:wisp)`.
+- [x] Write failing tests: (a) host with `extra={"Type": "static"}` emits NO `dhcp-host=` line but still gets DNS records via the shared sections; (b) `"Static"`/`"STATIC"` also suppress; (c) `"dhcp:wisp"` (lowercase) also suppresses — the existing check is case-sensitive, normalize BOTH; (d) blank/absent Type still emits the binding. Follow the file's existing test style for building hosts.
+- [x] Run: `uv run pytest tests/test_generators/test_dnsmasq.py -v` — new tests FAIL.
+- [x] Implement: the Type comparison becomes case-insensitive and suppresses on `{"dhcp:wisp", "static"}` (e.g. `host.extra.get("Type", "").strip().lower() in _NO_DHCP_TYPES`). Update the function docstring.
+- [x] Run tests — pass. Full `uv run pytest && uv run ruff check src/ tests/ scripts/`.
+- [x] Commit: `dnsmasq: Type=static suppresses dhcp-host (case-insensitive with DHCP:wisp)`.
 
 ### Task 2: WiFi-sheet Site carry-forward (TDD) — spec §2
 
 **Files:** Modify `src/gdoc2netcfg/sources/parser.py`; Test `tests/test_sources/test_parser.py`.
 
-- [ ] Write failing tests (build CSV text with a Site column, parse with `sheet_name="wifi"`): (a) blank-Site row inherits the previous row's Site when machines match; (b) NO inheritance across a machine change; (c) first-row-blank block stays blank throughout; (d) the SAME csv parsed with `sheet_name="network"` does NOT inherit (per-row semantics preserved); (e) an explicit different Site on a later same-machine row is kept (only blanks inherit).
-- [ ] Run to verify failure.
-- [ ] Implement in the parsing loop: track `(prev_machine, prev_site)`; when `sheet_name.lower() == "wifi"` and the row's site is blank and machine equals prev_machine, use prev_site. Update prev-trackers on every data row. Keep `_validate_site_values` behavior unchanged (it runs downstream on the inherited values — that's desired).
-- [ ] Run tests — pass. Full suite + ruff.
-- [ ] Commit: `parser: WiFi-sheet rows inherit Site within a contiguous machine block`.
+- [x] Write failing tests (build CSV text with a Site column, parse with `sheet_name="wifi"`): (a) blank-Site row inherits the previous row's Site when machines match; (b) NO inheritance across a machine change; (c) first-row-blank block stays blank throughout; (d) the SAME csv parsed with `sheet_name="network"` does NOT inherit (per-row semantics preserved); (e) an explicit different Site on a later same-machine row is kept (only blanks inherit).
+- [x] Run to verify failure.
+- [x] Implement in the parsing loop: track `(prev_machine, prev_site)`; when `sheet_name.lower() == "wifi"` and the row's site is blank and machine equals prev_machine, use prev_site. Update prev-trackers on every data row. Keep `_validate_site_values` behavior unchanged (it runs downstream on the inherited values — that's desired).
+- [x] Run tests — pass. Full suite + ruff.
+- [x] Commit: `parser: WiFi-sheet rows inherit Site within a contiguous machine block`.
 
 ### Task 3: Additive mirror carve-out in `ip_multiple_macs` (TDD) — spec §3b
 
 **Files:** Modify `src/gdoc2netcfg/constraints/validators.py` (~line 269–310); Test `tests/test_constraints/test_validators.py`.
 
-- [ ] Write failing tests: (a) two hosts (`wisp` from Network sheet, `wisp.wifi` from WiFi sheet, same `machine_name="wisp"`) recording the IDENTICAL (MAC, IP) pair → NO error; (b) same MAC+IP but DIFFERENT machine_names → still errors; (c) same machine_name but different MACs on the IP across the two hosts → still errors; (d) the existing puck exception (one host, wan+lan MACs, one IP) still passes — run the existing tests unmodified.
-- [ ] Run to verify failure (a fails today per the reviewer's trace: `mac_to_hostnames` yields 2 owners).
-- [ ] Implement ADDITIVELY: alongside `mac_to_hostnames`, build `mac→machine_names` (and the per-IP record pairs); accept when EITHER the existing same-host condition holds OR every colliding record for the IP has the identical MAC and all owning hosts share one machine_name. Do NOT touch `mac_duplicate_ip`.
-- [ ] Run tests — pass (including all pre-existing validator tests). Full suite + ruff.
-- [ ] Commit: `validators: accept identical-MAC+IP cross-sheet mirrors sharing a machine name`.
+- [x] Write failing tests: (a) two hosts (`wisp` from Network sheet, `wisp.wifi` from WiFi sheet, same `machine_name="wisp"`) recording the IDENTICAL (MAC, IP) pair → NO error; (b) same MAC+IP but DIFFERENT machine_names → still errors; (c) same machine_name but different MACs on the IP across the two hosts → still errors; (d) the existing puck exception (one host, wan+lan MACs, one IP) still passes — run the existing tests unmodified.
+- [x] Run to verify failure (a fails today per the reviewer's trace: `mac_to_hostnames` yields 2 owners).
+- [x] Implement ADDITIVELY: alongside `mac_to_hostnames`, build `mac→machine_names` (and the per-IP record pairs); accept when EITHER the existing same-host condition holds OR every colliding record for the IP has the identical MAC and all owning hosts share one machine_name. Do NOT touch `mac_duplicate_ip`.
+- [x] Run tests — pass (including all pre-existing validator tests). Full suite + ruff.
+- [x] Commit: `validators: accept identical-MAC+IP cross-sheet mirrors sharing a machine name`.
 
 ### Task 4: `select_wisp` by hostname (TDD) — spec §3b
 

@@ -46,7 +46,7 @@ def _generate_host_internal(host: Host, inventory: NetworkInventory) -> str:
     return sections_to_text(sections)
 
 
-_NO_DHCP_TYPES = {"dhcp:wisp", "static"}
+_NO_DHCP_TYPES = {"dhcp:wisp", "static"}  # entries MUST be lowercase — compared against .lower()
 
 
 def _host_dhcp_config(host: Host, inventory: NetworkInventory) -> list[str]:

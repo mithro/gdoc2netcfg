@@ -195,7 +195,7 @@ class TestDnsmasqGenerator:
         assert "dhcp-host=" not in output
 
     def test_other_type_value_keeps_dhcp_host_lines(self):
-        """A Type value other than the exact 'DHCP:wisp' string is unaffected."""
+        """A Type value that is not a suppressing value is unaffected."""
         inv = _inventory_with_host("iot1", "aa:bb:cc:dd:ee:ff", "10.1.10.3", dhcp_name="iot1")
         inv.hosts[0].extra["Type"] = "DHCP"
         result = generate_dnsmasq_internal(inv)

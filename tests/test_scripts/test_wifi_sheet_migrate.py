@@ -11,6 +11,7 @@ regression fixtures.
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 
 import pytest
@@ -255,8 +256,39 @@ FULL_IP_ALLOC_VALUES = [
      "AC:86:74:07:96:07", "10.X.12.45", "", "2404:e80:a137:X12::45"],
 ]
 
+# The six VLAN-4 infra source rows (site-literal MACs/IPs, live facts from
+# the design doc: welland 02:00:0a:01:04:0N / 10.1.4.N, monarto
+# 02:00:0a:02:04:0N / 10.2.4.N). welland/tenwrt's VLAN cell is deliberately
+# the STRING "4" (not the int 4) to prove build_infra_rows' type-agnostic
+# coercion; every other row uses the int, matching the live sheet's mixed
+# column.
+INFRA_IP_ALLOC_ROWS = [
+    ["welland", "ten64", "br-wifi", "", "", "", "", "", 4,
+     "02:00:0a:01:04:01", "10.1.4.1"],
+    ["welland", "wisp", "", "", "", "", "", "", 4,
+     "02:00:0a:01:04:02", "10.1.4.2"],
+    ["welland", "tenwrt", "", "", "", "", "", "", "4",
+     "02:00:0a:01:04:03", "10.1.4.3"],
+    ["monarto", "ten64", "br-wifi", "", "", "", "", "", 4,
+     "02:00:0a:02:04:01", "10.2.4.1"],
+    ["monarto", "wisp", "", "", "", "", "", "", 4,
+     "02:00:0a:02:04:02", "10.2.4.2"],
+    ["monarto", "tenwrt", "", "", "", "", "", "", 4,
+     "02:00:0a:02:04:03", "10.2.4.3"],
+]
+
+INFRA_IP_ALLOC_VALUES = [IP_ALLOC_HEADER] + [row[:] for row in INFRA_IP_ALLOC_ROWS]
+
+# STOCK_IP_ALLOC_VALUES gains the infra rows too -- compute_new_tab_rows now
+# always appends build_infra_rows' output, which fails loud without a
+# matching source row for all six (site, machine) pairs.
+STOCK_IP_ALLOC_VALUES = STOCK_IP_ALLOC_VALUES + [row[:] for row in INFRA_IP_ALLOC_ROWS]
+
 FULL_IP_ALLOC_WITH_NODES = (
-    [IP_ALLOC_HEADER] + GOOGLE_NODE_VALUES + [row[:] for row in FULL_IP_ALLOC_VALUES[1:]]
+    [IP_ALLOC_HEADER]
+    + GOOGLE_NODE_VALUES
+    + [row[:] for row in FULL_IP_ALLOC_VALUES[1:]]
+    + [row[:] for row in INFRA_IP_ALLOC_ROWS]
 )
 
 
@@ -390,7 +422,7 @@ class TestBuildOpenmeshRows:
             "AC:86:74:0D:AB:30",  # MAC Address
             "10.X.5.40",  # IP
             "",  # Type
-            "",  # Site (preserved blank)
+            "monarto",  # Site (overlaid from OPENMESH_SITE_BY_MACHINE, not the source cell)
             "Monarto - Power Meter Box",  # Physical Location
             "OM2P-LC",  # Hardware
             "",  # Upstream
@@ -447,10 +479,197 @@ class TestComputeNewTabRows:
         # 2 fleet-puck rows (rows 2-3) then openmesh starts at row 4 --
         # the node*-wifi-google blocks in the source contribute NOTHING
         # (pucks 01-03 are ordinary OpenWRT flash-tab rows since
-        # 2026-07-25).
+        # 2026-07-25). 7 OpenMesh rows (openmesh-ab-30) + 6 infra rows
+        # (ten64/wisp/tenwrt at both sites) follow.
         assert openmesh_start_row == 4
-        assert len(rows) == 2 + 7
+        assert len(rows) == 2 + 7 + 6
         assert rows[2][2] == "openmesh-ab-30"
+
+    def test_infra_rows_appended_after_openmesh_block(self):
+        rows, openmesh_start_row = wsm.compute_new_tab_rows(
+            FLASH_VALUES, STOCK_IP_ALLOC_VALUES, HARDWARE_MAP
+        )
+        machine_col = wsm.NEW_TAB_HEADER.index("Machine")
+        # 2 puck rows + 7 openmesh rows, then the 6 infra rows.
+        infra_machines = [row[machine_col] for row in rows[9:15]]
+        assert infra_machines == ["ten64", "wisp", "tenwrt", "ten64", "wisp", "tenwrt"]
+        assert len(rows) == 15  # nothing left over
+
+
+class TestOpenmeshSiteOverlay:
+    """Every OpenMesh row (all 42, across all 6 blocks) carries its
+    machine's site from OPENMESH_SITE_BY_MACHINE, not the (today mostly
+    blank) source Site cell -- see build_openmesh_rows."""
+
+    FULL_HARDWARE_MAP = {m: "OM2P" for m in wsm.OPENMESH_MACHINES_IN_ORDER}
+
+    def test_openmesh_site_by_machine_contract(self):
+        assert wsm.OPENMESH_SITE_BY_MACHINE == {
+            "openmesh-ab-38": "welland",
+            "openmesh-96-00": "welland",
+            "openmesh-ab-30": "monarto",
+            "openmesh-94-98": "monarto",
+            "openmesh-95-80": "monarto",
+            "openmesh-95-88": "monarto",
+        }
+
+    def test_every_row_of_every_block_carries_its_machines_site(self):
+        rows, openmesh_start_row = wsm.compute_new_tab_rows(
+            FLASH_VALUES, FULL_IP_ALLOC_WITH_NODES, self.FULL_HARDWARE_MAP
+        )
+        machine_col = wsm.NEW_TAB_HEADER.index("Machine")
+        site_col = wsm.NEW_TAB_HEADER.index("Site")
+        openmesh_rows = rows[openmesh_start_row - 2 : openmesh_start_row - 2 + 42]
+        assert len(openmesh_rows) == 42
+        for row in openmesh_rows:
+            machine = row[machine_col]
+            assert row[site_col] == wsm.OPENMESH_SITE_BY_MACHINE[machine], (
+                f"{machine}: expected {wsm.OPENMESH_SITE_BY_MACHINE[machine]!r}, "
+                f"got {row[site_col]!r}"
+            )
+
+    def test_unmapped_openmesh_machine_fails_loud(self):
+        rows = [
+            IP_ALLOC_HEADER,
+            ["", "openmesh-unknown-machine", "lan", "", 0, "Somewhere", "", "", 5,
+             "AC:86:74:0D:FF:FF", "10.X.5.99", "", "2404:e80:a137:X05::99"],
+        ]
+        with pytest.raises(ValueError, match="openmesh-unknown-machine"):
+            wsm.build_openmesh_rows(rows, {"openmesh-unknown-machine": "OM2P"})
+
+
+# ---------------------------------------------------------------------------
+# build_infra_rows -- six-row VLAN-4 infra block (task 6b/6d)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildInfraRows:
+    def test_six_rows_site_then_machine_order(self):
+        rows = wsm.build_infra_rows(INFRA_IP_ALLOC_VALUES)
+        machine_col = wsm.NEW_TAB_HEADER.index("Machine")
+        site_col = wsm.NEW_TAB_HEADER.index("Site")
+        assert [(r[site_col], r[machine_col]) for r in rows] == [
+            ("welland", "ten64"),
+            ("welland", "wisp"),
+            ("welland", "tenwrt"),
+            ("monarto", "ten64"),
+            ("monarto", "wisp"),
+            ("monarto", "tenwrt"),
+        ]
+
+    def test_interface_only_on_ten64_rows(self):
+        rows = wsm.build_infra_rows(INFRA_IP_ALLOC_VALUES)
+        machine_col = wsm.NEW_TAB_HEADER.index("Machine")
+        interface_col = wsm.NEW_TAB_HEADER.index("Interface")
+        for row in rows:
+            if row[machine_col] == "ten64":
+                assert row[interface_col] == "br-wifi"
+            else:
+                assert row[interface_col] == ""
+
+    def test_type_static_except_tenwrt_dhcp_wisp(self):
+        rows = wsm.build_infra_rows(INFRA_IP_ALLOC_VALUES)
+        machine_col = wsm.NEW_TAB_HEADER.index("Machine")
+        type_col = wsm.NEW_TAB_HEADER.index("Type")
+        for row in rows:
+            if row[machine_col] == "tenwrt":
+                assert row[type_col] == "DHCP:wisp"
+            else:
+                assert row[type_col] == "static"
+
+    def test_literals_for_location_hardware_controlled_by(self):
+        rows = wsm.build_infra_rows(INFRA_IP_ALLOC_VALUES)
+        machine_col = wsm.NEW_TAB_HEADER.index("Machine")
+        loc_col = wsm.NEW_TAB_HEADER.index("Physical Location")
+        hw_col = wsm.NEW_TAB_HEADER.index("Hardware")
+        cb_col = wsm.NEW_TAB_HEADER.index("Controlled By")
+        by_machine = {row[machine_col]: row for row in rows}
+        assert by_machine["ten64"][loc_col] == "ten64"
+        assert by_machine["wisp"][loc_col] == "ten64 (VM)"
+        assert by_machine["tenwrt"][loc_col] == "ten64 (VM)"
+        assert by_machine["ten64"][hw_col] == "Ten64"
+        assert by_machine["wisp"][hw_col] == "QEMU VM"
+        assert by_machine["tenwrt"][hw_col] == "QEMU VM"
+        assert by_machine["ten64"][cb_col] == ""
+        assert by_machine["wisp"][cb_col] == "ten64 libvirt"
+        assert by_machine["tenwrt"][cb_col] == "ten64 libvirt"
+
+    def test_hash_name_serial_notes_blank(self):
+        rows = wsm.build_infra_rows(INFRA_IP_ALLOC_VALUES)
+        for col_name in ("#", "Name", "Serial", "Notes / Comments"):
+            col = wsm.NEW_TAB_HEADER.index(col_name)
+            for row in rows:
+                assert row[col] == ""
+
+    def test_mac_and_ip_are_formulas_with_no_fixed_row(self):
+        rows = wsm.build_infra_rows(INFRA_IP_ALLOC_VALUES)
+        mac_col = wsm.NEW_TAB_HEADER.index("MAC Address")
+        ip_col = wsm.NEW_TAB_HEADER.index("IP")
+        # IP_ALLOC_HEADER: Site=A, Machine=B, VLAN=I, MAC Address=J, IPv4=K.
+        for row in rows:
+            for formula in (row[mac_col], row[ip_col]):
+                assert formula.startswith("=")
+                assert "'Welland - IP Allocation'" in formula
+                # Whole-column references only (letters, no digits) --
+                # never a fixed row number.
+                assert not re.search(
+                    r"'Welland - IP Allocation'!\$?[A-Za-z]+\$?\d", formula
+                )
+        assert "J:J" in rows[0][mac_col]  # MAC Address column
+        assert "K:K" in rows[0][ip_col]  # IPv4 column
+
+    def test_mac_formula_matches_site_and_machine_and_vlan4(self):
+        rows = wsm.build_infra_rows(INFRA_IP_ALLOC_VALUES)
+        machine_col = wsm.NEW_TAB_HEADER.index("Machine")
+        site_col = wsm.NEW_TAB_HEADER.index("Site")
+        mac_col = wsm.NEW_TAB_HEADER.index("MAC Address")
+        wisp_welland = next(
+            r for r in rows if r[machine_col] == "wisp" and r[site_col] == "welland"
+        )
+        formula = wisp_welland[mac_col]
+        assert 'A:A="welland"' in formula  # Site col
+        assert 'B:B="wisp"' in formula  # Machine col
+
+    def test_vlan_criterion_uses_type_agnostic_coercion(self):
+        rows = wsm.build_infra_rows(INFRA_IP_ALLOC_VALUES)
+        mac_col = wsm.NEW_TAB_HEADER.index("MAC Address")
+        for row in rows:
+            assert '&""="4"' in row[mac_col]
+
+    def test_missing_source_row_fails_loud(self):
+        # Drop the monarto/tenwrt row -- build_infra_rows must refuse to
+        # emit a formula for a pair with no matching source row (it would
+        # silently evaluate to #N/A).
+        rows = [
+            row
+            for row in INFRA_IP_ALLOC_VALUES
+            if not (row[0] == "monarto" and row[1] == "tenwrt")
+        ]
+        with pytest.raises(ValueError, match=r"monarto.*tenwrt"):
+            wsm.build_infra_rows(rows)
+
+    def test_empty_tab_fails_loud(self):
+        with pytest.raises(ValueError, match="empty"):
+            wsm.build_infra_rows([])
+
+
+# ---------------------------------------------------------------------------
+# grid_growth_requests -- populate's grid-too-small guard (task 6c)
+# ---------------------------------------------------------------------------
+
+
+class TestGridGrowthRequests:
+    def test_no_growth_needed_returns_empty(self):
+        assert wsm.grid_growth_requests(42, current_row_count=100, needed_rows=100) == []
+
+    def test_grid_already_larger_returns_empty(self):
+        assert wsm.grid_growth_requests(42, current_row_count=100, needed_rows=50) == []
+
+    def test_growth_needed_returns_append_dimension_request(self):
+        reqs = wsm.grid_growth_requests(42, current_row_count=61, needed_rows=67)
+        assert reqs == [
+            {"appendDimension": {"sheetId": 42, "dimension": "ROWS", "length": 6}}
+        ]
 
 
 # ---------------------------------------------------------------------------

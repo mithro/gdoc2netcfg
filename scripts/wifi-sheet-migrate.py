@@ -18,8 +18,8 @@ migration, NOT something this task/PR performs):
 
   1. ``create``          — add the new tab + header row (no-op if already
                             present with an identical header).
-  2. ``populate``         — write fleet-puck + OpenMesh rows below the
-                            header (all pucks incl. 01-03 are OpenWRT
+  2. ``populate``         — write fleet-puck + OpenMesh + infra rows below
+                            the header (all pucks incl. 01-03 are OpenWRT
                             flash-tab rows since 2026-07-25), and
                             save a snapshot (``--snapshot``) of iot.welland's
                             evaluated values + the old sheet's OpenMesh row
@@ -30,7 +30,16 @@ migration, NOT something this task/PR performs):
                             ``validate_openmesh_block_shape``). OpenMesh rows
                             are fetched with ``UNFORMATTED_VALUE`` (not
                             ``FORMULA``) and checked cell-by-cell for stray
-                            ``=`` formulas before being copied by value.
+                            ``=`` formulas before being copied by value; every
+                            OpenMesh row also gets its Site cell overwritten
+                            from ``OPENMESH_SITE_BY_MACHINE`` (see
+                            ``build_openmesh_rows``). After the OpenMesh
+                            block, six VLAN-4 infra rows (ten64/wisp/tenwrt
+                            at both sites, see ``build_infra_rows``) are
+                            appended as IP-Allocation-formula rows. Grows the
+                            tab's grid first if needed (see
+                            ``grid_growth_requests``) -- ``values.update``
+                            rejects writes past the current row count.
                             Idempotent even across a shrinking source: if a
                             previous run left more rows than this run
                             computes, the stale trailing rows are cleared in
@@ -143,6 +152,7 @@ _IP_ALLOC_REQUIRED_COLUMNS = [
     "Controlled By",
     "Serial Number",
     "Notes",
+    "VLAN",
 ]
 OPENMESH_MACHINE_PREFIX = "openmesh-"
 OPENMESH_BLOCK_SIZE = 7
@@ -158,6 +168,19 @@ OPENMESH_MACHINES_IN_ORDER = [
     "openmesh-96-00",
 ]
 
+# Site overlay written into EVERY row of each OpenMesh block by
+# build_openmesh_rows (replacing the source Site cell, which is blank for
+# all but one live row today -- see the design doc's "Live Site state"
+# finding). ab-38/96-00 are physically at welland; the rest at monarto.
+OPENMESH_SITE_BY_MACHINE = {
+    "openmesh-ab-38": "welland",
+    "openmesh-96-00": "welland",
+    "openmesh-ab-30": "monarto",
+    "openmesh-94-98": "monarto",
+    "openmesh-95-80": "monarto",
+    "openmesh-95-88": "monarto",
+}
+
 # The stock Google-firmware pucks' interface blocks in Welland - IP
 # Allocation (rows 312-335 today, 8 rows each, contiguous, in this order).
 # Migrated to the new tab under the fleet's puckNN naming (user decision,
@@ -169,6 +192,21 @@ GOOGLE_NODE_MACHINES_IN_ORDER = [
     ("node3-wifi-google", "puck03"),
 ]
 GOOGLE_NODE_OLD_NAMES = [old for old, _new in GOOGLE_NODE_MACHINES_IN_ORDER]
+
+# The six VLAN-4 infra rows build_infra_rows appends after the OpenMesh
+# block: ten64/wisp/tenwrt at both sites, ordered site-then-machine (see
+# build_infra_rows' docstring for why that ordering is load-bearing).
+INFRA_SITES = ["welland", "monarto"]
+INFRA_MACHINES = ["ten64", "wisp", "tenwrt"]
+INFRA_INTERFACE_BY_MACHINE = {"ten64": "br-wifi", "wisp": "", "tenwrt": ""}
+INFRA_TYPE_BY_MACHINE = {"ten64": "static", "wisp": "static", "tenwrt": "DHCP:wisp"}
+INFRA_PHYSICAL_LOCATION_BY_MACHINE = {
+    "ten64": "ten64",
+    "wisp": "ten64 (VM)",
+    "tenwrt": "ten64 (VM)",
+}
+INFRA_HARDWARE_BY_MACHINE = {"ten64": "Ten64", "wisp": "QEMU VM", "tenwrt": "QEMU VM"}
+INFRA_CONTROLLED_BY_BY_MACHINE = {"ten64": "", "wisp": "ten64 libvirt", "tenwrt": "ten64 libvirt"}
 
 IOT_TAB_TITLE = "iot.welland - IoT Devices"
 # The 6 formula cells (found by scripts/wifi-sheet-scan.py) referencing the
@@ -316,9 +354,16 @@ def build_openmesh_rows(
     whose Machine starts with 'openmesh-' is copied, preserving source row
     order (block contiguity matters -- ``rewrite_ref_formulas`` assumes each
     machine's 7 rows land contiguously in ``OPENMESH_MACHINES_IN_ORDER``
-    order). ``Site`` is preserved as-is (today blank == all sites).
-    ``Hardware`` is looked up per-machine in ``hardware_map`` -- fails loud
-    for any openmesh machine missing from the map.
+    order). ``Site`` is OVERWRITTEN on every row from
+    ``OPENMESH_SITE_BY_MACHINE`` -- NOT preserved from the source cell,
+    which is blank for all but one live row today (see the design doc's
+    "Live Site state" finding). Writing it on every row (not just the
+    block's first row) keeps a populate-without-format intermediate state
+    fully correct; the formatter's per-block merge then collapses the
+    duplicates to the anchor. Fails loud for any openmesh machine missing
+    from ``OPENMESH_SITE_BY_MACHINE``. ``Hardware`` is looked up per-machine
+    in ``hardware_map`` -- fails loud for any openmesh machine missing from
+    the map.
 
     ``ip_alloc_values`` MUST be fetched with ``valueRenderOption=UNFORMATTED_VALUE``
     (not ``FORMULA``): a formula cell copied verbatim would be pasted as a
@@ -356,6 +401,11 @@ def build_openmesh_rows(
                 f"{IP_ALLOC_TAB_TITLE}: openmesh machine {machine!r} has no entry in "
                 "--hardware-map"
             )
+        if machine not in OPENMESH_SITE_BY_MACHINE:
+            raise ValueError(
+                f"{IP_ALLOC_TAB_TITLE}: openmesh machine {machine!r} has no entry in "
+                "OPENMESH_SITE_BY_MACHINE"
+            )
         rows.append(
             _row_from_dict(
                 {
@@ -363,7 +413,7 @@ def build_openmesh_rows(
                     "Interface": get(data_row, "Interface"),
                     "MAC Address": get(data_row, "MAC Address"),
                     "IP": get(data_row, "IPv4"),
-                    "Site": get(data_row, "Site"),  # preserved as-is, even if blank
+                    "Site": OPENMESH_SITE_BY_MACHINE[machine],  # overlay, not the source cell
                     "Physical Location": get(data_row, "Location"),
                     "Hardware": hardware_map[machine],  # family, from --hardware-map
                     "Controlled By": get(data_row, "Controlled By"),
@@ -375,17 +425,143 @@ def build_openmesh_rows(
     return rows
 
 
+def _vlan_cell_is_4(value) -> bool:
+    """True if a raw IP-Alloc VLAN cell means VLAN 4, regardless of whether
+    the Sheets API returned it as an int, a float, or a str -- the live
+    column is mixed-type (see the design doc)."""
+    if value is None or value == "":
+        return False
+    try:
+        return float(value) == 4.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _has_vlan4_row(
+    ip_alloc_values: list[list[str]], idx: dict[str, int], site: str, machine: str
+) -> bool:
+    """True if some data row in ``ip_alloc_values`` matches Site+Machine
+    with a VLAN-4 cell -- the existence precondition for a safe
+    ``build_infra_rows`` formula (see its docstring)."""
+    for row in ip_alloc_values[1:]:
+        if _cell(row, idx["Site"]) != site:
+            continue
+        if _cell(row, idx["Machine"]) != machine:
+            continue
+        raw_vlan = row[idx["VLAN"]] if idx["VLAN"] < len(row) else None
+        if _vlan_cell_is_4(raw_vlan):
+            return True
+    return False
+
+
+def _vlan4_lookup_formula(
+    value_col: str, site_col: str, machine_col: str, vlan_col: str, site: str, machine: str
+) -> str:
+    """INDEX/MATCH formula pulling ``value_col`` from IP_ALLOC_TAB_TITLE by
+    content: Site+Machine+VLAN==4. Content-matched (never a fixed row) and
+    column-shift-resistant (the caller derives every column letter from
+    IP_ALLOC_TAB_TITLE's own fetched header). The VLAN criterion coerces via
+    ``&""="4"`` because the live VLAN column mixes numbers and strings.
+    """
+    tab = IP_ALLOC_TAB_TITLE
+    criteria = (
+        f"('{tab}'!{site_col}:{site_col}=\"{site}\")*"
+        f"('{tab}'!{machine_col}:{machine_col}=\"{machine}\")*"
+        f"('{tab}'!{vlan_col}:{vlan_col}&\"\"=\"4\")"
+    )
+    return f"=IFERROR(INDEX('{tab}'!{value_col}:{value_col},MATCH(1,{criteria},0)),\"\")"
+
+
+def build_infra_rows(ip_alloc_values: list[list[str]]) -> list[list[str]]:
+    """Build the six VLAN-4 infra rows (ten64/wisp/tenwrt at both sites),
+    appended after the OpenMesh block by ``compute_new_tab_rows``.
+
+    ``ip_alloc_values`` is 'Welland - IP Allocation' with the header as row
+    0 (same contract as ``build_openmesh_rows``). Rows are emitted
+    site-then-machine -- welland ten64/wisp/tenwrt, then monarto
+    ten64/wisp/tenwrt -- which is LOAD-BEARING: grouping by machine instead
+    would make each machine a 2-row block, and ``wifi-sheet-format.py``
+    merges the Site column over 2+-row blocks, silently discarding the
+    second site's value. Site-then-machine yields six 1-row blocks, so
+    nothing merges.
+
+    ``MAC Address`` and ``IP`` are formulas into IP_ALLOC_TAB_TITLE, matched
+    by content (Site+Machine+VLAN==4 -- ten64 has many rows, but exactly
+    one VLAN-4 row per site, so Interface disambiguation isn't needed) via
+    column letters derived from ``ip_alloc_values``'s own fetched header
+    (never a hardcoded column letter, never a fixed row number -- both
+    would silently break on the next row/column shift in the live sheet).
+
+    Fails loud (ValueError) if any of the six (site, machine) source rows
+    has no matching VLAN-4 row in ``ip_alloc_values`` -- emitting a formula
+    for a pair with no source row would silently evaluate to #N/A (worse,
+    masked by the IFERROR wrapper) instead of surfacing the problem here,
+    at build time.
+    """
+    if not ip_alloc_values:
+        raise ValueError(f"{IP_ALLOC_TAB_TITLE}: tab is empty (no header row)")
+    headers = ip_alloc_values[0]
+    idx = {
+        name: header_index(headers, name, sheet_label=IP_ALLOC_TAB_TITLE)
+        for name in _IP_ALLOC_REQUIRED_COLUMNS
+    }
+    col = {name: col_letter(i) for name, i in idx.items()}
+
+    missing = [
+        (site, machine)
+        for site in INFRA_SITES
+        for machine in INFRA_MACHINES
+        if not _has_vlan4_row(ip_alloc_values, idx, site, machine)
+    ]
+    if missing:
+        raise ValueError(
+            f"{IP_ALLOC_TAB_TITLE}: missing VLAN-4 row(s) for {missing} -- refusing to "
+            "emit infra formula(s) that would silently evaluate to #N/A"
+        )
+
+    rows: list[list[str]] = []
+    for site in INFRA_SITES:
+        for machine in INFRA_MACHINES:
+            rows.append(
+                _row_from_dict(
+                    {
+                        "Machine": machine,
+                        "Interface": INFRA_INTERFACE_BY_MACHINE[machine],
+                        "MAC Address": _vlan4_lookup_formula(
+                            col["MAC Address"],
+                            col["Site"],
+                            col["Machine"],
+                            col["VLAN"],
+                            site,
+                            machine,
+                        ),
+                        "IP": _vlan4_lookup_formula(
+                            col["IPv4"], col["Site"], col["Machine"], col["VLAN"], site, machine
+                        ),
+                        "Type": INFRA_TYPE_BY_MACHINE[machine],
+                        "Site": site,
+                        "Physical Location": INFRA_PHYSICAL_LOCATION_BY_MACHINE[machine],
+                        "Hardware": INFRA_HARDWARE_BY_MACHINE[machine],
+                        "Controlled By": INFRA_CONTROLLED_BY_BY_MACHINE[machine],
+                    }
+                )
+            )
+    return rows
+
+
 def compute_new_tab_rows(
     flash_tab_values: list[list[str]],
     ip_alloc_values: list[list[str]],
     hardware_map: dict[str, str],
 ) -> tuple[list[list[str]], int]:
-    """Build the full (fleet puck + OpenMesh) block for `populate`.
+    """Build the full (fleet puck + OpenMesh + infra) block for `populate`.
 
     Returns ``(rows, openmesh_start_row)``: ``rows`` is written starting at
     the new tab's row 2 (row 1 is the header); ``openmesh_start_row`` is the
     absolute new-tab row number of the OpenMesh block's first row, needed by
-    ``rewrite_ref_formulas``.
+    ``rewrite_ref_formulas``. The six ``build_infra_rows`` rows are appended
+    AFTER the OpenMesh block, keeping OpenMesh row positions (and hence
+    ``openmesh_start_row``) unaffected by the infra block's presence.
 
     The stock Google pucks (puck01-03) briefly had their own value-copied
     row builder here (2026-07-25 morning): at that point they still ran
@@ -400,7 +576,8 @@ def compute_new_tab_rows(
     puck_rows = build_puck_rows(flash_tab_values, start_row=2)
     openmesh_start_row = 2 + len(puck_rows)
     openmesh_rows = build_openmesh_rows(ip_alloc_values, hardware_map)
-    return puck_rows + openmesh_rows, openmesh_start_row
+    infra_rows = build_infra_rows(ip_alloc_values)
+    return puck_rows + openmesh_rows + infra_rows, openmesh_start_row
 
 
 def openmesh_block_first_rows(start_row: int, block_size: int, num_blocks: int) -> list[int]:
@@ -431,6 +608,32 @@ def compute_trailing_clear_range(
     if existing_row_count <= new_last_row:
         return None
     return (new_last_row + 1, existing_row_count)
+
+
+def grid_growth_requests(
+    sheet_id: int, current_row_count: int, needed_rows: int
+) -> list[dict]:
+    """One ``appendDimension`` ROWS batchUpdate request if the tab's grid is
+    too small to hold ``needed_rows`` (header + data), else ``[]``.
+
+    The Sheets ``values.update`` API rejects writes past the grid's current
+    row count, and ``wifi-sheet-format.py`` trims the grid to exactly the
+    used range on every run -- so `populate` must grow the grid BEFORE
+    writing whenever its computed row count exceeds what the tab currently
+    has (e.g. adding the infra block for the first time). Without this,
+    a rollout that adds rows fails outright on the write.
+    """
+    if needed_rows <= current_row_count:
+        return []
+    return [
+        {
+            "appendDimension": {
+                "sheetId": sheet_id,
+                "dimension": "ROWS",
+                "length": needed_rows - current_row_count,
+            }
+        }
+    ]
 
 
 def validate_openmesh_range(
@@ -855,9 +1058,13 @@ def cmd_populate(
 
     last_col = col_letter(len(NEW_TAB_HEADER) - 1)
     last_row = 1 + len(rows)
+    n_infra = len(INFRA_SITES) * len(INFRA_MACHINES)
+    n_openmesh = len(rows) - (openmesh_start_row - 2) - n_infra
     print(f"Would write {len(rows)} rows to {NEW_TAB_TITLE!r}!A2:{last_col}{last_row}")
-    n_openmesh = len(rows) - (openmesh_start_row - 2)
-    print(f"  ({openmesh_start_row - 2} puck rows, {n_openmesh} OpenMesh rows)")
+    print(
+        f"  ({openmesh_start_row - 2} puck rows, {n_openmesh} OpenMesh rows, "
+        f"{n_infra} infra rows)"
+    )
     print(f"  OpenMesh block starts at new-tab row {openmesh_start_row}")
     for row in rows:
         print(f"  {row}")
@@ -866,10 +1073,17 @@ def cmd_populate(
     # computes (e.g. a puck/AP was removed from the source data), clear the
     # stale trailing rows so a re-run leaves no leftovers below the new
     # content.
+    #
+    # Grid growth: values.update rejects writes past the tab's current grid
+    # row count, and wifi-sheet-format.py trims the grid to exactly the
+    # used range on every run -- so read the tab's raw properties here
+    # (list_tabs() already requests them; sheet_id_by_title discards
+    # everything but sheetId, so look the tab up directly instead of a
+    # second API call) and grow the grid before writing whenever needed.
     tabs = client.list_tabs()
-    existing_new_tab = (
-        client.get_values(NEW_TAB_TITLE) if sheet_id_by_title(tabs, NEW_TAB_TITLE) else []
-    )
+    new_tab_props = next((t for t in tabs if t["title"] == NEW_TAB_TITLE), None)
+    new_tab_sheet_id = new_tab_props["sheetId"] if new_tab_props is not None else None
+    existing_new_tab = client.get_values(NEW_TAB_TITLE) if new_tab_sheet_id is not None else []
     trailing_range = compute_trailing_clear_range(len(existing_new_tab), last_row)
     if trailing_range:
         print(
@@ -877,6 +1091,15 @@ def cmd_populate(
             f"(a previous populate run left {len(existing_new_tab)} rows; this run only needs "
             f"{last_row})"
         )
+    growth_requests: list[dict] = []
+    if new_tab_props is not None:
+        current_row_count = new_tab_props["gridProperties"]["rowCount"]
+        growth_requests = grid_growth_requests(new_tab_sheet_id, current_row_count, last_row)
+        if growth_requests:
+            print(
+                f"Would grow {NEW_TAB_TITLE!r}'s grid from {current_row_count} to "
+                f"{last_row} rows."
+            )
 
     # Snapshot: iot.welland's current evaluated values + the old sheet's
     # OpenMesh row positions -- needed by rewrite-refs/delete-old-rows/verify.
@@ -897,16 +1120,24 @@ def cmd_populate(
         print("(dry-run: not applied; snapshot not written)")
         return 0
 
-    # Unmerge before writing: values.update silently DROPS values written
-    # into non-anchor cells of a merged range, so merges left by a previous
-    # wifi-sheet-format.py run at now-shifted block positions would eat
-    # cells (observed live 2026-07-25: Physical Location values vanished
-    # when the stock pucks shifted the OpenMesh blocks down 24 rows).
-    # Re-run wifi-sheet-format.py after populate to restore the styling.
-    new_tab_sheet_id = sheet_id_by_title(tabs, NEW_TAB_TITLE)
+    # Unmerge + grow the grid before writing, in one batch: values.update
+    # silently DROPS values written into non-anchor cells of a merged range,
+    # so merges left by a previous wifi-sheet-format.py run at now-shifted
+    # block positions would eat cells (observed live 2026-07-25: Physical
+    # Location values vanished when the stock pucks shifted the OpenMesh
+    # blocks down 24 rows); it would also 400 outright if the grid is too
+    # small to hold the new rows (e.g. adding the infra block for the first
+    # time). Re-run wifi-sheet-format.py after populate to restore the
+    # styling.
+    pre_write_requests: list[dict] = []
     if new_tab_sheet_id is not None:
-        client.batch_update([{"unmergeCells": {"range": {"sheetId": new_tab_sheet_id}}}])
+        pre_write_requests.append({"unmergeCells": {"range": {"sheetId": new_tab_sheet_id}}})
+        pre_write_requests.extend(growth_requests)
+    if pre_write_requests:
+        client.batch_update(pre_write_requests)
         print("Unmerged all cells (stale merges would silently eat written values).")
+        if growth_requests:
+            print(f"Grew {NEW_TAB_TITLE!r}'s grid.")
 
     client.update_values(NEW_TAB_TITLE, f"A2:{last_col}{last_row}", rows)
     if trailing_range:

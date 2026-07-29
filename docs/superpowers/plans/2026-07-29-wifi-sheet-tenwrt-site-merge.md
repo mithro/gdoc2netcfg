@@ -91,9 +91,9 @@ Claude-Session: https://claude.ai/code/session_01BSHiudkQxHncLaoZeKPMDt
 
 ### Task 8: Acceptance + push + PR #18 update
 
-- [ ] Full `uv run pytest` + `uv run ruff check src/ tests/ scripts/`; `rg -in "gwifi" --glob '!docs/superpowers/**' .` still only external names.
-- [ ] `git push origin wifi-sheet-hosts` (plain push).
-- [ ] PR #18: add a comment describing this batch (border fix, six infra formula rows, Site fill + carry-forward, merges, Type=static, mirror carve-out, select_wisp fix; spec+plan paths); append to the body's Rollout state: the live-sheet steps below + monarto toml gains the wifi sheet URL **post-merge/post-deploy only** (Phase 2 runs format right after populate, so a pre-deploy monarto parser would misread the merged Site column — must match Phase 2's ordering, not the spec's earlier "after populate" wording).
+- [x] Full `uv run pytest` + `uv run ruff check src/ tests/ scripts/`; `rg -in "gwifi" --glob '!docs/superpowers/**' .` still only external names.
+- [x] `git push origin wifi-sheet-hosts` (plain push).
+- [x] PR #18: add a comment describing this batch (border fix, six infra formula rows, Site fill + carry-forward, merges, Type=static, mirror carve-out, select_wisp fix; spec+plan paths); append to the body's Rollout state: the live-sheet steps below + monarto toml gains the wifi sheet URL **post-merge/post-deploy only** (Phase 2 runs format right after populate, so a pre-deploy monarto parser would misread the merged Site column — must match Phase 2's ordering, not the spec's earlier "after populate" wording).
 
 ---
 

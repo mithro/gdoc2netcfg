@@ -226,22 +226,3 @@ class TestWifiConfig:
         from gdoc2netcfg.config import load_config
         c = load_config(self._write(tmp_path, '[site]\nname="t"\ndomain="t.example"\n'))
         assert c.wifi.mqtt_secret == ""
-
-
-class TestWispConfig:
-    def _write(self, tmp_path, body):
-        p = tmp_path / "gdoc2netcfg.toml"
-        p.write_text(body)
-        return p
-
-    def test_parsed(self, tmp_path):
-        from gdoc2netcfg.config import load_config
-        c = load_config(self._write(tmp_path,
-            '[site]\nname="t"\ndomain="t.example"\n\n'
-            '[wisp]\nmqtt_secret="s"\n'))
-        assert c.wisp.mqtt_secret == "s"
-
-    def test_defaults(self, tmp_path):
-        from gdoc2netcfg.config import load_config
-        c = load_config(self._write(tmp_path, '[site]\nname="t"\ndomain="t.example"\n'))
-        assert c.wisp.mqtt_secret == ""

@@ -43,7 +43,6 @@ uv run gdoc2netcfg tasmota configure <host>      # Push config to a specific dev
 uv run gdoc2netcfg tasmota ha-status       # Check Home Assistant integration
 uv run gdoc2netcfg tasmota register-broker --dry-run  # Preview Tasmota broker login changes
 uv run gdoc2netcfg wifi register-broker --dry-run     # Preview WiFi-device broker login changes
-uv run gdoc2netcfg wisp register-broker --dry-run     # Preview OpenWISP service broker login changes
 uv run gdoc2netcfg zigbee scan --force     # Scan Zigbee2MQTT sites via MQTT
 uv run gdoc2netcfg zigbee show             # Show cached Zigbee device data
 uv run gdoc2netcfg zigbee update-sheet --dry-run  # Preview Zigbee sheet updates
@@ -175,9 +174,7 @@ and there is exactly one owning host per `sheet_type` — so a genuine same-shee
 error (e.g. a BMC row accidentally cloning its parent's exact MAC+IP) still errors even when
 an unrelated genuine mirror coexists for the same machine_name. `mac_duplicate_ip` needs no
 carve-out — it only fires when one MAC maps to multiple *distinct* IPs, which an
-identical-pair mirror can never trigger. `derivations/wisp_credentials.py::select_wisp`
-matches by exact `hostname == "wisp"` (not `machine_name`) so the `wisp.wifi` mirror doesn't
-break `wisp register-broker`'s single-match assumption.
+identical-pair mirror can never trigger.
 
 `ten64`/`wisp` infra rows set `Type=static` (address configured on the device itself);
 `tenwrt` infra rows set `Type=DHCP:wisp` like the pucks (DHCP-served by wisp's
@@ -446,10 +443,10 @@ The two sites forward DNS queries to each other via WireGuard tunnel (`10.98.2.1
 
 Generated nginx configs are deployed to `/etc/nginx/gdoc2netcfg/` (per-host directories under `sites-available/`, plus `scripts/`, `conf.d/`, `stream.d/` for healthcheck infrastructure). Hosts are activated via symlinks: `ln -s /etc/nginx/gdoc2netcfg/sites-available/{fqdn} /etc/nginx/sites-enabled/{fqdn}`. Deployed on **both sites** (welland and monarto).
 
-### Per-device MQTT broker credentials (tasmota / wifi / wisp)
+### Per-device MQTT broker credentials (tasmota / wifi)
 
-Three independent `[section] mqtt_secret` consumers derive per-device broker
-logins against the same `[homeassistant.mqtt]` Mosquitto add-on, all via the
+Two independent `[section] mqtt_secret` consumers derive per-device broker
+logins against the same `[homeassistant.mqtt]` Mosquitto add-on, both via the
 shared `derivations/mqtt_credentials.py` core (`username`/`password`/
 `check_collisions`/`require_strong_secret`):
 
@@ -460,25 +457,21 @@ shared `derivations/mqtt_credentials.py` core (`username`/`password`/
   `build_logins()` runs over one site's already-filtered hosts, not the
   whole sheet — see *WiFi Sheet Hosts* above): welland registers 17
   (its 12 fleet pucks + its 2 welland OpenMesh APs, ab-38/96-00 + its 3
-  VLAN-4 infra mirrors), monarto registers 7 (its 4 OpenMesh APs + its
-  own 3 infra mirrors — no pucks; no site ever sees all 6 OpenMesh APs).
-  The OpenMesh APs can't consume the login yet (no MQTT client on them),
-  and the infra mirrors aren't standalone MQTT-capable devices either —
-  all registered anyway as deliberate spares, the same precedent as the
-  sensors2mqtt SDR Pis.
-- `[wisp]` (`derivations/wisp_credentials.py`, prefix `wisp-`) — a single
-  login for the OpenWISP service host (`hostname == "wisp"` — keyed on
-  hostname, not machine_name, so a `wisp.wifi` mirror host sharing
-  machine_name "wisp" doesn't get confused with the real service host).
+  VLAN-4 infra mirrors, including `wisp.wifi`), monarto registers 7 (its
+  4 OpenMesh APs + its own 3 infra mirrors — no pucks; no site ever sees
+  all 6 OpenMesh APs). The OpenMesh APs can't consume the login yet (no
+  MQTT client on them), and the infra mirrors aren't standalone
+  MQTT-capable devices either — all registered anyway as deliberate
+  spares, the same precedent as the sensors2mqtt SDR Pis.
 
-`wifi`/`wisp` only *register* logins on the broker (`gdoc2netcfg wifi
-register-broker` / `gdoc2netcfg wisp register-broker`, both `--dry-run`-able)
-— unlike Tasmota, nothing here pushes the credential to the consuming
-service; the device/wisp side must be configured out-of-band with the same
-derived `MqttUser`/`MqttPassword` (re-derivable from the same `mqtt_secret`).
-Each `mqtt_secret` is high-entropy (`openssl rand -hex 32`), lives only in
-the gitignored `gdoc2netcfg.toml` (kept `0600`), and must be mirrored into
-any vault that independently re-derives the same logins.
+`wifi` only *registers* logins on the broker (`gdoc2netcfg wifi
+register-broker`, `--dry-run`-able) — unlike Tasmota, nothing here pushes
+the credential to the consuming service; the device side must be
+configured out-of-band with the same derived `MqttUser`/`MqttPassword`
+(re-derivable from the same `mqtt_secret`). `mqtt_secret` is high-entropy
+(`openssl rand -hex 32`), lives only in the gitignored `gdoc2netcfg.toml`
+(kept `0600`), and must be mirrored into any vault that independently
+re-derives the same logins.
 
 ### Tasmota remote syslog
 

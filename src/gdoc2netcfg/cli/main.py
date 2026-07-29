@@ -2383,46 +2383,6 @@ def cmd_wifi_register_broker(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Subcommand: wisp register-broker
-# ---------------------------------------------------------------------------
-
-
-def cmd_wisp_register_broker(args: argparse.Namespace) -> int:
-    """Register the OpenWISP service broker login on the HA Mosquitto add-on."""
-    from gdoc2netcfg.derivations.wisp_credentials import PREFIX, build_logins
-    from gdoc2netcfg.supplements.mqtt_broker import register_logins
-
-    config = _load_config(args)
-
-    if not config.homeassistant.ssh_host:
-        print("Error: [homeassistant] ssh_host not configured", file=sys.stderr)
-        return 1
-
-    _records, hosts, _inventory, _result = _build_pipeline(config)
-
-    try:
-        logins = build_logins(config.wisp.mqtt_secret, hosts)
-    except ValueError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
-
-    verify = (
-        (config.homeassistant.mqtt.host, config.homeassistant.mqtt.port)
-        if not args.dry_run
-        else None
-    )
-    register_logins(
-        config.homeassistant.ssh_host,
-        PREFIX,
-        logins,
-        dry_run=args.dry_run,
-        prune=args.prune,
-        verify=verify,
-    )
-    return 0
-
-
-# ---------------------------------------------------------------------------
 # Subcommands: zigbee scan / show / update-sheet
 # ---------------------------------------------------------------------------
 
@@ -3160,19 +3120,6 @@ def main(argv: list[str] | None = None) -> int:
         "--prune", action="store_true", help="Remove logins not in current device list",
     )
 
-    # wisp (with subcommands)
-    wisp_parser = subparsers.add_parser(
-        "wisp", help="OpenWISP service MQTT credentials",
-    )
-    wisp_subparsers = wisp_parser.add_subparsers(dest="wisp_command")
-    wisp_rb = wisp_subparsers.add_parser(
-        "register-broker", help="Register the OpenWISP service broker login on HA Mosquitto",
-    )
-    wisp_rb.add_argument("--dry-run", action="store_true", help="Show changes without applying")
-    wisp_rb.add_argument(
-        "--prune", action="store_true", help="Remove logins not in current device list",
-    )
-
     # zigbee (with subcommands)
     zigbee_parser = subparsers.add_parser(
         "zigbee", help="Zigbee2MQTT device scanning and sheet updates",
@@ -3344,14 +3291,6 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_wifi_register_broker(args)
         else:
             wifi_parser.print_help()
-            return 0
-
-    # Handle wisp subcommands
-    if args.command == "wisp":
-        if args.wisp_command == "register-broker":
-            return cmd_wisp_register_broker(args)
-        else:
-            wisp_parser.print_help()
             return 0
 
     # Handle reachability subcommands

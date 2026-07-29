@@ -166,6 +166,7 @@ def generate_pdns_internal(
     }.items():
         files[f"zones-internal/{zone_file}"] = content
 
+    files = _add_child_delegations(files, domain)
     files = finalize_zone_serials(files, serial)
 
     zone_names = sorted(
@@ -175,6 +176,35 @@ def generate_pdns_internal(
         f'zone "{z}" {{ type primary; file "{zones_dir}/{z}.zone"; }};\n'
         for z in zone_names
     )
+    return files
+
+
+def _add_child_delegations(files: dict[str, str], domain: str) -> dict[str, str]:
+    """NS-delegate every zone from its closest ancestor in the same set.
+
+    The /48 ip6.arpa catch-all parents each /64 slice zone; without the
+    delegation pdnsutil check-all-zones errors and (Phase 5) the signed
+    parent's NSEC chain would deny the child. The NS target is the
+    central auth's own name — out-of-zone, so no glue is needed.
+    """
+    prefix = "zones-internal/"
+    zones = {
+        f[len(prefix):-len(".zone")]: f
+        for f in files
+        if f.startswith(prefix) and f.endswith(".zone")
+    }
+    for child in sorted(zones):
+        parents = [
+            z for z in zones if z != child and child.endswith("." + z)
+        ]
+        if not parents:
+            continue
+        parent = max(parents, key=len)  # closest ancestor delegates
+        delegation = (
+            f"{child}. {RECORD_TTL} IN NS {ROUTER_HOSTNAME}.{domain}.\n"
+        )
+        if delegation not in files[zones[parent]]:
+            files[zones[parent]] += delegation
     return files
 
 

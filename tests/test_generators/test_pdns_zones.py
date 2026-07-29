@@ -322,3 +322,50 @@ class TestContentDerivedSerials:
         )
         assert " SOA " in files[f"zones-internal/{DOMAIN}.zone"]
         assert "1234567 10800" in files[f"zones-internal/{DOMAIN}.zone"]
+
+
+class TestChildZoneDelegations:
+    """A zone that is a DNS ancestor of another zone in the same output
+    set must contain an NS delegation for it (pdnsutil check-all-zones
+    errors otherwise, and Phase-5 NSEC chains need real delegations).
+    Today: the /48 ip6.arpa catch-all parents every /64 slice zone."""
+
+    def test_v6_catchall_delegates_slice_zones(self):
+        import dataclasses
+
+        # The fixture SITE has no v6 prefix; the /48 catch-all only
+        # materializes with a prefix + a site-octet address on no known
+        # net (10.1.17.5 — third octet 17 is in no fixture VLAN).
+        site = dataclasses.replace(
+            SITE,
+            ipv6_prefixes=[IPv6Prefix(prefix="2404:e80:a137:")],
+        )
+        stray = Host(
+            machine_name="gadget",
+            hostname="gadget",
+            interfaces=[
+                _iface("eth0", "42", "10.1.17.5", "2404:e80:a137:117::5"),
+            ],
+        )
+        hosts = [_ten64(), _big_storage(), stray]
+        for host in hosts:
+            derive_all_dns_names(host, site)
+        files = generate_pdns_internal(
+            NetworkInventory(site=site, hosts=hosts)
+        )
+        catchall = None
+        slices = []
+        for name in files:
+            if not name.endswith(".zone") or "ip6.arpa" not in name:
+                continue
+            zone = name[len("zones-internal/"):-len(".zone")]
+            if zone.count(".") == 13:  # /48: 12 nibbles + ip6.arpa
+                catchall = zone
+            elif zone.count(".") == 17:  # /64: 16 nibbles + ip6.arpa
+                slices.append(zone)
+        assert catchall and slices
+        content = files[f"zones-internal/{catchall}.zone"]
+        for slice_zone in slices:
+            assert f"{slice_zone}. 300 IN NS ten64.{DOMAIN}." in content, (
+                f"missing delegation for {slice_zone}"
+            )

@@ -1,8 +1,10 @@
-# Design: wifi.welland border fix, tenwrt row, OpenMesh Site fill, per-host column merges
+# Design: wifi.welland border fix, VLAN-4 infra rows (ten64/wisp/tenwrt), OpenMesh Site fill, per-host column merges
 
-**Date:** 2026-07-29
-**Status:** Approved by user 2026-07-29 (tenwrt single row; Site filled, Physical
-Location untouched; code onto PR #18; monarto gains the wifi sheet)
+**Date:** 2026-07-29 (amended same day: request 5 superseded the original
+single tenwrt row with the six-row both-sites VLAN-4 infra block)
+**Status:** Approved by user 2026-07-29 (Site filled, Physical Location
+untouched; code onto PR #18; monarto gains the wifi sheet; infra rows as
+IP-Alloc formulas; permanent mirror carve-out)
 **Branch:** `wifi-sheet-hosts` (PR #18)
 
 ## Motivation / user requests
@@ -134,20 +136,33 @@ pre-existing ab-30 partial-filter bug. TDD.
   machine yields six 1-row blocks (nothing merges, borders per row).
 - Infra row content: `#`/`Name`/`Serial`/`Notes` blank; `Machine`,
   `Interface` (ten64 rows: `br-wifi`; wisp/tenwrt rows: blank), `Site`
-  (welland/monarto), `Type` (tenwrt rows: `DHCP:wisp`; ten64/wisp: blank —
-  static), `Physical Location` ("ten64 (VM)" for the VMs, "ten64" for
-  br-wifi — final text implementer's choice, keep it short),
-  `Hardware` ("Ten64" / "QEMU VM"), `Controlled By` ("ten64 libvirt" for
-  VMs) as literals. **`MAC Address` and `IP` are FORMULAS into
+  (welland/monarto), `Type` (tenwrt rows: `DHCP:wisp`; **ten64/wisp rows:
+  `static`** — see the dhcp-host note below), `Physical Location`
+  ("ten64 (VM)" for the VMs, "ten64" for br-wifi — final text
+  implementer's choice, keep it short), `Hardware` ("Ten64" / "QEMU VM"),
+  `Controlled By` ("ten64 libvirt" for VMs) as literals.
+- **`Type=static` (new sheet vocabulary + generator change):** the
+  IP-Allocation-sourced `wisp`/`ten64` hosts already emit
+  `dhcp-host=<MAC>,<IP>,…` bindings; a blank-Type mirror row would emit a
+  SECOND binding for the same IP from another file, and dnsmasq treats a
+  duplicate dhcp-host IP as a FATAL startup error at both sites.
+  `_host_dhcp_config` (`generators/dnsmasq.py`) therefore learns a second
+  suppressing value: `Type == "static"` (case-insensitive) skips the
+  binding exactly like `DHCP:wisp`, honestly describing a
+  statically-configured address. DNS records still generate normally. TDD. **`MAC Address` and `IP` are FORMULAS into
   'Welland - IP Allocation'** (user requirement: single-source
   maintenance), matching by Site+Machine (+Interface=`br-wifi` for ten64,
   which has many rows) — e.g.
-  `=INDEX('Welland - IP Allocation'!J:J, MATCH(1, ('Welland - IP Allocation'!A:A="welland")*('Welland - IP Allocation'!B:B="wisp")*('Welland - IP Allocation'!I:I=4), 0))`
-  (exact idiom implementer's choice: INDEX/MATCH-array or FILTER; MUST be
-  row-shift-proof, i.e. match by content, never fixed row refs; note the
-  VLAN cell may parse as number 4, not text). The published CSV exports the
-  EVALUATED values (site-literal IPs like 10.1.4.1 — fine,
-  `resolve_site_ip` passes non-X IPs through).
+  `=INDEX(<IP-Alloc MAC col>, MATCH(1, (<Site col>="welland")*(<Machine col>="wisp")*(<VLAN col>=4), 0))`
+  (exact idiom implementer's choice: INDEX/MATCH-array or FILTER). Two
+  hard requirements: (i) row-shift-proof — match by content, never fixed
+  row refs; (ii) column-shift-resistant — populate GENERATES these
+  formulas, so it derives the column letters from the fetched IP-Alloc
+  header (`find_header_row` + `header_index` → letter), never hardcoded
+  A/B/I/J. Verifying the live VLAN cell's type (number 4 vs text "4") is
+  an implementation requirement — the criterion must match the actual
+  cell type. The published CSV exports the EVALUATED values (site-literal
+  IPs like 10.1.4.1 — fine, `resolve_site_ip` passes non-X IPs through).
 - No `#`/`Serial` on any infra row ⇒ no `wifi_data` ⇒ excluded from
   `pucks.json`. Each site's pipeline gains hosts `ten64.wifi`, `wisp.wifi`,
   `tenwrt.wifi` (grouped by hostname; site filter keeps one row each) with
@@ -160,10 +175,23 @@ The three VLAN-4 machines are now PERMANENTLY dual-recorded (IP Allocation
 row + wifi-tab formula row → two hosts, e.g. `wisp` and `wisp.wifi`, same
 MAC + same IP). User decision: keep both forever. Two code changes:
 
-- **Validator carve-out:** `mac_uniqueness` and `ip_multiple_macs` accept a
-  duplicate when BOTH hosts record the identical (MAC, IP) pair AND share
-  the same `machine_name` — a deliberate cross-sheet mirror, not a
-  data-entry error. Any other duplicate still fails. TDD.
+- **Validator carve-out (`ip_multiple_macs` ONLY, ADDITIVE):** the check
+  gains an OR'd second exception: a duplicate is also accepted when every
+  colliding record pairs the identical (MAC, IP) AND all owning hosts
+  share one `machine_name` — a deliberate cross-sheet mirror, not a
+  data-entry error. The existing same-host multi-MAC exception (pucks:
+  different MACs, ONE owning host) must keep working unchanged — this is
+  an addition, not a rewrite; the implementation needs a parallel
+  `mac → machine_names` map alongside the current `mac_to_hostnames`.
+  (`mac_duplicate_ip` needs NO carve-out: it fires only when one MAC maps
+  to multiple DISTINCT IPs, which an identical-pair mirror can never
+  trigger — do not touch it.) TDD.
+- **Accepted side effects of mirroring:** each mirrored IP gets two
+  `ptr-record` lines under different names (dnsmasq accepts this; the
+  auto-PTR winner is load-order-dependent — documented, accepted). The
+  inventory's write-only `ip_to_hostname` index computes a meaningless
+  common-suffix for mirrored IPs; nothing consumes it today, but any
+  future consumer must be aware (noted here deliberately).
 - **`wisp_credentials.select_wisp`** currently selects
   `machine_name == "wisp"` and fails loud on multiple matches — the mirror
   host `wisp.wifi` would break `wisp register-broker`. Change the selector
@@ -197,11 +225,17 @@ add the wifi sheet URL, and the `wifi` generator stays welland-only (the
   per-row-Site sheets unaffected.
 - Formatter tests: border-clear request emitted immediately after
   `unmergeCells`, before any other formatting request; merge requests cover
-  all six columns per block.
-- Populate tests: Site overlay applied to OpenMesh rows; tenwrt row appended
-  last with the exact values above.
-- Site-filter integration test: with the new fixture, welland selects pucks
-  + 2 welland APs + tenwrt; monarto selects the 4 monarto APs.
+  all six columns per block; the six infra rows form 1-row blocks (no
+  merges over them).
+- Populate tests: Site overlay applied to OpenMesh rows; the SIX-row infra
+  block appended last in site-then-machine order with header-derived
+  MAC/IP formulas and the literals above.
+- Generator test: `Type=static` suppresses the dhcp-host binding (like
+  `DHCP:wisp`); DNS records still emitted.
+- Site-filter integration test (per-site expectations): welland selects
+  the 12 pucks + 2 welland APs (ab-38, 96-00) + ten64.wifi + wisp.wifi +
+  tenwrt.wifi = 17 WiFi-sheet hosts; monarto selects the 4 monarto APs +
+  its 3 infra hosts = 7.
 
 ## Live rollout — ORDER MATTERS
 
@@ -229,9 +263,10 @@ add the wifi sheet URL, and the `wifi` generator stays welland-only (the
 
 - Physical Location text on OpenMesh rows (prefixes kept, per user).
 - `pucks.json` contract and golden fixture.
-- OpenMesh row positions/order; puck rows (except puck01's location, via
-  the flash tab); 'Welland - IP Allocation' (the user's hand-added VLAN-4
-  rows are READ by formulas, never written).
+- OpenMesh row positions/order; the 24 puck rows (puck01's location text
+  changes via the flash tab only); 'Welland - IP Allocation' (the user's
+  hand-added VLAN-4 rows are READ by formulas, never written). The tab
+  gains exactly the six infra rows — nothing else moves.
 - `rewrite-refs`/`delete-old-rows`/`verify` phases and their gating.
 
 ## Follow-ups recorded (not this work)

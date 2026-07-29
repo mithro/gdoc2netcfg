@@ -53,11 +53,11 @@ Claude-Session: https://claude.ai/code/session_01BSHiudkQxHncLaoZeKPMDt
 
 **Files:** Modify `src/gdoc2netcfg/derivations/wisp_credentials.py`; Test `tests/test_derivations/test_wisp_credentials.py`.
 
-- [ ] Write failing test: hosts list containing `wisp` (hostname "wisp") AND `wisp.wifi` (hostname "wisp.wifi", same machine_name) → `select_wisp` returns the hostname-"wisp" host, no raise. **Rewrite the existing `test_select_wisp_duplicate_raises`** — it builds exactly this mirror pair and asserts a raise, which is the OLD semantics; its scenario becomes the new picks-"wisp" case, and the duplicate case becomes two hosts BOTH with hostname "wisp" (still raises). Zero matches still raises.
-- [ ] Run to verify failure (current machine_name match raises on the pair).
-- [ ] Implement: match `h.hostname == "wisp"` (update docstring + error messages accordingly).
-- [ ] Run tests — pass. Full suite + ruff.
-- [ ] Commit: `wisp_credentials: select by exact hostname, not machine_name`.
+- [x] Write failing test: hosts list containing `wisp` (hostname "wisp") AND `wisp.wifi` (hostname "wisp.wifi", same machine_name) → `select_wisp` returns the hostname-"wisp" host, no raise. **Rewrite the existing `test_select_wisp_duplicate_raises`** — it builds exactly this mirror pair and asserts a raise, which is the OLD semantics; its scenario becomes the new picks-"wisp" case, and the duplicate case becomes two hosts BOTH with hostname "wisp" (still raises). Zero matches still raises.
+- [x] Run to verify failure (current machine_name match raises on the pair).
+- [x] Implement: match `h.hostname == "wisp"` (update docstring + error messages accordingly).
+- [x] Run tests — pass. Full suite + ruff.
+- [x] Commit: `wisp_credentials: select by exact hostname, not machine_name`.
 
 ### Task 5: Formatter — border clear + six merged columns — spec §1
 

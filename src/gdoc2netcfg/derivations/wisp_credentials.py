@@ -31,13 +31,16 @@ def select_wisp(hosts: list[Host]) -> Host:
 
     Fails loud if the host is missing or if more than one host claims the
     "wisp" hostname."""
+    # The len(matches) > 1 branch is defensive: build_hosts() keys host
+    # groups by hostname, so pipeline hostnames are unique by construction.
     matches = [h for h in hosts if h.hostname == "wisp"]
     if not matches:
         raise ValueError("no host with hostname 'wisp' found in inventory")
     if len(matches) > 1:
         machine_names = ", ".join(h.machine_name for h in matches)
         raise ValueError(
-            f"multiple hosts with hostname 'wisp' found: {machine_names}"
+            f"multiple hosts with hostname 'wisp' found "
+            f"(machine names: {machine_names})"
         )
     return matches[0]
 

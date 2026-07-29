@@ -46,7 +46,7 @@ def test_select_wisp_picks_hostname_over_machine_name_mirror():
 
 def test_select_wisp_duplicate_raises():
     hosts = [_host("wisp"), _host("wisp", machine_name="wisp-b")]
-    with pytest.raises(ValueError, match="wisp"):
+    with pytest.raises(ValueError, match="multiple"):
         select_wisp(hosts)
 
 

@@ -84,7 +84,7 @@ def test_register_broker_empty_secret_errors(capsys):
 
 def test_register_broker_missing_wisp_host_errors(capsys):
     config, hosts = _cfg_and_hosts()
-    hosts = [h for h in hosts if h.machine_name != "wisp"]
+    hosts = [h for h in hosts if h.hostname != "wisp"]
     args = argparse.Namespace(config=None, dry_run=False, prune=False)
     with patch("gdoc2netcfg.cli.main._load_config", return_value=config), \
          patch("gdoc2netcfg.cli.main._build_pipeline",

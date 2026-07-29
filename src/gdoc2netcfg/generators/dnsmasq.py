@@ -46,11 +46,22 @@ def _generate_host_internal(host: Host, inventory: NetworkInventory) -> str:
     return sections_to_text(sections)
 
 
+_NO_DHCP_TYPES = {"dhcp:wisp", "static"}
+
+
 def _host_dhcp_config(host: Host, inventory: NetworkInventory) -> list[str]:
-    """Generate dhcp-host entries for a single host."""
-    # DHCP for this host is served elsewhere (e.g. wisp on the pucks' VLAN,
-    # netboot design D7) — emit no bindings so ten64 never competes.
-    if host.extra.get("Type", "").strip() == "DHCP:wisp":
+    """Generate dhcp-host entries for a single host.
+
+    A `Type` of `DHCP:wisp` means DHCP for this host is served elsewhere
+    (e.g. wisp on the pucks' VLAN, netboot design D7) — emit no bindings
+    so ten64 never competes. A `Type` of `static` means the address is
+    statically configured on the device itself (e.g. IP-Allocation-mirror
+    rows for ten64/wisp on the wifi tab) — a second dhcp-host binding for
+    an IP already bound elsewhere is a FATAL dnsmasq startup error, so
+    this is suppressed too. The comparison is case-insensitive since the
+    sheet value is hand-typed.
+    """
+    if host.extra.get("Type", "").strip().lower() in _NO_DHCP_TYPES:
         return []
 
     if not host.interfaces:

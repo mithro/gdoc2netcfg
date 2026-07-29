@@ -147,9 +147,13 @@ pre-existing ab-30 partial-filter bug. TDD.
   SECOND binding for the same IP from another file, and dnsmasq treats a
   duplicate dhcp-host IP as a FATAL startup error at both sites.
   `_host_dhcp_config` (`generators/dnsmasq.py`) therefore learns a second
-  suppressing value: `Type == "static"` (case-insensitive) skips the
-  binding exactly like `DHCP:wisp`, honestly describing a
-  statically-configured address. DNS records still generate normally. TDD. **`MAC Address` and `IP` are FORMULAS into
+  suppressing value: `Type == "static"` skips the binding exactly like
+  `DHCP:wisp`, honestly describing a statically-configured address; while
+  touching that comparison, normalize BOTH values case-insensitively (the
+  existing `== "DHCP:wisp"` check is case-sensitive — a hand-typed
+  `dhcp:wisp` would silently emit a binding). DNS records still generate
+  normally. TDD.
+- **`MAC Address` and `IP` are FORMULAS into
   'Welland - IP Allocation'** (user requirement: single-source
   maintenance), matching by Site+Machine (+Interface=`br-wifi` for ten64,
   which has many rows) — e.g.
@@ -166,8 +170,9 @@ pre-existing ab-30 partial-filter bug. TDD.
 - No `#`/`Serial` on any infra row ⇒ no `wifi_data` ⇒ excluded from
   `pucks.json`. Each site's pipeline gains hosts `ten64.wifi`, `wisp.wifi`,
   `tenwrt.wifi` (grouped by hostname; site filter keeps one row each) with
-  DNS records; tenwrt rows are `DHCP:wisp` (no dhcp-host binding); all
-  three get `wifi-<id>` broker logins on the next `wifi register-broker`.
+  DNS records; tenwrt rows are `DHCP:wisp` and ten64/wisp rows are
+  `static` (no dhcp-host binding from any of them); all three get
+  `wifi-<id>` broker logins on the next `wifi register-broker`.
 
 ### 3b. Cross-sheet mirror carve-out (validators) + wisp selector fix
 
@@ -215,7 +220,8 @@ add the wifi sheet URL, and the `wifi` generator stays welland-only (the
   exports for formulas). Golden `pucks.json` byte-identity must still pass
   UNMODIFIED (12 pucks; infra and OpenMesh rows absent from it). Any test
   feeding this fixture into `wifi_credentials`/host-building must account
-  for the ~9 extra hosts the broadened fixture now yields.
+  for the extra hosts the broadened fixture now yields (per-site counts:
+  welland 17, monarto 7 — the authoritative numbers below).
 - Carve-out tests: mirrored (MAC, IP, machine_name) duplicate accepted;
   same MAC different IP still errors; same MAC+IP different machine still
   errors. `select_wisp` by-hostname tests (wisp + wisp.wifi coexist → picks
@@ -256,8 +262,8 @@ add the wifi sheet URL, and the `wifi` generator stays welland-only (the
 4. Verify: fresh `fetch` at both sites; welland `generate wifi --stdout`
    byte-identical to the deployed pucks.json; `wifi-sheet-scan.py` clean;
    welland `validate` error delta explained (monarto APs leaving welland
-   shrinks the transitional error set); monarto inventory gains exactly the
-   4 monarto APs.
+   shrinks the transitional error set); monarto inventory gains exactly 7
+   WiFi-sheet hosts (its 4 APs + ten64.wifi/wisp.wifi/tenwrt.wifi).
 
 ## Explicitly unchanged
 

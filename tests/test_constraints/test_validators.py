@@ -25,10 +25,11 @@ def _record(machine="desktop", mac="aa:bb:cc:dd:ee:ff", ip="10.1.10.1", extra=No
     )
 
 
-def _host(hostname, interfaces, machine_name=None):
+def _host(hostname, interfaces, machine_name=None, sheet_type="Network"):
     return Host(
         machine_name=hostname if machine_name is None else machine_name,
         hostname=hostname,
+        sheet_type=sheet_type,
         interfaces=interfaces,
     )
 
@@ -359,10 +360,10 @@ class TestCrossRecordConstraints:
         hosts = [
             _host("wisp", [
                 _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="wisp"),
-            ], machine_name="wisp"),
+            ], machine_name="wisp", sheet_type="Network"),
             _host("wisp.wifi", [
                 _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="wisp.wifi"),
-            ], machine_name="wisp"),
+            ], machine_name="wisp", sheet_type="WiFi"),
         ]
         inv = NetworkInventory(
             site=SITE, hosts=hosts,
@@ -384,10 +385,10 @@ class TestCrossRecordConstraints:
         hosts = [
             _host("wisp", [
                 _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="wisp"),
-            ], machine_name="wisp"),
+            ], machine_name="wisp", sheet_type="Network"),
             _host("other.wifi", [
                 _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="other.wifi"),
-            ], machine_name="other"),
+            ], machine_name="other", sheet_type="WiFi"),
         ]
         inv = NetworkInventory(
             site=SITE, hosts=hosts,
@@ -410,10 +411,10 @@ class TestCrossRecordConstraints:
         hosts = [
             _host("wisp", [
                 _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="wisp"),
-            ], machine_name="wisp"),
+            ], machine_name="wisp", sheet_type="Network"),
             _host("wisp.wifi", [
                 _iface(mac="aa:bb:cc:dd:ee:02", ip="10.1.4.2", dhcp_name="wisp.wifi"),
-            ], machine_name="wisp"),
+            ], machine_name="wisp", sheet_type="WiFi"),
         ]
         inv = NetworkInventory(
             site=SITE, hosts=hosts,
@@ -421,6 +422,35 @@ class TestCrossRecordConstraints:
                 "10.1.4.2": [
                     (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wisp"),
                     (MACAddress.parse("aa:bb:cc:dd:ee:02"), "wisp.wifi"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        assert result.has_errors
+        assert result.errors[0].code == "ip_multiple_macs"
+
+    def test_bmc_split_same_machine_name_same_sheet_type_mac_ip_copy_paste_still_error(self):
+        """A BMC row legitimately shares machine_name with its parent (see
+        CLAUDE.md 'BMC Handling': both 'big-storage' and 'bmc.big-storage'
+        carry machine_name='big-storage'), but both come from the SAME
+        sheet ('Network') — there is no cross-sheet signal here. If a
+        copy-paste error gave the BMC row its parent's exact MAC+IP, that
+        must still be flagged: same machine_name alone is not sufficient
+        for the mirror carve-out, only a genuine cross-sheet mirror is."""
+        hosts = [
+            _host("big-storage", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.10.50", dhcp_name="big-storage"),
+            ], machine_name="big-storage", sheet_type="Network"),
+            _host("bmc.big-storage", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.10.50", dhcp_name="bmc-big-storage"),
+            ], machine_name="big-storage", sheet_type="Network"),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.10.50": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "big-storage"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "bmc-big-storage"),
                 ],
             },
         )

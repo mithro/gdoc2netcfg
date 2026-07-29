@@ -252,9 +252,14 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
       allowed only when (a) all MACs belong to one host (e.g. a puck's
       wan+lan interfaces sharing one fixed IP), or (b) every colliding
       record pairs the identical MAC and all owning hosts share one
-      machine_name (a deliberate cross-sheet mirror, e.g. "wisp" recorded
-      as both host "wisp" and host "wisp.wifi"). Multiple MACs are always
-      allowed in the roaming range.
+      machine_name AND the owning hosts span more than one sheet_type — a
+      genuine cross-sheet mirror (e.g. "wisp" recorded as host "wisp" from
+      the Network sheet and host "wisp.wifi" from the WiFi sheet). The
+      sheet_type requirement is what makes this "cross-sheet": a same-sheet
+      machine_name split (e.g. a BMC row sharing machine_name with its
+      parent — both "Network") does NOT qualify, so a copy-paste error
+      giving a BMC its parent's exact MAC+IP still errors. Multiple MACs
+      are always allowed in the roaming range.
     """
     result = ValidationResult()
 
@@ -293,26 +298,38 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
     # like "wisp" is permanently dual-recorded as hosts "wisp" and
     # "wisp.wifi" — both share machine_name "wisp").
     mac_to_machine_names: dict[str, set[str]] = {}
+    # mac → set of sheet_types that claim it. The true cross-sheet signal:
+    # a BMC split (bmc.<host>) shares machine_name with its parent but NOT
+    # sheet_type (both "Network"), so machine_name alone is not enough to
+    # distinguish a genuine cross-sheet mirror from a same-sheet BMC split.
+    mac_to_sheet_types: dict[str, set[str]] = {}
     for host in inventory.hosts:
         for iface in host.interfaces:
             mac_to_hostnames.setdefault(str(iface.mac), set()).add(host.hostname)
             mac_to_machine_names.setdefault(
                 str(iface.mac), set()
             ).add(host.machine_name)
+            mac_to_sheet_types.setdefault(
+                str(iface.mac), set()
+            ).add(host.sheet_type)
 
     # Multiple MACs per IP: allowed in the roaming range, or when all MACs
     # belong to one host (e.g. a multi-port endpoint like a puck's wan+lan
     # interfaces sharing one fixed IP), or when every colliding record for
-    # the IP pairs the IDENTICAL MAC and all owning hosts share one
-    # machine_name (a deliberate cross-sheet mirror: an IP Allocation row
-    # and a wifi-tab formula row recording the same device under two
-    # hostnames, e.g. "wisp" and "wisp.wifi").
+    # the IP pairs the IDENTICAL MAC, all owning hosts share one
+    # machine_name, AND the owning hosts span more than one sheet_type (a
+    # deliberate cross-sheet mirror: an IP Allocation row and a wifi-tab
+    # formula row recording the same device under two hostnames, e.g.
+    # "wisp" and "wisp.wifi"). The sheet_type check excludes same-sheet
+    # machine_name splits like a BMC row (machine_name shared with its
+    # parent, but same sheet_type) from wrongly qualifying.
     for ip_str, macs in inventory.ip_to_macs.items():
         is_roaming = roam_prefix and ip_str.startswith(roam_prefix)
         if len(macs) <= 1 or is_roaming:
             continue
         owning_hostnames: set[str] = set()
         owning_machine_names: set[str] = set()
+        owning_sheet_types: set[str] = set()
         has_unowned_mac = False
         for mac, _ in macs:
             hostnames = mac_to_hostnames.get(str(mac))
@@ -323,6 +340,9 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
                 owning_machine_names.update(
                     mac_to_machine_names.get(str(mac), set())
                 )
+                owning_sheet_types.update(
+                    mac_to_sheet_types.get(str(mac), set())
+                )
         if not has_unowned_mac and len(owning_hostnames) == 1:
             continue
         unique_macs = {str(mac) for mac, _ in macs}
@@ -330,6 +350,7 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
             not has_unowned_mac
             and len(unique_macs) == 1
             and len(owning_machine_names) == 1
+            and len(owning_sheet_types) > 1
         ):
             continue
         mac_list = ", ".join(f"{mac} ({name})" for mac, name in macs)

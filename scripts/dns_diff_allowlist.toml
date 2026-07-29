@@ -132,12 +132,6 @@ reason = "sheet addition: swp10s1 port row joins the ports aggregate"
 
 [[allow]]
 kind = "changed"
-pattern = 'opi1pc-[ab]'
-detail_pattern = '::15[012]'
-reason = "opi1pc explicit 'IPv6 A' cells set to ::150+ post-deploy; union with the vanity ::5x (from the unchanged v4) serves both"
-
-[[allow]]
-kind = "changed"
 pattern = 'rpi5-new-13f671'
 detail_pattern = '(::58|10\.1\.90\.58)'
 reason = "wlan0 row (10.X.90.58, MAC-less DNS-only) added to the sheet post-deploy"

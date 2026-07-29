@@ -76,10 +76,14 @@ def parse_csv(csv_text: str, sheet_name: str) -> list[DeviceRecord]:
     - Key field extraction (machine, mac, ip, interface)
     - Row length validation (skips rows not matching header count)
     - Empty row filtering
+    - WiFi-sheet-only Site carry-forward within a contiguous machine block
+      (see the inline comment above the row loop for the rationale)
 
     Args:
         csv_text: Raw CSV text content.
-        sheet_name: Name of the sheet (e.g. 'Network', 'IoT').
+        sheet_name: Name of the sheet (e.g. 'Network', 'IoT'). Also drives
+            behaviour, not just metadata: Site carry-forward is enabled
+            only when this is 'wifi' (case-insensitive).
 
     Returns:
         List of DeviceRecord objects, one per valid row.

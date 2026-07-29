@@ -6,6 +6,8 @@ to build the enriched Host model from raw spreadsheet records.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from gdoc2netcfg.derivations.dns_names import (
     common_suffix,
     compute_dhcp_name,
@@ -19,6 +21,7 @@ from gdoc2netcfg.derivations.vlan import ip_to_vlan_id
 from gdoc2netcfg.models.addressing import IPv4Address, IPv6Address, MACAddress
 from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
 from gdoc2netcfg.models.network import Site
+from gdoc2netcfg.sources.credentials import credential_field_names
 from gdoc2netcfg.sources.parser import DeviceRecord
 
 
@@ -164,6 +167,61 @@ def build_hosts(records: list[DeviceRecord], site: Site) -> list[Host]:
         hosts.append(host)
 
     return hosts
+
+
+@dataclass(frozen=True)
+class LostCredentialCell:
+    """A filled credential cell that ``extract_credentials()`` cannot see.
+
+    Identifies the cell by sheet position and field name only — never the
+    credential value itself.
+    """
+
+    sheet_name: str
+    row_number: int
+    machine: str
+    interface: str
+    field: str
+
+
+def find_lost_credential_cells(
+    records: list[DeviceRecord], hosts: list[Host], site: Site,
+) -> list[LostCredentialCell]:
+    """Report credential cells in raw records that no built host carries.
+
+    ``build_hosts()`` drops records missing machine/mac/ip, and each host's
+    ``extra`` comes from its first surviving record only — so a filled
+    credential cell on any other row would be silently discarded at fetch
+    time, never reaching credentials.db.  ``cmd_fetch`` fails loudly when
+    this returns anything.
+
+    A cell survives when some host sharing the record's machine name has
+    the same field/value in its ``extra`` (BMC rows become separate hosts
+    but keep the parent's machine name).  Records filtered out for another
+    site are exempt — this site's store legitimately omits them.
+    """
+    names = credential_field_names()
+    survived: dict[str, set[tuple[str, str]]] = {}
+    for host in hosts:
+        pairs = {(n, host.extra[n]) for n in names if host.extra.get(n)}
+        survived.setdefault(host.machine_name, set()).update(pairs)
+
+    lost: list[LostCredentialCell] = []
+    for record in filter_and_resolve_records(records, site):
+        if not record.machine:
+            continue
+        machine_pairs = survived.get(record.machine.lower(), set())
+        for field in names:
+            value = record.extra.get(field)
+            if value and (field, value) not in machine_pairs:
+                lost.append(LostCredentialCell(
+                    sheet_name=record.sheet_name,
+                    row_number=record.row_number,
+                    machine=record.machine,
+                    interface=record.interface,
+                    field=field,
+                ))
+    return lost
 
 
 def build_inventory(hosts: list[Host], site: Site) -> NetworkInventory:

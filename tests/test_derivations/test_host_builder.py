@@ -1,6 +1,10 @@
 """Tests for the host builder derivation."""
 
-from gdoc2netcfg.derivations.host_builder import build_hosts, build_inventory
+from gdoc2netcfg.derivations.host_builder import (
+    build_hosts,
+    build_inventory,
+    find_lost_credential_cells,
+)
 from gdoc2netcfg.models.network import VLAN, IPv6Prefix, Site
 from gdoc2netcfg.sources.parser import DeviceRecord
 
@@ -30,14 +34,17 @@ def _make_record(
     interface="",
     sheet_name="Network",
     extra=None,
+    row_number=2,
+    site="",
 ):
     return DeviceRecord(
         sheet_name=sheet_name,
-        row_number=2,
+        row_number=row_number,
         machine=machine,
         mac_address=mac,
         ip=ip,
         interface=interface,
+        site=site,
         extra=extra or {},
     )
 
@@ -159,3 +166,109 @@ class TestBuildInventory:
 
         # eth0.desktop → hostname is "desktop" for the common suffix
         assert "desktop" in inv.ip_to_hostname["10.1.10.100"]
+
+
+class TestFindLostCredentialCells:
+    """build_hosts() drops records without machine+mac+ip and takes
+    Host.extra from the first surviving record only — a filled credential
+    cell anywhere else is silently lost at fetch time unless this guard
+    reports it."""
+
+    def test_password_on_dropped_no_ip_row_is_reported(self):
+        # The m4300 pattern: password lives on the inventory `base` row
+        # (MAC, no IP); only the `manage` row (MAC + IP) builds the host.
+        records = [
+            _make_record(
+                machine="sw1", mac="aa:bb:cc:dd:ee:01", ip="",
+                interface="base", extra={"Password": "secret"}, row_number=10,
+            ),
+            _make_record(
+                machine="sw1", mac="aa:bb:cc:dd:ee:02", ip="10.1.10.30",
+                interface="manage", row_number=11,
+            ),
+        ]
+        hosts = build_hosts(records, SITE)
+
+        lost = find_lost_credential_cells(records, hosts, SITE)
+
+        assert len(lost) == 1
+        cell = lost[0]
+        assert cell.sheet_name == "Network"
+        assert cell.row_number == 10
+        assert cell.machine == "sw1"
+        assert cell.interface == "base"
+        assert cell.field == "Password"
+
+    def test_password_on_surviving_row_is_not_reported(self):
+        records = [
+            _make_record(
+                machine="sw1", mac="aa:bb:cc:dd:ee:01", ip="10.1.10.30",
+                extra={"Password": "secret"},
+            ),
+        ]
+        hosts = build_hosts(records, SITE)
+        assert find_lost_credential_cells(records, hosts, SITE) == []
+
+    def test_password_on_non_first_surviving_row_is_reported(self):
+        # Host.extra comes from group[0] only; a credential on a later
+        # interface row of the same host is just as lost as a dropped row.
+        records = [
+            _make_record(
+                machine="desktop", mac="aa:bb:cc:dd:ee:01",
+                ip="10.1.10.100", interface="eth0", row_number=5,
+            ),
+            _make_record(
+                machine="desktop", mac="aa:bb:cc:dd:ee:02",
+                ip="10.1.10.101", interface="eth1",
+                extra={"Password": "secret"}, row_number=6,
+            ),
+        ]
+        hosts = build_hosts(records, SITE)
+
+        lost = find_lost_credential_cells(records, hosts, SITE)
+
+        assert [(c.row_number, c.field) for c in lost] == [(6, "Password")]
+
+    def test_same_value_also_on_surviving_row_is_not_reported(self):
+        # The identical password on both the dropped and the surviving row
+        # reaches the store via the surviving one — nothing is lost.
+        records = [
+            _make_record(
+                machine="sw1", mac="aa:bb:cc:dd:ee:01", ip="",
+                interface="base", extra={"Password": "secret"}, row_number=10,
+            ),
+            _make_record(
+                machine="sw1", mac="aa:bb:cc:dd:ee:02", ip="10.1.10.30",
+                interface="manage", extra={"Password": "secret"}, row_number=11,
+            ),
+        ]
+        hosts = build_hosts(records, SITE)
+        assert find_lost_credential_cells(records, hosts, SITE) == []
+
+    def test_other_site_record_is_not_reported(self):
+        # A record filtered out for a different site legitimately stores
+        # nothing here — not a lost cell.
+        records = [
+            _make_record(
+                machine="sw-other", mac="aa:bb:cc:dd:ee:01", ip="10.2.10.30",
+                site="monarto", extra={"Password": "secret"},
+            ),
+        ]
+        hosts = build_hosts(records, SITE)
+        assert hosts == []
+        assert find_lost_credential_cells(records, hosts, SITE) == []
+
+    def test_bmc_row_credential_is_not_reported(self):
+        # BMC rows become separate hosts (bmc.machine) sharing machine_name
+        # with the parent; their credential survives via the BMC host.
+        records = [
+            _make_record(
+                machine="server1", mac="aa:bb:cc:dd:ee:01", ip="10.1.10.40",
+            ),
+            _make_record(
+                machine="server1", mac="aa:bb:cc:dd:ee:02", ip="10.1.10.41",
+                interface="bmc", extra={"Password": "admin:secret"},
+            ),
+        ]
+        hosts = build_hosts(records, SITE)
+        assert find_lost_credential_cells(records, hosts, SITE) == []

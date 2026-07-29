@@ -87,6 +87,39 @@ def test_fetch_creates_credentials_db_0600(fetch_config, monkeypatch):
     assert oct(mode) == oct(0o600)
 
 
+def test_fetch_fails_loud_when_credential_cell_would_be_lost(
+    fetch_config, monkeypatch, capsys,
+):
+    """A Password on a row build_hosts() drops (here: MAC but no IP) must
+    abort the fetch — nothing stored, nothing cached, value never echoed."""
+    config, cache_dir = fetch_config
+
+    def fake_fetch(name, url):
+        return SheetData(name=name, csv_text=(
+            "Machine,MAC Address,IP,Interface,Password,Notes\n"
+            "switch1,aa:bb:cc:dd:ee:01,,base,secret1,inventory row\n"
+            "switch1,aa:bb:cc:dd:ee:02,10.1.30.1,manage,,\n"
+        ))
+
+    monkeypatch.setattr(
+        "gdoc2netcfg.sources.sheets.fetch_sheet", fake_fetch, raising=True,
+    )
+
+    rc = cli.main(["-c", str(config), "fetch"])
+    assert rc == 1
+
+    err = capsys.readouterr().err
+    assert "switch1" in err
+    assert "row 2" in err
+    assert "Password" in err
+    assert "base" in err
+    assert "secret1" not in err  # never echo the credential value
+
+    # Fail-loud means fail-before-write: no store, no cache.
+    assert not (cache_dir / "credentials.db").exists()
+    assert not (cache_dir / "network.csv").exists()
+
+
 def test_failed_credential_sheet_fetch_does_not_wipe_store(
     fetch_config, monkeypatch,
 ):

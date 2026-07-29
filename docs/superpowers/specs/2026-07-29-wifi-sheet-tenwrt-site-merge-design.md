@@ -163,9 +163,9 @@ pre-existing ab-30 partial-filter bug. TDD.
   row refs; (ii) column-shift-resistant — populate GENERATES these
   formulas, so it derives the column letters from the fetched IP-Alloc
   header (`find_header_row` + `header_index` → letter), never hardcoded
-  A/B/I/J. Verifying the live VLAN cell's type (number 4 vs text "4") is
-  an implementation requirement — the criterion must match the actual
-  cell type. The published CSV exports the EVALUATED values (site-literal
+  A/B/I/J. The VLAN criterion uses the type-agnostic coercion idiom
+  `(<VLAN col>&""="4")` — the IP-Alloc VLAN column is mixed-type (numbers
+  and strings), so coercion beats probing the live cell type. The published CSV exports the EVALUATED values (site-literal
   IPs like 10.1.4.1 — fine, `resolve_site_ip` passes non-X IPs through).
 - No `#`/`Serial` on any infra row ⇒ no `wifi_data` ⇒ excluded from
   `pucks.json`. Each site's pipeline gains hosts `ten64.wifi`, `wisp.wifi`,

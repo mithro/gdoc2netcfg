@@ -53,7 +53,7 @@ Claude-Session: https://claude.ai/code/session_01BSHiudkQxHncLaoZeKPMDt
 
 **Files:** Modify `src/gdoc2netcfg/derivations/wisp_credentials.py`; Test `tests/test_derivations/test_wisp_credentials.py`.
 
-- [ ] Write failing test: hosts list containing `wisp` (hostname "wisp") AND `wisp.wifi` (hostname "wisp.wifi", same machine_name) → `select_wisp` returns the hostname-"wisp" host, no raise. Keep/verify: zero matches raises; two hosts BOTH with hostname "wisp" raises.
+- [ ] Write failing test: hosts list containing `wisp` (hostname "wisp") AND `wisp.wifi` (hostname "wisp.wifi", same machine_name) → `select_wisp` returns the hostname-"wisp" host, no raise. **Rewrite the existing `test_select_wisp_duplicate_raises`** — it builds exactly this mirror pair and asserts a raise, which is the OLD semantics; its scenario becomes the new picks-"wisp" case, and the duplicate case becomes two hosts BOTH with hostname "wisp" (still raises). Zero matches still raises.
 - [ ] Run to verify failure (current machine_name match raises on the pair).
 - [ ] Implement: match `h.hostname == "wisp"` (update docstring + error messages accordingly).
 - [ ] Run tests — pass. Full suite + ruff.
@@ -73,9 +73,9 @@ Claude-Session: https://claude.ai/code/session_01BSHiudkQxHncLaoZeKPMDt
 
 **Files:** Modify `scripts/wifi-sheet-migrate.py`; Test `tests/test_scripts/test_wifi_sheet_migrate.py`.
 
-- [ ] Write failing tests: (a) `OPENMESH_SITE_BY_MACHINE` = {ab-38: welland, 96-00: welland, ab-30: monarto, 94-98: monarto, 95-80: monarto, 95-88: monarto} and every OpenMesh row emitted by `compute_new_tab_rows` carries its machine's site in the Site column (all 7 rows); (b) after the OpenMesh rows comes the six-row infra block in site-then-machine order (welland ten64/wisp/tenwrt, monarto ten64/wisp/tenwrt) with: Machine/Interface (`br-wifi` only on ten64 rows)/Site/Type (`static` for ten64+wisp, `DHCP:wisp` for tenwrt)/Location/Hardware/Controlled By literals per spec §3, and MAC+IP cells that are `=INDEX(...MATCH(...)...)` (or FILTER) formulas referencing 'Welland - IP Allocation' WITHOUT any fixed row number, with column letters derived from a (mocked) fetched IP-Alloc header via the existing `find_header_row`/`header_index` helpers; (c) grid growth: when the computed row count exceeds the (mocked) `gridProperties.rowCount`, an `appendDimension` ROWS request is issued BEFORE the values write; not issued otherwise.
-- [ ] Run to verify failure.
-- [ ] Implement. For the VLAN criterion's cell type: fetch one IP-Alloc VLAN cell with `UNFORMATTED_VALUE` at populate time and build the criterion to match its actual type (number vs string) — fail loud if neither 4 nor "4".
+- [ ] Write failing tests (pure-function style — this test file has no fake SheetsClient; keep it that way): (a) `OPENMESH_SITE_BY_MACHINE` = {ab-38: welland, 96-00: welland, ab-30: monarto, 94-98: monarto, 95-80: monarto, 95-88: monarto} and every row of every OpenMesh block emitted by `compute_new_tab_rows` (42 rows across 6 blocks in the full fixture) carries its machine's site in the Site column; (b) after the OpenMesh rows comes the six-row infra block in site-then-machine order (welland ten64/wisp/tenwrt, monarto ten64/wisp/tenwrt) with: Machine/Interface (`br-wifi` only on ten64 rows)/Site/Type (`static` for ten64+wisp, `DHCP:wisp` for tenwrt)/Location/Hardware/Controlled By literals per spec §3, and MAC+IP cells that are `=INDEX(...MATCH(...)...)` (or FILTER) formulas referencing 'Welland - IP Allocation' WITHOUT any fixed row number, with column letters derived from the `ip_alloc_values` header (index 0) already passed to `compute_new_tab_rows`, via the existing `header_index` + a new `col_letter` helper — tests just pass a fixture grid, no mocking; (c) grid growth via a NEW PURE HELPER `grid_growth_requests(sheet_id, current_row_count, needed_rows) -> list[dict]`: returns one `appendDimension` ROWS request when `needed_rows > current_row_count`, `[]` otherwise; `cmd_populate` calls it before `update_values`, reading `gridProperties.rowCount` from the sheets-properties response it already fetches (note: `sheet_id_by_title()` discards properties — read the raw properties dict instead; no extra API call).
+- [ ] Run to verify failure. NOTE: `TestComputeNewTabRows::test_openmesh_start_row_follows_all_puck_rows` asserts `len(rows) == 2 + 7` and WILL break — updating it to include the infra block is expected, not a regression.
+- [ ] Implement. VLAN criterion: use the type-agnostic coercion idiom `(<VLAN col>&""="4")` — no cell-type probing (the IP-Alloc VLAN column is mixed-type: numbers and strings like "Q"; a probe would also break every existing fixture). Add `"VLAN"` to `_IP_ALLOC_REQUIRED_COLUMNS` (needed for header_index). Fail loud at populate time if any of the six (site, machine) source rows is absent from the fetched IP-Alloc values — never emit a formula that would silently evaluate to #N/A.
 - [ ] Run tests — pass. Full suite + ruff.
 - [ ] Commit: `wifi-sheet-migrate: OpenMesh Site overlay + VLAN-4 infra formula block + grid growth`.
 
@@ -93,7 +93,7 @@ Claude-Session: https://claude.ai/code/session_01BSHiudkQxHncLaoZeKPMDt
 
 - [ ] Full `uv run pytest` + `uv run ruff check src/ tests/ scripts/`; `rg -in "gwifi" --glob '!docs/superpowers/**' .` still only external names.
 - [ ] `git push origin wifi-sheet-hosts` (plain push).
-- [ ] PR #18: add a comment describing this batch (border fix, six infra formula rows, Site fill + carry-forward, merges, Type=static, mirror carve-out, select_wisp fix; spec+plan paths); append to the body's Rollout state: the live-sheet steps below + monarto toml gains the wifi sheet URL after populate.
+- [ ] PR #18: add a comment describing this batch (border fix, six infra formula rows, Site fill + carry-forward, merges, Type=static, mirror carve-out, select_wisp fix; spec+plan paths); append to the body's Rollout state: the live-sheet steps below + monarto toml gains the wifi sheet URL **post-merge/post-deploy only** (Phase 2 runs format right after populate, so a pre-deploy monarto parser would misread the merged Site column — must match Phase 2's ordering, not the spec's earlier "after populate" wording).
 
 ---
 
@@ -101,7 +101,7 @@ Claude-Session: https://claude.ai/code/session_01BSHiudkQxHncLaoZeKPMDt
 
 Order per spec "Live rollout"; note prod ten64s do NOT fetch the wifi tab yet (their tomls predate PR #18), so populate/format may run before the PR merges — verify that assumption first.
 
-- [ ] Verify prod welland toml has no wifi sheet: `ssh -A ten64.welland.mithis.com "grep -n wifi /opt/gdoc2netcfg/gdoc2netcfg.toml"` → expect no `[sheets] wifi` entry. If present, STOP until PR #18 is merged+deployed.
+- [ ] Verify prod welland toml has no wifi sheet: `ssh -A ten64.welland.mithis.com "grep -n wifi /opt/gdoc2netcfg/gdoc2netcfg.toml"` → expect no `[sheets] wifi` entry (grep exits 1 on no match — that's the PASS condition, not a broken command). If present, STOP until PR #18 is merged+deployed. Also confirm (already verified live 2026-07-29) the IP-Alloc VLAN-4 rows hold site-LITERAL MACs/IPs (`02:00:0a:01:04:01`/`10.1.4.1` etc.), not X-templated ones.
 - [ ] Write "Not Deployed" into the flash tab's Location cell for puck01 (one-cell values.update on 'Google WiFi Pucks').
 - [ ] `uv run scripts/wifi-sheet-migrate.py populate` (+ its snapshot); re-read the tab: 73 rows, Site filled on all OpenMesh rows, infra formulas evaluating to the IP-Alloc values, puck01 location "Not Deployed" via formula.
 - [ ] `uv run scripts/wifi-sheet-format.py` (then re-read formatting: no stray borders mid-block, six columns merged per block, six infra rows unmerged 1-row blocks).

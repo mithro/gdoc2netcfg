@@ -429,6 +429,86 @@ class TestCrossRecordConstraints:
         assert result.has_errors
         assert result.errors[0].code == "ip_multiple_macs"
 
+    def test_bmc_typo_not_masked_by_coexisting_genuine_mirror(self):
+        """Reviewer-verified hole: a same-IP+MAC BMC copy-paste typo must
+        still error even when a THIRD, genuinely-mirrored host is also
+        present for the same machine_name+MAC+IP. Three hosts, all
+        machine_name='wisp', all sharing the identical MAC+IP: 'wisp'
+        (Network, real), 'bmc.wisp' (Network, typo — duplicate of wisp),
+        'wisp.wifi' (WiFi, genuine mirror). A carve-out that only checks
+        "more than one sheet_type present" (2: Network+WiFi) wrongly
+        accepts this, because it doesn't notice there are 3 owners for
+        only 2 sheet_types (i.e. two hosts sharing one sheet_type, one of
+        which must be the typo). The exception must require exactly one
+        owning host PER sheet_type."""
+        hosts = [
+            _host("wisp", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="wisp"),
+            ], machine_name="wisp", sheet_type="Network"),
+            _host("bmc.wisp", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="bmc-wisp"),
+            ], machine_name="wisp", sheet_type="Network"),
+            _host("wisp.wifi", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="wisp.wifi"),
+            ], machine_name="wisp", sheet_type="WiFi"),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.4.2": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wisp"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "bmc-wisp"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wisp.wifi"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        assert result.has_errors
+        assert result.errors[0].code == "ip_multiple_macs"
+
+    def test_bmc_typo_not_masked_by_mirror_sharing_mac_on_different_ip(self):
+        """Reviewer-verified hole: the same-IP typo ('srv' + 'bmc.srv',
+        both Network, identical MAC+IP — a real copy-paste error) must
+        still error even when a totally separate host ('srv.wifi', WiFi
+        sheet) happens to reuse that MAC on a DIFFERENT IP. A naive
+        MAC-global owner lookup leaks 'srv.wifi' into this IP's decision
+        (it never actually owns an interface on THIS IP), which — combined
+        with the sheet_type-span check — would wrongly suppress the typo's
+        error. Owner sets for the mirror exception must be derived only
+        from hosts that own an interface on the COLLIDING IP.
+
+        Note: 'srv.wifi' reusing MAC A on a different IP also legitimately
+        trips the separate mac_duplicate_ip check (a MAC on two distinct
+        IPs) — expected and irrelevant here. This test isolates whether
+        ip_multiple_macs specifically still fires for the same-IP typo,
+        filtering by code rather than asserting on error order."""
+        hosts = [
+            _host("srv", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.10.50", dhcp_name="srv"),
+            ], machine_name="srv", sheet_type="Network"),
+            _host("bmc.srv", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.10.50", dhcp_name="bmc-srv"),
+            ], machine_name="srv", sheet_type="Network"),
+            _host("srv.wifi", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.20.7", dhcp_name="srv.wifi"),
+            ], machine_name="srv", sheet_type="WiFi"),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.10.50": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "srv"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "bmc-srv"),
+                ],
+                "10.1.20.7": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "srv.wifi"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        ip_errors = [v for v in result.errors if v.code == "ip_multiple_macs"]
+        assert len(ip_errors) == 1
+
     def test_bmc_split_same_machine_name_same_sheet_type_mac_ip_copy_paste_still_error(self):
         """A BMC row legitimately shares machine_name with its parent (see
         CLAUDE.md 'BMC Handling': both 'big-storage' and 'bmc.big-storage'

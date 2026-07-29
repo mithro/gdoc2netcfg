@@ -369,3 +369,26 @@ class TestChildZoneDelegations:
             assert f"{slice_zone}. 300 IN NS ten64.{DOMAIN}." in content, (
                 f"missing delegation for {slice_zone}"
             )
+
+
+class TestDuplicateRecordLines:
+    """Two sheet rows with the SAME interface name (gsm7252ps-s3 has two
+    'manage' rows = two addresses) must not emit duplicate identical
+    CNAME lines — pdnsutil check-zone errors on rrset duplicates. The
+    per-row A/AAAA records legitimately form one multi-address rrset."""
+
+    def test_same_named_interfaces_dedupe_cnames(self):
+        host = Host(
+            machine_name="sw3",
+            hostname="sw3",
+            interfaces=[
+                _iface("manage", "31", "10.1.10.24", "2404:e80:a137:110::24"),
+                _iface("manage", "32", "10.1.10.31", "2404:e80:a137:110::31"),
+            ],
+        )
+        files = _generate(_ten64(), host)
+        zone = files[f"zones-internal/{DOMAIN}.zone"]
+        cname = f"manage.sw3.{DOMAIN}. 300 IN CNAME manage.sw3.int.{DOMAIN}."
+        assert zone.count(cname) == 1
+        # (the per-address A/AAAA rrset lives in the int LEAF fragment —
+        # covered by the dnsmasq_leaf tests; int is not a central zone)

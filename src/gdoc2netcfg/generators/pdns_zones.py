@@ -167,6 +167,7 @@ def generate_pdns_internal(
         files[f"zones-internal/{zone_file}"] = content
 
     files = _add_child_delegations(files, domain)
+    files = _dedupe_record_lines(files)
     files = finalize_zone_serials(files, serial)
 
     zone_names = sorted(
@@ -177,6 +178,30 @@ def generate_pdns_internal(
         for z in zone_names
     )
     return files
+
+
+def _dedupe_record_lines(files: dict[str, str]) -> dict[str, str]:
+    """Drop exact-duplicate record lines within each zone file.
+
+    Two sheet rows sharing one interface NAME (a two-address interface)
+    derive identical address-independent lines (projection CNAMEs) once
+    per row; pdnsutil check-zone errors on duplicates in an rrset. Blank
+    separator lines are preserved.
+    """
+    out: dict[str, str] = {}
+    for name, content in files.items():
+        if not name.endswith(".zone"):
+            out[name] = content
+            continue
+        seen: set[str] = set()
+        lines: list[str] = []
+        for line in content.splitlines():
+            if line.strip() and line in seen:
+                continue
+            seen.add(line)
+            lines.append(line)
+        out[name] = "\n".join(lines) + "\n"
+    return out
 
 
 def _add_child_delegations(files: dict[str, str], domain: str) -> dict[str, str]:

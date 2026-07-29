@@ -9,14 +9,19 @@ tab's look, matching the conventions of the sibling `iot.welland` /
   - alternating row banding (white / light green) over the data rows
   - monospace (Consolas) for the technical columns (#, MAC Address, IP,
     Serial), middle vertical alignment everywhere
-  - per-machine blocks: Physical Location cells merged vertically (blocks
-    of 2+ rows) and a solid top/bottom border around each block
+  - per-machine blocks: Site, Physical Location, Hardware, Controlled By,
+    Serial, and Notes / Comments cells merged vertically (blocks of 2+
+    rows) and a solid top/bottom border around each block
   - grid trimmed to exactly the used range, columns auto-resized
 
 Because populate can shift every block (e.g. inserting the stock pucks
 moved the OpenMesh blocks down by 24 rows), this tool always starts from a
-clean slate: it unmerges everything, deletes existing banding, then
-re-derives blocks from the CURRENT Machine column. Safe to re-run any time.
+clean slate: it unmerges everything, clears all borders on the full grid,
+deletes existing banding, then re-derives blocks from the CURRENT Machine
+column. Clearing borders prevents stale block borders surviving at their
+old row positions after a shift (the border-clear must precede the new
+per-block borders, and comes right after unmergeCells since a merged
+cell's borders belong to its anchor). Safe to re-run any time.
 
 Usage:
     uv run scripts/wifi-sheet-format.py [--dry-run]
@@ -44,6 +49,15 @@ BAND_SECOND = {"red": 0.906, "green": 0.976, "blue": 0.937}
 MONO_FONT = "Consolas"
 MONO_COLUMNS = ["#", "MAC Address", "IP", "Serial"]
 BORDER = {"style": "SOLID", "color": {"red": 0.2, "green": 0.2, "blue": 0.2}}
+NO_BORDER = {"style": "NONE"}
+MERGE_COLUMNS_PER_BLOCK = [
+    "Site",
+    "Physical Location",
+    "Hardware",
+    "Controlled By",
+    "Serial",
+    "Notes / Comments",
+]
 
 
 def compute_machine_blocks(values: list[list[str]], machine_col: int) -> list[tuple[int, int, str]]:
@@ -79,7 +93,10 @@ def build_requests(
     n_rows = len(values)
     n_cols = len(header)
     machine_col = wsm.header_index(header, "Machine", sheet_label=wsm.NEW_TAB_TITLE)
-    location_col = wsm.header_index(header, "Physical Location", sheet_label=wsm.NEW_TAB_TITLE)
+    merge_cols = [
+        wsm.header_index(header, name, sheet_label=wsm.NEW_TAB_TITLE)
+        for name in MERGE_COLUMNS_PER_BLOCK
+    ]
     blocks = compute_machine_blocks(values, machine_col)
     if not blocks:
         raise ValueError(f"{wsm.NEW_TAB_TITLE}: no machine blocks found -- nothing to format")
@@ -96,8 +113,24 @@ def build_requests(
 
     requests_body: list[dict] = []
 
-    # Clean slate: unmerge everything, drop existing banding.
+    # Clean slate: unmerge everything, clear all borders (stale block
+    # borders otherwise survive at their pre-shift row positions -- must
+    # come right after unmergeCells, before any other formatting request),
+    # then drop existing banding.
     requests_body.append({"unmergeCells": {"range": {"sheetId": sheet_id}}})
+    requests_body.append(
+        {
+            "updateBorders": {
+                "range": grid_range(1, grid_rows, 0, grid_cols),
+                "top": NO_BORDER,
+                "bottom": NO_BORDER,
+                "left": NO_BORDER,
+                "right": NO_BORDER,
+                "innerHorizontal": NO_BORDER,
+                "innerVertical": NO_BORDER,
+            }
+        }
+    )
     for banded_range_id in existing_banded_range_ids:
         requests_body.append({"deleteBanding": {"bandedRangeId": banded_range_id}})
 
@@ -199,18 +232,19 @@ def build_requests(
             }
         )
 
-    # Per-block: merge Physical Location vertically (2+ row blocks) and a
-    # solid top/bottom border spanning the full row width.
+    # Per-block: merge each of MERGE_COLUMNS_PER_BLOCK vertically (2+ row
+    # blocks) and a solid top/bottom border spanning the full row width.
     for first_row, last_row, _machine in blocks:
         if last_row > first_row:
-            requests_body.append(
-                {
-                    "mergeCells": {
-                        "range": grid_range(first_row, last_row, location_col, location_col + 1),
-                        "mergeType": "MERGE_COLUMNS",
+            for col in merge_cols:
+                requests_body.append(
+                    {
+                        "mergeCells": {
+                            "range": grid_range(first_row, last_row, col, col + 1),
+                            "mergeType": "MERGE_COLUMNS",
+                        }
                     }
-                }
-            )
+                )
         requests_body.append(
             {
                 "updateBorders": {

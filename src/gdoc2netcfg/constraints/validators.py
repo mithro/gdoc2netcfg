@@ -314,10 +314,12 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
     # Derive roaming prefix from site config
     roam_prefix = inventory.site.ip_prefix_for_vlan("roam")
 
-    # MAC → IP uniqueness
+    # MAC → IP uniqueness (DNS-only interfaces have no MAC to collide)
     mac_to_ips: dict[str, list[tuple[str, str]]] = {}  # mac → [(ip, dhcp_name)]
     for host in inventory.hosts:
         for iface in host.interfaces:
+            if iface.mac is None:
+                continue
             mac_str = str(iface.mac)
             ip_str = str(iface.ipv4)
             if mac_str not in mac_to_ips:
@@ -377,6 +379,31 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
             record_id=ip_str,
             field="ip",
         ))
+
+    # Cross-host IP sharing (DNS-level, MAC-independent): the same IPv4 on
+    # two different hosts is always a data error — this catches stale rows
+    # (e.g. a replaced switch's old row keeping the new switch's address)
+    # even when one side has no MAC and so dodges the DHCP-keyed checks.
+    ip_to_hosts: dict[str, set[str]] = {}
+    for host in inventory.hosts:
+        for iface in host.interfaces:
+            ip_to_hosts.setdefault(str(iface.ipv4), set()).add(host.hostname)
+    for ip_str, hostnames in sorted(ip_to_hosts.items()):
+        # Same roaming-range exemption as ip_multiple_macs above: pool
+        # addresses legitimately move between devices.
+        if roam_prefix and ip_str.startswith(roam_prefix):
+            continue
+        if len(hostnames) > 1:
+            result.add(ConstraintViolation(
+                severity=Severity.ERROR,
+                code="ip_multiple_hosts",
+                message=(
+                    f"IP {ip_str} assigned to multiple hosts: "
+                    f"{', '.join(sorted(hostnames))}"
+                ),
+                record_id=ip_str,
+                field="ip",
+            ))
 
     return result
 

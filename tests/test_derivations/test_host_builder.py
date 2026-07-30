@@ -279,3 +279,176 @@ class TestFindLostCredentialCells:
         ]
         hosts = build_hosts(records, SITE)
         assert find_lost_credential_cells(records, hosts, SITE) == []
+
+
+class TestAggregateOverride:
+    """The 'Aggregate' sheet column names the interfaces whose addresses
+    form the host's site-level aggregate records (design §3: per-host
+    override column — ten64 uses it). Absent column → None (union of all
+    interfaces on known networks)."""
+
+    def test_comma_separated(self):
+        records = [_make_record(extra={"Aggregate": "eth0, br-int"})]
+        hosts = build_hosts(records, SITE)
+        assert hosts[0].aggregate_override == ["eth0", "br-int"]
+
+    def test_newline_separated(self):
+        records = [_make_record(extra={"Aggregate": "eth0\nbr-int"})]
+        hosts = build_hosts(records, SITE)
+        assert hosts[0].aggregate_override == ["eth0", "br-int"]
+
+    def test_absent_column_is_none(self):
+        records = [_make_record()]
+        hosts = build_hosts(records, SITE)
+        assert hosts[0].aggregate_override is None
+
+    def test_empty_value_is_none(self):
+        records = [_make_record(extra={"Aggregate": "  "})]
+        hosts = build_hosts(records, SITE)
+        assert hosts[0].aggregate_override is None
+
+    def test_collected_from_any_interface_row(self):
+        """Like Alt Names, the column may be filled on any of the host's
+        interface rows, not just the first."""
+        records = [
+            _make_record(
+                machine="ten64", mac="aa:bb:cc:dd:ee:01",
+                ip="10.1.10.1", interface="eth0",
+            ),
+            _make_record(
+                machine="ten64", mac="aa:bb:cc:dd:ee:02",
+                ip="10.1.10.2", interface="eth1",
+                extra={"Aggregate": "eth0"},
+            ),
+        ]
+        hosts = build_hosts(records, SITE)
+        assert hosts[0].aggregate_override == ["eth0"]
+
+    def test_deduplicated_preserving_order(self):
+        records = [_make_record(extra={"Aggregate": "eth1, eth0, eth1"})]
+        hosts = build_hosts(records, SITE)
+        assert hosts[0].aggregate_override == ["eth1", "eth0"]
+
+
+class TestMacLessInterfaces:
+    """Rows with machine+IP but no MAC are DNS-only interfaces (wg
+    tunnels, tailscale) — they get DNS records but never DHCP bindings.
+    Previously they were skipped entirely, which is why the wg tunnel
+    addresses had no names at all (dns-redesign design §4)."""
+
+    def test_macless_record_builds_interface(self):
+        records = [
+            _make_record(
+                machine="ten64", mac="aa:bb:cc:dd:ee:01",
+                ip="10.1.10.1", interface="br-int",
+            ),
+            _make_record(
+                machine="ten64", mac="",
+                ip="10.1.10.99", interface="wg-test",
+            ),
+        ]
+        hosts = build_hosts(records, SITE)
+        assert len(hosts) == 1
+        ifaces = {i.name: i for i in hosts[0].interfaces}
+        assert "wg-test" in ifaces
+        assert ifaces["wg-test"].mac is None
+        name_strs = [n.name for n in hosts[0].dns_names]
+        assert "wg-test.ten64.welland.mithis.com" in name_strs
+
+    def test_macless_excluded_from_dhcp_indexes(self):
+        records = [
+            _make_record(
+                machine="ten64", mac="",
+                ip="10.1.10.99", interface="wg-test",
+            ),
+        ]
+        hosts = build_hosts(records, SITE)
+        inv = build_inventory(hosts, SITE)
+        assert inv.ip_to_macs.get("10.1.10.99", []) == []
+
+    def test_record_without_ip_still_skipped(self):
+        records = [_make_record(machine="ten64", mac="", ip="")]
+        hosts = build_hosts(records, SITE)
+        assert hosts == []
+
+
+class TestMacLessCrossReferenceRows:
+    """A MAC-less row whose IP is already claimed by a MAC'd interface is
+    a cross-reference (e.g. the IoT sheet listing a Network-sheet machine
+    for plug bookkeeping) — it must NOT build a phantom duplicate host.
+    MAC-less rows with unclaimed IPs are genuine DNS-only interfaces."""
+
+    def test_crossref_row_skipped(self):
+        records = [
+            _make_record(
+                machine="rpi4-kindle", mac="aa:bb:cc:dd:ee:01",
+                ip="10.1.90.208", sheet_name="Network",
+            ),
+            _make_record(
+                machine="rpi4-kindle", mac="",
+                ip="10.1.90.208", sheet_name="iot",
+            ),
+        ]
+        hosts = build_hosts(records, SITE)
+        assert [h.hostname for h in hosts] == ["rpi4-kindle"]
+
+    def test_unique_ip_macless_row_kept(self):
+        records = [
+            _make_record(
+                machine="ten64", mac="",
+                ip="10.1.10.99", interface="wg-test",
+            ),
+        ]
+        hosts = build_hosts(records, SITE)
+        assert len(hosts) == 1
+
+
+class TestExplicitIPv6Column:
+    """The 'IPv6 A' sheet column becomes authoritative: its addresses are
+    unioned with the vanity-derived one (dedup) so v6-only extras — like
+    ten64's per-/64 ::ff gateway addresses on br-int — can be modeled.
+    'X' resolves to the site octet exactly as in the IPv4 column."""
+
+    def test_matching_explicit_value_adds_nothing(self):
+        records = [
+            _make_record(extra={"IPv6 A": "2404:e80:a137:110::100"}),
+        ]
+        hosts = build_hosts(records, SITE)
+        v6 = [str(a) for a in hosts[0].interfaces[0].ipv6_addresses]
+        assert v6 == ["2404:e80:a137:110::100"]
+
+    def test_extra_addresses_unioned(self):
+        records = [
+            _make_record(
+                machine="ten64", mac="aa:bb:cc:dd:ee:01",
+                ip="10.1.10.1", interface="br-int",
+                extra={"IPv6 A": "2404:e80:a137:108::ff\n2404:e80:a137:109::ff"},
+            ),
+        ]
+        hosts = build_hosts(records, SITE)
+        v6 = {str(a) for a in hosts[0].interfaces[0].ipv6_addresses}
+        assert v6 == {
+            "2404:e80:a137:110::1",       # derived from 10.1.10.1
+            "2404:e80:a137:108::ff",
+            "2404:e80:a137:109::ff",
+        }
+
+    def test_x_placeholder_resolved(self):
+        records = [
+            _make_record(
+                machine="tim-yoga", mac="aa:bb:cc:dd:ee:02",
+                ip="10.X.20.10", interface="wifi",
+                extra={"IPv6 A": "2404:e80:a137:X20::10"},
+            ),
+        ]
+        hosts = build_hosts(records, SITE)
+        v6 = {str(a) for a in hosts[0].interfaces[0].ipv6_addresses}
+        assert v6 == {"2404:e80:a137:120::10"}
+
+    def test_unparseable_value_ignored(self):
+        records = [
+            _make_record(extra={"IPv6 A": "tbd"}),
+        ]
+        hosts = build_hosts(records, SITE)
+        v6 = [str(a) for a in hosts[0].interfaces[0].ipv6_addresses]
+        assert v6 == ["2404:e80:a137:110::100"]  # derived only

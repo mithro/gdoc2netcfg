@@ -16,11 +16,31 @@ class DNSName:
     Each DNS name maps to zero or more IP addresses. The is_fqdn flag
     distinguishes full domain names (e.g. 'big-storage.welland.mithis.com')
     from short names (e.g. 'big-storage').
+
+    The three-scope grammar (dns-redesign design §3) adds:
+
+    scope:
+        'site'  — lives in the site zone (central auth): aggregates,
+                  projections, alt/service names
+        'net'   — lives in a per-net child zone (dnsmasq leaf or a
+                  central transit zone): {P.}H.N.S, {P.}I.H.N.S
+        'short' — unqualified convenience ride-alongs
+    kind:
+        'native' — carries address records (A/AAAA)
+        'cname'  — an alias; cname_target names the canonical form.
+                   ip_addresses is still populated with the target's
+                   addresses for reference (family/prefix decisions and
+                   equivalence checks) — generators MUST NOT emit
+                   address records for kind='cname' entries.
     """
 
     name: str
     ip_addresses: tuple[IPv4Address | IPv6Address, ...] = ()
     is_fqdn: bool = False
+    scope: str = "site"
+    kind: str = "native"
+    cname_target: str | None = None
+    net: str | None = None  # owning net zone label when scope == 'net'
 
     @property
     def ipv4(self) -> IPv4Address | None:
@@ -47,14 +67,16 @@ class NetworkInterface:
 
     Attributes:
         name: Interface name (e.g. 'eth0', 'bmc'), or None for the default/only interface
-        mac: Ethernet MAC address
+        mac: Ethernet MAC address, or None for DNS-only interfaces
+            (wg tunnels, tailscale — rows with no MAC in the sheet):
+            they get DNS records but never DHCP bindings
         ip_addresses: All IP addresses (IPv4 and IPv6) for this interface
         vlan_id: VLAN this interface belongs to (derived from IP)
         dhcp_name: Name used for DHCP registration
     """
 
     name: str | None
-    mac: MACAddress
+    mac: MACAddress | None
     ip_addresses: tuple[IPv4Address | IPv6Address, ...] = ()
     vlan_id: int | None = None
     dhcp_name: str = ""
@@ -367,6 +389,9 @@ class Host:
         sshfp_records: SSH fingerprint records (derived from ssh_host_keys)
         ssh_host_keys: Raw SSH public key lines ("hostname key-type base64-key")
         extra: Additional spreadsheet columns preserved for generators
+        aggregate_override: Interface names (from the 'Aggregate' sheet
+            column) whose addresses form the host's site-level aggregate
+            DNS records; None = union of all interfaces on known networks
     """
 
     machine_name: str
@@ -377,6 +402,7 @@ class Host:
     ssh_host_keys: list[str] = field(default_factory=list)
     extra: dict[str, str] = field(default_factory=dict)
     alt_names: list[str] = field(default_factory=list)
+    aggregate_override: list[str] | None = None
     dns_names: list[DNSName] = field(default_factory=list)
     hardware_type: str | None = None
     ssl_cert_info: SSLCertInfo | None = None
@@ -412,8 +438,9 @@ class Host:
 
     @property
     def all_macs(self) -> list[MACAddress]:
-        """All MAC addresses across all interfaces."""
-        return [iface.mac for iface in self.interfaces]
+        """All MAC addresses across all interfaces (DNS-only
+        interfaces have none)."""
+        return [iface.mac for iface in self.interfaces if iface.mac is not None]
 
     @property
     def virtual_interfaces(self) -> list[VirtualInterface]:
@@ -436,7 +463,7 @@ class Host:
             result.append(VirtualInterface(
                 name=first.name,
                 ip_addresses=tuple(ip_addrs),
-                macs=tuple(i.mac for i in ifaces),
+                macs=tuple(i.mac for i in ifaces if i.mac is not None),
                 dhcp_names=tuple(i.dhcp_name for i in ifaces),
                 vlan_id=first.vlan_id,
             ))

@@ -1,7 +1,9 @@
 """Tests for the DNS name derivation passes.
 
 Tests each of the five passes independently, plus the combined
-derive_all_dns_names orchestrator.
+derive_all_dns_names orchestrator. Pass semantics follow the
+dns-redesign three-scope grammar (see test_dns_grammar.py for the
+normative Appendix-A cases).
 """
 
 from gdoc2netcfg.derivations.dns_names import (
@@ -61,7 +63,7 @@ def _make_host(
 
 
 def _make_multi_iface_host():
-    """Build a host with two named interfaces."""
+    """Build a host with two named interfaces (both on int)."""
     ipv4_eth0 = IPv4Address("10.1.10.100")
     ipv6_eth0 = IPv6Address("2404:e80:a137:110::100", "2404:e80:a137:")
     ipv4_eth1 = IPv4Address("10.1.10.101")
@@ -90,24 +92,27 @@ def _make_multi_iface_host():
 class TestPass1Hostname:
     def test_adds_fqdn_and_short_name(self):
         host = _make_host()
-        names = derive_dns_names_hostname(host, DOMAIN)
+        names = derive_dns_names_hostname(host, DOMAIN, SITE)
 
         assert len(names) == 2
         assert names[0].name == "desktop.welland.mithis.com"
         assert names[0].is_fqdn is True
+        assert names[0].scope == "site"
+        assert names[0].kind == "native"
         assert names[1].name == "desktop"
         assert names[1].is_fqdn is False
+        assert names[1].scope == "short"
 
     def test_ipv4_set_on_both(self):
         host = _make_host()
-        names = derive_dns_names_hostname(host, DOMAIN)
+        names = derive_dns_names_hostname(host, DOMAIN, SITE)
 
         assert str(names[0].ipv4) == "10.1.10.100"
         assert str(names[1].ipv4) == "10.1.10.100"
 
     def test_ipv6_set_on_both(self):
         host = _make_host()
-        names = derive_dns_names_hostname(host, DOMAIN)
+        names = derive_dns_names_hostname(host, DOMAIN, SITE)
 
         assert len(names[0].ipv6_addresses) == 1
         assert str(names[0].ipv6_addresses[0]) == "2404:e80:a137:110::100"
@@ -119,103 +124,136 @@ class TestPass1Hostname:
             hostname="empty",
             interfaces=[],
         )
-        names = derive_dns_names_hostname(host, DOMAIN)
+        names = derive_dns_names_hostname(host, DOMAIN, SITE)
         assert names == []
 
     def test_iot_hostname(self):
         host = _make_host(hostname="thermostat.iot", ip="10.1.90.10")
-        names = derive_dns_names_hostname(host, DOMAIN)
+        names = derive_dns_names_hostname(host, DOMAIN, SITE)
 
         assert names[0].name == "thermostat.iot.welland.mithis.com"
         assert names[1].name == "thermostat.iot"
+
+    def test_all_parked_returns_empty(self):
+        """A host whose only address is parked (site-octet, no network)
+        gets no names at all."""
+        host = _make_host(ip="10.1.253.1")
+        names = derive_dns_names_hostname(host, DOMAIN, SITE)
+        assert names == []
 
 
 class TestPass2Interface:
     def test_no_named_interfaces_returns_empty(self):
         host = _make_host()
-        names = derive_dns_names_interface(host, DOMAIN)
+        names = derive_dns_names_interface(host, DOMAIN, SITE)
         assert names == []
 
-    def test_named_interfaces_get_fqdn_and_short(self):
+    def test_named_interfaces_get_projection_native_and_short(self):
         host = _make_multi_iface_host()
-        names = derive_dns_names_interface(host, DOMAIN)
+        names = derive_dns_names_interface(host, DOMAIN, SITE)
 
-        assert len(names) == 4  # 2 interfaces × (FQDN + short)
-        fqdns = [n for n in names if n.is_fqdn]
+        # 2 interfaces × (site CNAME projection + net native + short)
+        assert len(names) == 6
+        cnames = [n for n in names if n.kind == "cname"]
+        net_natives = [n for n in names if n.kind == "native" and n.is_fqdn]
         shorts = [n for n in names if not n.is_fqdn]
-        assert len(fqdns) == 2
+        assert len(cnames) == 2
+        assert len(net_natives) == 2
         assert len(shorts) == 2
 
     def test_interface_name_format(self):
         host = _make_multi_iface_host()
-        names = derive_dns_names_interface(host, DOMAIN)
+        names = derive_dns_names_interface(host, DOMAIN, SITE)
 
         name_strs = [n.name for n in names]
         assert "eth0.ten64.welland.mithis.com" in name_strs
+        assert "eth0.ten64.int.welland.mithis.com" in name_strs
         assert "eth0.ten64" in name_strs
         assert "eth1.ten64.welland.mithis.com" in name_strs
+        assert "eth1.ten64.int.welland.mithis.com" in name_strs
         assert "eth1.ten64" in name_strs
+
+    def test_site_form_is_projection_cname(self):
+        host = _make_multi_iface_host()
+        names = derive_dns_names_interface(host, DOMAIN, SITE)
+
+        eth0_site = next(n for n in names if n.name == "eth0.ten64.welland.mithis.com")
+        assert eth0_site.kind == "cname"
+        assert eth0_site.cname_target == "eth0.ten64.int.welland.mithis.com"
 
     def test_interface_ip_matches_interface(self):
         host = _make_multi_iface_host()
-        names = derive_dns_names_interface(host, DOMAIN)
+        names = derive_dns_names_interface(host, DOMAIN, SITE)
 
-        eth0_fqdn = next(n for n in names if n.name == "eth0.ten64.welland.mithis.com")
-        assert str(eth0_fqdn.ipv4) == "10.1.10.100"
+        eth0_native = next(
+            n for n in names if n.name == "eth0.ten64.int.welland.mithis.com"
+        )
+        assert str(eth0_native.ipv4) == "10.1.10.100"
 
-        eth1_fqdn = next(n for n in names if n.name == "eth1.ten64.welland.mithis.com")
-        assert str(eth1_fqdn.ipv4) == "10.1.10.101"
+        eth1_native = next(
+            n for n in names if n.name == "eth1.ten64.int.welland.mithis.com"
+        )
+        assert str(eth1_native.ipv4) == "10.1.10.101"
 
 
 class TestPass3Subdomain:
-    def test_adds_subdomain_for_fqdn_names(self):
+    def test_adds_net_native_and_projection(self):
         host = _make_host()
-        host.dns_names = derive_dns_names_hostname(host, DOMAIN)
+        host.dns_names = derive_dns_names_hostname(host, DOMAIN, SITE)
         names = derive_dns_names_subdomain(host, DOMAIN, SITE)
 
-        assert len(names) == 1
-        assert names[0].name == "desktop.int.welland.mithis.com"
-        assert names[0].is_fqdn is True
+        assert len(names) == 2
+        native = next(n for n in names if n.kind == "native")
+        assert native.name == "desktop.int.welland.mithis.com"
+        assert native.is_fqdn is True
+        assert native.scope == "net"
+        cname = next(n for n in names if n.kind == "cname")
+        assert cname.name == "int.desktop.welland.mithis.com"
+        assert cname.cname_target == "desktop.int.welland.mithis.com"
 
     def test_no_subdomain_for_short_names(self):
         host = _make_host()
-        host.dns_names = derive_dns_names_hostname(host, DOMAIN)
+        host.dns_names = derive_dns_names_hostname(host, DOMAIN, SITE)
         names = derive_dns_names_subdomain(host, DOMAIN, SITE)
 
-        # Only FQDN names get subdomain variants
+        # Only FQDN names come out of the per-net pass
         short_variants = [n for n in names if not n.is_fqdn]
         assert len(short_variants) == 0
 
-    def test_interface_fqdn_gets_subdomain(self):
+    def test_multi_iface_single_net_grouped(self):
+        """Two interfaces on the same net produce ONE net-scoped host name
+        carrying both addresses (union within one net, design Appendix A
+        rpi4-kindle case)."""
         host = _make_multi_iface_host()
-        host.dns_names = derive_dns_names_hostname(host, DOMAIN)
-        host.dns_names.extend(derive_dns_names_interface(host, DOMAIN))
         names = derive_dns_names_subdomain(host, DOMAIN, SITE)
 
-        name_strs = [n.name for n in names]
-        assert "ten64.int.welland.mithis.com" in name_strs
-        assert "eth0.ten64.int.welland.mithis.com" in name_strs
-        assert "eth1.ten64.int.welland.mithis.com" in name_strs
+        natives = [n for n in names if n.kind == "native"]
+        assert len(natives) == 1
+        assert natives[0].name == "ten64.int.welland.mithis.com"
+        assert {str(a) for a in natives[0].ipv4_addresses} == {
+            "10.1.10.100", "10.1.10.101",
+        }
 
-    def test_no_subdomain_for_non_10_1_ip(self):
+    def test_no_subdomain_for_unmapped_ip(self):
         host = _make_host(ip="10.31.1.5")
-        host.dns_names = derive_dns_names_hostname(host, DOMAIN)
+        host.dns_names = derive_dns_names_hostname(host, DOMAIN, SITE)
         names = derive_dns_names_subdomain(host, DOMAIN, SITE)
         assert names == []
 
     def test_preserves_ipv4_and_ipv6(self):
         host = _make_host()
-        host.dns_names = derive_dns_names_hostname(host, DOMAIN)
+        host.dns_names = derive_dns_names_hostname(host, DOMAIN, SITE)
         names = derive_dns_names_subdomain(host, DOMAIN, SITE)
 
-        assert str(names[0].ipv4) == "10.1.10.100"
-        assert len(names[0].ipv6_addresses) == 1
+        native = next(n for n in names if n.kind == "native")
+        assert str(native.ipv4) == "10.1.10.100"
+        assert len(native.ipv6_addresses) == 1
 
 
 class TestPass4IpPrefix:
     def test_adds_ipv4_and_ipv6_prefixes(self):
         host = _make_host()
-        host.dns_names = derive_dns_names_hostname(host, DOMAIN)
+        host.dns_names = derive_dns_names_hostname(host, DOMAIN, SITE)
         names = derive_dns_names_ip_prefix(host, DOMAIN)
 
         # Only the FQDN entry has both IPv4 and IPv6
@@ -226,7 +264,7 @@ class TestPass4IpPrefix:
 
     def test_ipv4_prefix_has_only_ipv4(self):
         host = _make_host()
-        host.dns_names = derive_dns_names_hostname(host, DOMAIN)
+        host.dns_names = derive_dns_names_hostname(host, DOMAIN, SITE)
         names = derive_dns_names_ip_prefix(host, DOMAIN)
 
         ipv4_name = next(n for n in names if n.name.startswith("ipv4."))
@@ -235,7 +273,7 @@ class TestPass4IpPrefix:
 
     def test_ipv6_prefix_has_only_ipv6(self):
         host = _make_host()
-        host.dns_names = derive_dns_names_hostname(host, DOMAIN)
+        host.dns_names = derive_dns_names_hostname(host, DOMAIN, SITE)
         names = derive_dns_names_ip_prefix(host, DOMAIN)
 
         ipv6_name = next(n for n in names if n.name.startswith("ipv6."))
@@ -257,18 +295,29 @@ class TestPass4IpPrefix:
                 )
             ],
         )
-        host.dns_names = derive_dns_names_hostname(host, DOMAIN)
+        host.dns_names = derive_dns_names_hostname(host, DOMAIN, SITE)
         names = derive_dns_names_ip_prefix(host, DOMAIN)
         assert len(names) == 1
         assert names[0].name == "ipv4.printer.welland.mithis.com"
         assert names[0].ipv4 is not None
         assert names[0].ipv6_addresses == ()
 
+    def test_prefix_of_cname_is_cname(self):
+        host = _make_multi_iface_host()
+        host.dns_names = derive_dns_names_interface(host, DOMAIN, SITE)
+        names = derive_dns_names_ip_prefix(host, DOMAIN)
+
+        c = next(
+            n for n in names if n.name == "ipv4.eth0.ten64.welland.mithis.com"
+        )
+        assert c.kind == "cname"
+        assert c.cname_target == "ipv4.eth0.ten64.int.welland.mithis.com"
+
     def test_scans_all_previous_fqdn_names(self):
         """Pass 4 should create prefixed variants for all FQDNs."""
         host = _make_multi_iface_host()
-        host.dns_names = derive_dns_names_hostname(host, DOMAIN)
-        host.dns_names.extend(derive_dns_names_interface(host, DOMAIN))
+        host.dns_names = derive_dns_names_hostname(host, DOMAIN, SITE)
+        host.dns_names.extend(derive_dns_names_interface(host, DOMAIN, SITE))
         host.dns_names.extend(derive_dns_names_subdomain(host, DOMAIN, SITE))
         names = derive_dns_names_ip_prefix(host, DOMAIN)
 
@@ -291,8 +340,9 @@ class TestDeriveAllDnsNames:
         # Pass 1: hostname
         assert "desktop.welland.mithis.com" in name_strs
         assert "desktop" in name_strs
-        # Pass 3: subdomain
+        # Pass 3: net native + projection
         assert "desktop.int.welland.mithis.com" in name_strs
+        assert "int.desktop.welland.mithis.com" in name_strs
         # Pass 4: ipv4/ipv6 prefixes
         assert "ipv4.desktop.welland.mithis.com" in name_strs
         assert "ipv6.desktop.welland.mithis.com" in name_strs
@@ -306,10 +356,11 @@ class TestDeriveAllDnsNames:
         assert "ten64.welland.mithis.com" in name_strs
         # Pass 2
         assert "eth0.ten64.welland.mithis.com" in name_strs
+        assert "eth0.ten64.int.welland.mithis.com" in name_strs
         assert "eth1.ten64.welland.mithis.com" in name_strs
         # Pass 3
         assert "ten64.int.welland.mithis.com" in name_strs
-        assert "eth0.ten64.int.welland.mithis.com" in name_strs
+        assert "int.ten64.welland.mithis.com" in name_strs
         # Pass 4
         assert "ipv4.ten64.welland.mithis.com" in name_strs
         assert "ipv6.ten64.welland.mithis.com" in name_strs

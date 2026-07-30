@@ -29,6 +29,13 @@ def ipv4_to_ipv6(ipv4: IPv4Address, prefix: IPv6Prefix) -> IPv6Address | None:
     bb = str(octets[2]).zfill(2)  # Zero-pad to 2 digits
     ccc = str(octets[3])      # No padding
 
+    # The vanity mapping writes decimal digits literally as hex nibbles;
+    # a hextet holds at most 4. 10.1.110.x → '1'+'110' = 1110 fits, but
+    # 10.255.0.x (legacy wg endpoints) → '255'+'00' = 5 digits does not:
+    # no v6 mapping for those.
+    if len(aa + bb) > 4:
+        return None
+
     address = f"{prefix.prefix}{aa}{bb}::{ccc}"
     return IPv6Address(address=address, prefix=prefix.prefix)
 

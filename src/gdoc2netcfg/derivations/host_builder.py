@@ -25,11 +25,54 @@ from gdoc2netcfg.sources.credentials import credential_field_names
 from gdoc2netcfg.sources.parser import DeviceRecord
 
 
+def _parse_explicit_ipv6(record: DeviceRecord, site: Site) -> list[IPv6Address]:
+    """Parse the 'IPv6 A' sheet column: explicit addresses unioned with
+    the vanity-derived one, enabling v6-only extras (e.g. ten64's
+    per-/64 ::ff gateway addresses on br-int). 'X' resolves to the site
+    octet as in the IPv4 column; unparseable values are ignored (the
+    column historically holds free text on some rows).
+    """
+    import ipaddress as _ipaddress
+
+    raw = record.extra.get("IPv6 A", "")
+    if not raw:
+        return []
+
+    addrs: list[IPv6Address] = []
+    for part in raw.replace("\n", ",").split(","):
+        text = part.strip().replace("X", str(site.site_octet))
+        if not text:
+            continue
+        try:
+            _ipaddress.IPv6Address(text)
+        except ValueError:
+            continue
+        prefix = next(
+            (
+                p.prefix
+                for p in site.active_ipv6_prefixes
+                if text.startswith(p.prefix)
+            ),
+            "",
+        )
+        addrs.append(IPv6Address(address=text, prefix=prefix))
+    return addrs
+
+
 def _build_interface(record: DeviceRecord, site: Site) -> NetworkInterface:
-    """Build a NetworkInterface from a single DeviceRecord."""
-    mac = MACAddress.parse(record.mac_address)
+    """Build a NetworkInterface from a single DeviceRecord.
+
+    Records without a MAC (wg tunnels, tailscale) become DNS-only
+    interfaces: DNS records, no DHCP binding.
+    """
+    mac = MACAddress.parse(record.mac_address) if record.mac_address else None
     ipv4 = IPv4Address(record.ip)
-    ipv6_addrs = ipv4_to_ipv6_list(ipv4, site.active_ipv6_prefixes)
+    ipv6_addrs = list(ipv4_to_ipv6_list(ipv4, site.active_ipv6_prefixes))
+    seen_v6 = {str(a) for a in ipv6_addrs}
+    for addr in _parse_explicit_ipv6(record, site):
+        if str(addr) not in seen_v6:
+            seen_v6.add(str(addr))
+            ipv6_addrs.append(addr)
     vlan_id = ip_to_vlan_id(ipv4, site)
     interface_name = record.interface if record.interface else None
 
@@ -84,6 +127,15 @@ def build_hosts(records: list[DeviceRecord], site: Site) -> list[Host]:
     # Filter for this site and resolve 'X' placeholders in IPs
     records = filter_and_resolve_records(records, site)
 
+    # IPs claimed by MAC'd rows: a MAC-less row on such an IP is a
+    # cross-reference (e.g. the IoT sheet listing a Network-sheet machine
+    # for plug bookkeeping), not a host — skip it. MAC-less rows with
+    # unclaimed IPs are genuine DNS-only interfaces (wg, tailscale,
+    # planned hosts).
+    macced_ips = {
+        r.ip for r in records if r.machine and r.ip and r.mac_address
+    }
+
     # Group records by hostname to build hosts.
     # BMC interfaces get their own hostname: {interface}.{machine_hostname}
     host_groups: dict[str, list[DeviceRecord]] = {}
@@ -92,8 +144,11 @@ def build_hosts(records: list[DeviceRecord], site: Site) -> list[Host]:
     bmc_hostnames: set[str] = set()
 
     for record in records:
-        if not record.machine or not record.mac_address or not record.ip:
+        # MAC deliberately optional: MAC-less rows are DNS-only interfaces
+        if not record.machine or not record.ip:
             continue
+        if not record.mac_address and record.ip in macced_ips:
+            continue  # cross-reference row for a MAC'd interface
 
         # Determine sheet type
         sheet_type = record.sheet_name
@@ -153,6 +208,18 @@ def build_hosts(records: list[DeviceRecord], site: Site) -> list[Host]:
                     if name and name not in alt_names:
                         alt_names.append(name)
 
+        # Parse the aggregate override from the "Aggregate" column (newline
+        # or comma separated interface names). Like Alt Names, it may be
+        # filled on any of the host's interface rows.
+        aggregate_override: list[str] = []
+        for r in group:
+            raw_agg = r.extra.get("Aggregate", "")
+            if raw_agg:
+                for part in raw_agg.replace("\n", ",").split(","):
+                    iface_name = part.strip()
+                    if iface_name and iface_name not in aggregate_override:
+                        aggregate_override.append(iface_name)
+
         host = Host(
             machine_name=group[0].machine.lower(),
             hostname=hostname,
@@ -160,6 +227,7 @@ def build_hosts(records: list[DeviceRecord], site: Site) -> list[Host]:
             interfaces=interfaces,
             extra=extra,
             alt_names=alt_names,
+            aggregate_override=aggregate_override or None,
         )
 
         # Derive DNS names (all four passes)
@@ -259,9 +327,11 @@ def build_inventory(hosts: list[Host], site: Site) -> NetworkInventory:
         suffix = common_suffix(*names).strip(".")
         ip_to_hostname[ip_str] = suffix
 
-    # Second pass: build ip→macs mapping
+    # Second pass: build ip→macs mapping (DNS-only interfaces excluded)
     for host in hosts:
         for iface in host.interfaces:
+            if iface.mac is None:
+                continue
             ip_str = str(iface.ipv4)
             if ip_str not in ip_to_macs:
                 ip_to_macs[ip_str] = []

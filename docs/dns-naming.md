@@ -7,8 +7,12 @@ forward/reverse DNS records, and validates forward-confirmed reverse DNS.
 
 Each host in the spreadsheet gets a set of DNS names derived from its hostname,
 interface names, VLAN membership, and address families. These names are generated
-by five composable derivation passes, then emitted as dnsmasq `host-record`,
-`ptr-record`, and `dns-rr` config lines.
+by five composable derivation passes, then emitted per generator: dnsmasq
+`host-record`/`ptr-record`/`dns-rr` lines (leaf fragments + legacy monarto
+configs) and pdns bind-backend zone records (central internal + external
+zones). The authoritative three-scope grammar description (site aggregates,
+CNAME projections, net natives) lives in the welland repo's
+`net/drafts/dns-redesign-design.md`.
 
 The key design goals:
 

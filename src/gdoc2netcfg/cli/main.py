@@ -617,6 +617,92 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 # Subcommand: generate
 # ---------------------------------------------------------------------------
 
+def _code_revision_number() -> int | None:
+    """The generator code's revision as a number, from git-describe
+    ("v<major>.<minor>-<count>-g<hash>"): major*10^7 + minor*10^5 +
+    commits-since-tag. Commit COUNTS only accumulate, so this is
+    monotonic — unlike commit dates, which rebase/amend can set to
+    anything; the version weighting (10^5 per minor) outweighs the
+    count reset at a new tag. Falls back to the total commit count when
+    describe is unparseable; None when not a git checkout. NB
+    uncommitted changes don't count — deployed /opt runs clean
+    checkouts; commit to bump.
+    """
+    import re
+    import subprocess
+
+    import gdoc2netcfg
+
+    pkg_dir = Path(gdoc2netcfg.__file__).resolve().parent
+
+    def _git(*argv: str) -> str | None:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(pkg_dir), *argv],
+                capture_output=True,
+                text=True,
+            )
+        except OSError:  # git binary missing
+            return None
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    describe = _git("describe", "--tags", "--long")
+    if describe:
+        m = re.fullmatch(r"v?(\d+)\.(\d+)(?:\.\d+)?-(\d+)-g[0-9a-f]+", describe)
+        if m:
+            major, minor, count = (int(g) for g in m.groups())
+            return major * 10_000_000 + minor * 100_000 + count
+
+    count = _git("rev-list", "--count", "HEAD")
+    return int(count) if count and count.isdigit() else None
+
+
+def _dns_data_serial(config, config_path) -> int | None:
+    """SOA serial for the pdns zone generators: the newest change time
+    (epoch seconds) across EVERYTHING the zones are generated from:
+
+    - the cached sheet CSVs (fetch only rewrites them on change, so
+      mtime = "sheet data last changed")
+    - the site config toml
+    - the last ssh-host-keys scan that actually changed data (queried
+      from discovery.db — the file's mtime means "last scanned", but
+      data rows are delta-stored, so the scans table knows the last
+      real change; SSHFP records feed the zones)
+    plus the code's git-describe revision number (zone output depends
+    on the code, so a release or commit bumps the serials).
+
+    serial = newest data change-time + code revision number: both parts
+    only grow, so the serial is monotonic; date -d @(serial - code
+    number) recovers the data timestamp. The trade-off is that any
+    input change stamps every zone's serial, so untouched zones differ
+    only in their serial line. Returns None (→ generators fall back to
+    content-hash serials) when no data input exists.
+    """
+    from gdoc2netcfg.sources.cache import CSVCache
+
+    cache = CSVCache(config.cache.directory)
+    candidates = [cache._path(sheet.name) for sheet in config.sheets]
+    candidates.append(Path(config_path or "gdoc2netcfg.toml"))
+
+    times = [
+        int(path.stat().st_mtime) for path in candidates if path.exists()
+    ]
+
+    if config.cache.discovery_db_path.exists():
+        from gdoc2netcfg.storage.discovery_db import DiscoveryDB
+
+        with DiscoveryDB(
+            config.cache.discovery_db_path, read_only=True,
+        ) as db:
+            change_time = db.latest_change_time("ssh_host_keys")
+        if change_time is not None:
+            times.append(change_time)
+
+    if not times:
+        return None
+    return max(times) + (_code_revision_number() or 0)
+
+
 def _get_generator(name: str):
     """Get a generator function by name."""
     generators = {
@@ -624,6 +710,13 @@ def _get_generator(name: str):
         "dnsmasq_external": (
             "gdoc2netcfg.generators.dnsmasq_external",
             "generate_dnsmasq_external",
+        ),
+        "dnsmasq_leaf": ("gdoc2netcfg.generators.dnsmasq_leaf", "generate_dnsmasq_leaf"),
+        "pdns_internal": ("gdoc2netcfg.generators.pdns_zones", "generate_pdns_internal"),
+        "pdns_external": ("gdoc2netcfg.generators.pdns_external", "generate_pdns_external"),
+        "recursor_forward": (
+            "gdoc2netcfg.generators.recursor_forward",
+            "generate_recursor_forward",
         ),
         "nagios": ("gdoc2netcfg.generators.nagios", "generate_nagios"),
         "letsencrypt": ("gdoc2netcfg.generators.letsencrypt", "generate_letsencrypt"),
@@ -696,7 +789,11 @@ def cmd_generate(args: argparse.Namespace) -> int:
     if args.generators:
         gen_names = args.generators
     else:
-        gen_names = list(config.generators.keys())
+        gen_names = [
+            name
+            for name, gen in config.generators.items()
+            if gen.enabled
+        ]
 
     generated = 0
     post_gen_errors = False
@@ -732,6 +829,19 @@ def cmd_generate(args: argparse.Namespace) -> int:
                 kwargs["show_unknown_macs"] = (
                     gen_config.params["show_unknown_macs"].lower() == "true"
                 )
+        elif name in ("pdns_internal", "pdns_external"):
+            kwargs["serial"] = _dns_data_serial(config, args.config)
+            if gen_config:
+                for key in ("zones_dir", "site_extra_include"):
+                    if gen_config.params.get(key):
+                        kwargs[key] = gen_config.params[key]
+                if name == "pdns_external" and gen_config.params.get("extra_zones"):
+                    kwargs["extra_zones"] = gen_config.params["extra_zones"]
+        elif name == "recursor_forward" and gen_config:
+            if gen_config.params.get("central_auth"):
+                kwargs["central_auth"] = gen_config.params["central_auth"]
+            if gen_config.params.get("peer_zones"):
+                kwargs["peer_zones"] = gen_config.params["peer_zones"]
 
         output = gen_func(inventory, **kwargs)
 

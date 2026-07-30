@@ -70,6 +70,8 @@ def _host_dhcp_config(host: Host, inventory: NetworkInventory) -> list[str]:
     output: list[str] = []
     output.append(f"# {host.hostname} — DHCP")
     for vi in sorted(host.virtual_interfaces, key=lambda v: ip_sort_key(str(v.ipv4))):
+        if not vi.macs:
+            continue  # DNS-only endpoint (wg, tailscale): no DHCP binding
         ip = str(vi.ipv4)
         dhcp_name = common_suffix(*set(vi.dhcp_names)).strip("-")
 

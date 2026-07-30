@@ -54,6 +54,59 @@ def ip_to_vlan_id(ipv4: IPv4Address, site: Site) -> int | None:
     return None
 
 
+# Third octets holding parked/junk addresses in the site range (ten64's
+# unused NICs at 10.X.253/254): interfaces there produce no DNS records
+# at all (dns-redesign design §3 removed families). Deliberately narrow —
+# other unmapped site-octet subnets (10.1.16 100G, 10.1.21, 10.1.110)
+# are real hosts that keep site-scoped records.
+PARKED_THIRD_OCTETS = frozenset({253, 254})
+
+# Nets whose DNS zones are delegated to another server entirely (design
+# §4: fpgas → tweed's dnsmasq). Their hosts/interfaces get no centrally
+# generated records or projections.
+# TODO(sheet): drive from a VLAN-Allocations column if one appears.
+DELEGATED_NETS = frozenset({"fpgas"})
+
+
+def ip_to_net(ipv4: IPv4Address, site: Site) -> str | None:
+    """Determine the NET (per-network DNS zone label) for ANY IPv4 address.
+
+    The net label names the child zone {net}.{site.domain} that owns the
+    address (dns-redesign design §3/§4). Coverage, in order:
+
+    1. Site-octet networks (10.{site_octet}.C.x): third octet → subdomain
+       via site.network_subdomains (int, iot, store, ...).
+    2. Global VLANs (e.g. 10.41.x.x → 'sm'): second octet == VLAN id.
+    3. Transit VLANs (e.g. 10.99.21.x → 'tfpgas'): (second, third) octet
+       pair == transit_match.
+    4. WireGuard tunnels: 10.98.x.x plus the legacy 10.255.x.x endpoints
+       map to 'wg' (the tunnels aren't VLANs, so this is code-level policy;
+       TODO(sheet): move to a VLAN-Allocations-style row if one appears).
+
+    Returns None when the address has no net home: parked site-octet
+    addresses (no such network — e.g. ten64's 10.1.253/254 NICs, which
+    produce no DNS records at all), and non-10/8 addresses (public WAN,
+    tailscale CGNAT).
+    """
+    a, b, c, d = ipv4.octets
+    if a != 10:
+        return None
+
+    if b == site.site_octet:
+        return site.network_subdomains.get(c)
+
+    if b in (98, 255):
+        return "wg"
+
+    for vlan in site.vlans.values():
+        if vlan.is_global and b == vlan.id:
+            return vlan.subdomain
+        if vlan.is_transit and vlan.transit_match == (b, c):
+            return vlan.subdomain
+
+    return None
+
+
 def ip_to_subdomain(ipv4: IPv4Address, site: Site) -> str | None:
     """Get the network subdomain for an IP address.
 

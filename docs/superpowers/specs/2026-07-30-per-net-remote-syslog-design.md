@@ -40,7 +40,9 @@ a shared port, each bound to its own ruleset. Messages arriving on the
 Served nets: every leaf net **except `tmp` and `guest`** (untrusted).
 Non-leaf nets (wg, transit VLANs, delegated nets) are never served.
 Concretely today: welland = net, pwr, store, wifi, iot, roam, int, sm;
-monarto = net, pwr, store, wifi, iot, roam, int.
+monarto = net, pwr, store, wifi, iot, roam, int. These lists are
+illustrative — the derivation from the router's actual legs is
+authoritative, and live verification checks the emitted set per site.
 
 ### Receive side: a new `rsyslog` generator (gdoc2netcfg)
 
@@ -130,7 +132,9 @@ per-step output — never silent):
    filename collisions; the script still refuses (fail-loud) on any
    would-overwrite conflict.
 2. Remove the superseded configs: `/etc/rsyslog.d/tasmota.conf`,
-   `/etc/rsyslog.d/z-network-switches.conf`, `/etc/logrotate.d/tasmota`.
+   `/etc/rsyslog.d/z-network-switches.conf`, `/etc/logrotate.d/tasmota`,
+   plus any hand-deployed network-class logrotate file if one exists
+   (the script checks `/etc/logrotate.d/` and reports what it found).
 3. Leave restarting rsyslog and installing the new files to
    `make deploy-syslog` (below) — the documented sequence is
    migrate → deploy, and the script says so.
@@ -139,7 +143,10 @@ per-step output — never silent):
 (`generate rsyslog --output-dir out`, copy the two files, restart
 rsyslog, path-scoped etckeeper commit covering the added AND removed
 files). `etc/rsyslog-tasmota.conf` and `etc/logrotate-tasmota` are
-deleted from the repo.
+deleted from the repo. CLAUDE.md's "Tasmota remote syslog" section is
+rewritten around the per-net scheme (it also currently misstates the
+retention as 14 days vs the actual rotate-400 policy — fixed as part of
+the rewrite).
 
 Ordering within the rollout window: migrate + deploy back-to-back on
 each site. Between old-config removal and rsyslog restart there is a

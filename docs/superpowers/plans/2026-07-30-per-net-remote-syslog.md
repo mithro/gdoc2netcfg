@@ -700,11 +700,23 @@ uci set system.@system[0].log_proto='udp'
 
 - [ ] **Step 2: Add the context default**
 
-Add `"syslog_ip": "10.1.4.1"` to the DEFAULTS/default_values dict (same
-dict that carries the passphrases — find its construction site; it is
-passed as `default_values=DEFAULTS` in the Django upsert block). CRITICAL
-known gotcha: netjsonconfig renders the literal `{{ syslog_ip }}` string
-onto devices if the context key is missing — the default MUST land in the
+Add `"syslog_ip": "10.1.4.1"` to the defaults that reach
+`default_values=DEFAULTS` in the Django upsert block. There is no literal
+DEFAULTS dict in the source — it is built in `main()` as
+`defaults=json.dumps(vals)` with `vals = read_passphrases()`. Use the
+dict-literal form:
+
+```python
+defaults=json.dumps({**vals, "syslog_ip": "10.1.4.1"}),
+```
+
+NOT `vals["syslog_ip"] = ...` — two reasons: (a) `main()` redacts every
+`vals.values()` string from captured output, so putting the IP into
+`vals` would turn every `10.1.4.1` in the printed rendered configs into
+`<REDACTED>`; (b) the Step 3 test asserts the literal
+`'"syslog_ip": "10.1.4.1"'` appears in the source. CRITICAL known
+gotcha: netjsonconfig renders the literal `{{ syslog_ip }}` string onto
+devices if the context key is missing — the default MUST land in the
 same `default_values` the base template already uses.
 
 - [ ] **Step 3: Add the template-builder test (spec Testing requirement)**

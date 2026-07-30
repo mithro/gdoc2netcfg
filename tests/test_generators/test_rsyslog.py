@@ -109,3 +109,21 @@ class TestRsyslogConf:
         inv = _inventory([_leg("br-tmp", "04", "10.1.1.1")])
         with pytest.raises(ValueError):
             generate_rsyslog(inv)
+
+
+class TestLogrotate:
+    def test_stanza_per_served_net_with_year_floor_policy(self):
+        rot = generate_rsyslog(_default_inventory())["logrotate.d/remote-logs"]
+        for net in ("wifi", "net", "iot"):
+            assert f"/var/log/{net}/*.log {{" in rot
+        # the 1-year-floor policy, verbatim from the retired etc/logrotate-tasmota
+        assert rot.count("rotate 400") == 3
+        for directive in ("daily", "compress", "delaycompress",
+                          "missingok", "notifempty",
+                          "/usr/lib/rsyslog/rsyslog-rotate"):
+            assert directive in rot
+
+    def test_no_stanza_for_excluded_or_legless_nets(self):
+        rot = generate_rsyslog(_default_inventory())["logrotate.d/remote-logs"]
+        assert "/var/log/tmp/" not in rot
+        assert "/var/log/guest/" not in rot

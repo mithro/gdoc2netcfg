@@ -39,6 +39,7 @@ def generate_pdns_external(
     zones_dir: str = "/etc/powerdns/zones-external",
     site_extra_include: str | None = None,
     public_ipv4: str | None = None,
+    extra_zones: list[str] | None = None,
 ) -> dict[str, str]:
     """Generate the external pdns auth zone file + bind config.
 
@@ -80,10 +81,19 @@ def generate_pdns_external(
     # like the internal generator (pdns rejects rrset duplicates).
     files = _dedupe_record_lines(files)
     files = finalize_zone_serials(files, serial)
-    files["bind-external.conf"] = (
+    # extra_zones: publicly-delegated hand-maintained zones (e.g.
+    # birds.mithis.com NS -> ten64) — referenced in the bind config but
+    # their zone files are managed in /etc, never generated.
+    conf_lines = [
         f'zone "{domain}" {{ type primary; '
-        f'file "{zones_dir}/{domain}.zone"; }};\n'
-    )
+        f'file "{zones_dir}/{domain}.zone"; }};'
+    ]
+    for zone in extra_zones or []:
+        conf_lines.append(
+            f'zone "{zone}" {{ type primary; '
+            f'file "{zones_dir}/{zone}.zone"; }};'
+        )
+    files["bind-external.conf"] = "\n".join(conf_lines) + "\n"
     return files
 
 

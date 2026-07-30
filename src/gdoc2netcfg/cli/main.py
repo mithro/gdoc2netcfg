@@ -830,6 +830,8 @@ def cmd_generate(args: argparse.Namespace) -> int:
                 for key in ("zones_dir", "site_extra_include"):
                     if gen_config.params.get(key):
                         kwargs[key] = gen_config.params[key]
+                if name == "pdns_external" and gen_config.params.get("extra_zones"):
+                    kwargs["extra_zones"] = gen_config.params["extra_zones"]
         elif name == "recursor_forward" and gen_config:
             if gen_config.params.get("central_auth"):
                 kwargs["central_auth"] = gen_config.params["central_auth"]

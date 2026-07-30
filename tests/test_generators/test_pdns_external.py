@@ -226,3 +226,20 @@ class TestDuplicateRecordLines:
         # exact-line count: substring count would also match the
         # ipv4.-prefixed record containing this line as a suffix
         assert zone.splitlines().count(line) == 1
+
+
+class TestExtraZones:
+    """extra_zones: hand-maintained zones the external view must also
+    serve (publicly delegated vanity zones like birds.mithis.com).
+    Only bind-external.conf references them — their zone files are
+    hand-managed in /etc, never generated."""
+
+    def test_extra_zone_in_bind_conf(self):
+        files = _generate(_ten64(), extra_zones=["birds.mithis.com"])
+        conf = files["bind-external.conf"]
+        assert (
+            'zone "birds.mithis.com" { type primary; '
+            'file "/etc/powerdns/zones-external/birds.mithis.com.zone"; };'
+            in conf
+        )
+        assert "zones-external/birds.mithis.com.zone" not in files

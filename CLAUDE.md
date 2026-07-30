@@ -20,6 +20,7 @@ uv run gdoc2netcfg generate nagios            # Generate Nagios monitoring confi
 uv run gdoc2netcfg generate nginx             # Generate nginx reverse proxy configs
 uv run gdoc2netcfg generate topology          # Generate Graphviz DOT topology diagram
 uv run gdoc2netcfg generate known_hosts        # Generate SSH known_hosts file
+uv run gdoc2netcfg generate rsyslog            # Generate per-net remote syslog + logrotate config
 uv run gdoc2netcfg validate             # Run constraint validation
 uv run gdoc2netcfg info                 # Show pipeline configuration
 uv run gdoc2netcfg reachability         # Ping all hosts and report up/down
@@ -532,13 +533,46 @@ requires either explicit host names or `--all` (mutually exclusive) — a
 bare invocation is a usage error rather than a fleet-wide plaintext-password
 dump.
 
-### Tasmota remote syslog
+### Per-net remote syslog
 
-Tasmota devices send their logs (UDP syslog) to the site router. The
-rsyslog drop-in (`etc/rsyslog-tasmota.conf` → `/etc/rsyslog.d/tasmota.conf`)
-receives on UDP 514 into per-device files `/var/log/tasmota/<hostname>.log`
-(rotated daily, 14 kept — `etc/logrotate-tasmota`). Deploy both with
-`sudo make deploy-syslog` (path-scoped etckeeper commit included).
+The site routers capture remote syslog from every device class on one
+well-known port — UDP 514 — with the class decided by the network the
+message ARRIVES on: rsyslog gets one `imudp` input per served router leg
+(each bound to its own ruleset), and messages land in
+`/var/log/<net>/<hostname>.log`. Every leaf net the router has a leg on
+is served except `tmp` and `guest` (untrusted); non-leaf nets (wg,
+transit, delegated) never are. The `rsyslog` generator derives the input
+set from the router's own interfaces in inventory (v4-only — every
+current sender targets v4; a net without a router leg emits no input)
+and outputs deploy-relative `etc/rsyslog.d/remote-logs.conf` +
+`etc/logrotate.d/remote-logs` (daily, rotate 400 — a 1-year floor —
+compress/delaycompress). Deploy both with `sudo make deploy-syslog`
+(generate + copy + rsyslog restart + path-scoped etckeeper commit).
+
+Where each sender class lands:
+
+- **Tasmota devices** → `/var/log/iot/` — device side unchanged
+  (`tasmota configure` already points them at the iot leg `:514`).
+- **Switches + wisp's forward** → `/var/log/net/` via a transition input
+  on UDP 10514 (bound to the `remote-net` ruleset) so existing senders
+  keep logging unchanged. Follow-up: re-point each at its net leg
+  `:514`, then drop the 10514 input. wisp is re-pointed at
+  `10.1.4.1:514` as part of the rollout and then lands in
+  `/var/log/wifi/wisp.log` (it lives on the wifi net).
+- **Pucks + tenwrt** → `/var/log/wifi/` — the OpenWISP
+  `ansells-aps-base` template (gwifi-openwrt repo) pushes
+  `log_ip`/`log_port`/`log_proto`. Kernel netconsole is separate and
+  unchanged: crash forensics stays on wisp:6666 (`netconsole_rx`), now
+  unpolluted by device syslog.
+
+`scripts/migrate-remote-syslog.py` is the one-off per-site migration,
+run with sudo immediately before the first `make deploy-syslog`
+(sequence: migrate → deploy). It moves `/var/log/tasmota/` →
+`/var/log/iot/` and `/var/log/network/` → `/var/log/net/` (live +
+rotated archives; refuses loudly on any would-overwrite conflict) and
+removes the superseded hand-written rsyslog/logrotate drop-ins that
+`remote-logs.conf` replaces. Idempotent, loud per-step output — safe to
+re-run.
 
 Device-side settings are pushed by `tasmota configure`: `[tasmota]
 syslog_host` names the sink by sheet hostname and is resolved to the

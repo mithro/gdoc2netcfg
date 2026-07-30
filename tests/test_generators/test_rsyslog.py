@@ -1,5 +1,7 @@
 """Tests for the rsyslog remote-capture generator."""
 
+import pytest
+
 from gdoc2netcfg.derivations.dns_names import derive_all_dns_names
 from gdoc2netcfg.generators.rsyslog import generate_rsyslog
 from gdoc2netcfg.models.addressing import IPv4Address, IPv6Address, MACAddress
@@ -84,7 +86,7 @@ class TestRsyslogConf:
         assert ('string="/var/log/wifi/%hostname:::secpath-replace%.log"') in conf
         assert 'fileOwner="root" fileGroup="adm"' in conf
         assert 'fileCreateMode="0640" dirCreateMode="0755"' in conf
-        assert "stop" in conf
+        assert conf.count("    stop") == 3
 
     def test_transition_input_10514_targets_remote_net(self):
         conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
@@ -99,13 +101,11 @@ class TestRsyslogConf:
         assert "remote-wifi" not in conf
 
     def test_no_net_leg_fails_loud(self):
-        import pytest
         inv = _inventory([_leg("br-iot", "03", "10.1.90.1")])
         with pytest.raises(ValueError, match="net"):
             generate_rsyslog(inv)
 
     def test_no_served_legs_fails_loud(self):
-        import pytest
         inv = _inventory([_leg("br-tmp", "04", "10.1.1.1")])
         with pytest.raises(ValueError):
             generate_rsyslog(inv)

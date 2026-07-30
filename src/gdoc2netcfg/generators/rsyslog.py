@@ -50,8 +50,12 @@ def _served_legs(inventory: NetworkInventory) -> dict[str, str]:
         if net in EXCLUDED_NETS:
             continue
         v4 = [a for a in forwarders if ":" not in a]
-        if v4:
-            legs[net] = v4[0]
+        if not v4:
+            raise ValueError(
+                f"rsyslog generator: net {net!r} leg has no IPv4 address — "
+                "_leaf_gateways is expected to list v4 first"
+            )
+        legs[net] = v4[0]
     return legs
 
 

@@ -117,11 +117,13 @@ class TestLogrotate:
         for net in ("wifi", "net", "iot"):
             assert f"/var/log/{net}/*.log {{" in rot
         # the 1-year-floor policy, verbatim from the retired etc/logrotate-tasmota
+        # (per-stanza counts, not bare `in` — the header comment mentions some
+        # of these words, so substring presence alone proves nothing)
         assert rot.count("rotate 400") == 3
         for directive in ("daily", "compress", "delaycompress",
-                          "missingok", "notifempty",
-                          "/usr/lib/rsyslog/rsyslog-rotate"):
-            assert directive in rot
+                          "missingok", "notifempty"):
+            assert rot.count(f"\n    {directive}\n") == 3, directive
+        assert rot.count("/usr/lib/rsyslog/rsyslog-rotate") == 3
 
     def test_no_stanza_for_excluded_or_legless_nets(self):
         rot = generate_rsyslog(_default_inventory())["logrotate.d/remote-logs"]

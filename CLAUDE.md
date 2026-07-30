@@ -567,12 +567,13 @@ Where each sender class lands:
 
 `scripts/migrate-remote-syslog.py` is the one-off per-site migration,
 run with sudo immediately before the first `make deploy-syslog`
-(sequence: migrate → deploy). It moves `/var/log/tasmota/` →
-`/var/log/iot/` and `/var/log/network/` → `/var/log/net/` (live +
-rotated archives; refuses loudly on any would-overwrite conflict) and
-removes the superseded hand-written rsyslog/logrotate drop-ins that
-`remote-logs.conf` replaces. Idempotent, loud per-step output — safe to
-re-run.
+(sequence: migrate → deploy). Dry-run by default — pass `--apply` to
+act. It moves `/var/log/tasmota/` → `/var/log/iot/` and
+`/var/log/network/` → `/var/log/net/` (live + rotated archives; refuses
+loudly on any would-overwrite conflict) and removes the superseded
+hand-written drop-ins (the rsyslog ones replaced by `remote-logs.conf`,
+the logrotate one by `remote-logs`). Idempotent, loud per-step output —
+safe to re-run.
 
 Device-side settings are pushed by `tasmota configure`: `[tasmota]
 syslog_host` names the sink by sheet hostname and is resolved to the

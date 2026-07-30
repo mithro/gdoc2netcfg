@@ -53,13 +53,14 @@ def _served_legs(inventory: NetworkInventory) -> dict[str, str]:
         if not v4:
             raise ValueError(
                 f"rsyslog generator: net {net!r} leg has no IPv4 address — "
-                "_leaf_gateways is expected to list v4 first"
+                "expected every leaf leg to carry a v4 address"
             )
         legs[net] = v4[0]
     return legs
 
 
 def _net_block(net: str, addr: str) -> str:
+    """Template + ruleset + leg-bound :514 input for one served net."""
     return f"""\
 template(name="RemoteLog-{net}" type="string"
          string="/var/log/{net}/%hostname:::secpath-replace%.log")
@@ -84,6 +85,7 @@ _LOGROTATE_HEADER = """\
 
 
 def _logrotate(nets: list[str]) -> str:
+    """One 1-year-floor logrotate stanza per served net's log dir."""
     stanzas = [_LOGROTATE_HEADER]
     for net in nets:
         stanzas.append(f"""\

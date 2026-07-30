@@ -13,7 +13,10 @@ removes the superseded hand-written configs:
 
 Dry-run by default; pass --apply to act. Idempotent: absent sources are
 reported and skipped. Refuses (exit 1, nothing moved) if any destination
-file already exists. Does NOT touch rsyslog or install new configs — run
+file already exists. If rsyslog writes a fresh file into a source dir
+between the scan and the rmdir, the script aborts loudly on the non-empty
+directory — safe to just re-run. Does NOT touch rsyslog or install new
+configs — run
 `sudo make deploy-syslog` immediately after (documented sequence:
 migrate --apply, then deploy).
 
@@ -82,9 +85,13 @@ def migrate(log_root: Path, etc_root: Path, *, apply: bool) -> None:
             src.rename(dst)
     for old, _ in MOVES:
         d = log_root / old
-        if apply and d.is_dir():
+        if not d.is_dir():
+            continue
+        if apply:
             d.rmdir()  # fails loud if anything unexpected remains
             print(f"  removed empty {d}")
+        else:
+            print(f"  remove empty dir {d} (after moves)")
     for path in removals:
         print(f"  remove {path}")
         if apply:
@@ -96,11 +103,16 @@ def migrate(log_root: Path, etc_root: Path, *, apply: bool) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--apply", action="store_true",
                         help="perform the migration (default: dry run)")
-    parser.add_argument("--log-root", type=Path, default=Path("/var/log"))
-    parser.add_argument("--etc-root", type=Path, default=Path("/etc"))
+    parser.add_argument("--log-root", type=Path, default=Path("/var/log"),
+                        help="override the log root (for testing)")
+    parser.add_argument("--etc-root", type=Path, default=Path("/etc"),
+                        help="override the etc root (for testing)")
     args = parser.parse_args(argv)
     migrate(args.log_root, args.etc_root, apply=args.apply)
     return 0

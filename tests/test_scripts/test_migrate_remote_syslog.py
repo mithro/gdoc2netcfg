@@ -34,6 +34,9 @@ def test_dry_run_reports_and_touches_nothing(tmp_path, capsys):
     mrs.migrate(log, etc, apply=False)
     out = capsys.readouterr().out
     assert "au-plug-1.log" in out and "wisp.log" in out
+    # the preview also lists the source-dir removals apply will perform
+    assert f"remove empty dir {log / 'tasmota'} (after moves)" in out
+    assert f"remove empty dir {log / 'network'} (after moves)" in out
     assert (log / "tasmota/au-plug-1.log").exists()
     assert (etc / "rsyslog.d/tasmota.conf").exists()
 

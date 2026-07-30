@@ -2493,6 +2493,88 @@ def cmd_wifi_register_broker(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: wifi show-login
+# ---------------------------------------------------------------------------
+
+
+def cmd_wifi_show_login(args: argparse.Namespace) -> int:
+    """Print derived WiFi-device broker logins (device-side out-of-band config).
+
+    WARNING: prints raw MQTT credentials (plaintext passwords) to stdout by
+    design -- this is the only command in the tasmota/wifi/wisp family that
+    does. Same derivation as `wifi register-broker` (single source of
+    truth): reads `mqtt_secret` from the site toml, so on prod this runs as
+    root, like `password`. Unlike `register-broker`, this never contacts the
+    broker -- it only prints the locally-derivable username/password pair so
+    callers (e.g. `tools/fleet/set_device_vars.py`) can push it to the
+    device/OpenWISP side out-of-band. Never writes secrets to a file.
+
+    Requires either explicit host name(s) or `--all`: unlike `password`
+    (whose query is a required positional), `hosts` alone is `nargs="*"`, so
+    without this gate a bare invocation -- or a typo that drops the
+    argument -- would silently dump every WiFi-sheet host's plaintext
+    password. `--all` and explicit host names are mutually exclusive.
+    """
+    import json
+
+    from gdoc2netcfg.derivations.mqtt_credentials import username
+    from gdoc2netcfg.derivations.wifi_credentials import (
+        PREFIX,
+        build_logins,
+        select_wifi_hosts,
+    )
+
+    if args.all and args.hosts:
+        print(
+            "Error: --all cannot be combined with explicit host names",
+            file=sys.stderr,
+        )
+        return 1
+    if not args.all and not args.hosts:
+        print(
+            "Error: specify host name(s), or --all for every WiFi-sheet "
+            "host (refusing to guess -- this command prints plaintext "
+            "passwords)",
+            file=sys.stderr,
+        )
+        return 1
+
+    config = _load_config(args)
+    _records, hosts, _inventory, _result = _build_pipeline(config)
+    selected = select_wifi_hosts(hosts)
+
+    try:
+        machine_names = [h.machine_name for h in selected]
+        dupes = sorted({m for m in machine_names if machine_names.count(m) > 1})
+        if dupes:
+            raise ValueError(
+                f"multiple WiFi-sheet hosts share machine_name(s): {', '.join(dupes)}"
+            )
+        by_machine = {h.machine_name: username(PREFIX, h) for h in selected}
+        logins = build_logins(config.wifi.mqtt_secret, hosts)  # collision-checked
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    wanted = sorted(by_machine) if args.all else args.hosts
+    unknown = [m for m in wanted if m not in by_machine]
+    if unknown:
+        print(f"Error: not WiFi-sheet hosts: {', '.join(unknown)}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(
+            {m: {"username": by_machine[m], "password": logins[by_machine[m]]}
+             for m in wanted},
+            indent=2,
+        ))
+    else:
+        for m in wanted:
+            print(by_machine[m], logins[by_machine[m]])
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Subcommands: zigbee scan / show / update-sheet
 # ---------------------------------------------------------------------------
 
@@ -3229,6 +3311,30 @@ def main(argv: list[str] | None = None) -> int:
     wifi_rb.add_argument(
         "--prune", action="store_true", help="Remove logins not in current device list",
     )
+    wifi_sl = wifi_subparsers.add_parser(
+        "show-login",
+        help="Print derived WiFi-device broker logins "
+             "(WARNING: prints raw MQTT credentials to stdout)",
+        description="Print derived WiFi-device broker logins (device-side "
+                     "out-of-band config). WARNING: prints raw MQTT "
+                     "credentials (plaintext passwords) to stdout; run as "
+                     "root on prod, like `password`. Never contacts the "
+                     "broker.",
+    )
+    wifi_sl.add_argument(
+        "hosts", nargs="*",
+        help="Machine name(s) to show (mutually exclusive with --all)",
+    )
+    wifi_sl.add_argument(
+        "--all", action="store_true",
+        help="Show every WiFi-sheet host. Required when no host names are "
+             "given -- refuses to guess, since this prints plaintext "
+             "passwords",
+    )
+    wifi_sl.add_argument(
+        "--json", action="store_true",
+        help='Emit {machine: {"username", "password"}} JSON instead of text lines',
+    )
 
     # zigbee (with subcommands)
     zigbee_parser = subparsers.add_parser(
@@ -3399,6 +3505,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "wifi":
         if args.wifi_command == "register-broker":
             return cmd_wifi_register_broker(args)
+        elif args.wifi_command == "show-login":
+            return cmd_wifi_show_login(args)
         else:
             wifi_parser.print_help()
             return 0

@@ -62,6 +62,11 @@ SITE = Site(
         99: VLAN(id=99, name="guest", subdomain="guest", third_octets=(99,)),
     },
     ipv6_prefixes=[IPv6Prefix(prefix="2404:e80:a137:", name="Launtel")],
+    # LOAD-BEARING: ip_to_net() classifies site-octet addresses via
+    # network_subdomains (NOT vlans) — without this map _leaf_gateways
+    # returns {} and every test fails pointing at the wrong place.
+    network_subdomains={1: "tmp", 4: "wifi", 5: "net",
+                        90: "iot", 91: "iot", 99: "guest"},
 )
 
 
@@ -398,22 +403,25 @@ the surrounding comment says sites edit it — match local style).
 - Create: `scripts/migrate-remote-syslog.py`
 - Create: `tests/test_scripts/test_migrate_remote_syslog.py`
 
-The script is importable (module-level functions, no work at import); look
-at `tests/test_scripts/test_wifi_sheet_migrate.py` for how scripts/ modules
-are imported in tests (`sys.path` insertion + `__import__` with the dashed
-name).
+The script is importable (module-level functions, no work at import).
+Import it the way `tests/test_scripts/test_wifi_sheet_migrate.py` does —
+`importlib.util.spec_from_file_location` with a `__file__`-relative path
+(robust regardless of pytest's cwd):
 
 - [ ] **Step 1: Failing tests**
 
 ```python
 """Tests for scripts/migrate-remote-syslog.py on tmp_path trees."""
 
-import sys
+import importlib.util
+from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, "scripts")
-mrs = __import__("migrate-remote-syslog")
+_SCRIPT = Path(__file__).resolve().parents[2] / "scripts/migrate-remote-syslog.py"
+_spec = importlib.util.spec_from_file_location("migrate_remote_syslog", _SCRIPT)
+mrs = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(mrs)
 
 
 def _make_tree(tmp_path):
@@ -613,7 +621,7 @@ LOGROTATE_REMOTE_CONF := /etc/logrotate.d/remote-logs
 
 .PHONY: deploy-syslog
 deploy-syslog: $(VENV)/.stamp ## Deploy generated per-net remote syslog + logrotate config (run with sudo)
-	$(UV) run gdoc2netcfg generate rsyslog --output-dir out
+	$(VENV_BIN)/gdoc2netcfg generate rsyslog --output-dir out
 	cp out/etc/rsyslog.d/remote-logs.conf $(RSYSLOG_REMOTE_CONF)
 	cp out/etc/logrotate.d/remote-logs $(LOGROTATE_REMOTE_CONF)
 	systemctl restart rsyslog
@@ -622,8 +630,11 @@ deploy-syslog: $(VENV)/.stamp ## Deploy generated per-net remote syslog + logrot
 
 Notes: no `install -d` — dynafile dirs auto-create. The etckeeper paths
 are the whole `.d` dirs so the commit captures the migration's removals
-too. Match the existing target's prerequisite/variable idioms exactly
-(check how the current target and neighbours use `$(VENV)/.stamp`, `$(UV)`).
+too. Match the existing target's prerequisite/variable idioms exactly —
+neighbouring deploy targets use `$(VENV_BIN)/gdoc2netcfg` (NOT `uv run`,
+which under sudo on prod would re-sync the root-owned venv; see
+CLAUDE.md's SQLite-ownership note). Verify against the neighbours before
+committing.
 
 - [ ] **Step 2: Delete the retired files**
 
@@ -650,7 +661,7 @@ git rm etc/rsyslog-tasmota.conf etc/logrotate-tasmota
 
 ### Task 7: acceptance sweep + push + PR (gdoc2netcfg)
 
-- [ ] **Step 1:** `uv run pytest -q` (expect ~2158 + new tests, 0 failures) and `uv run ruff check src/ tests/`
+- [ ] **Step 1:** `uv run pytest -q` (gate: 0 failures) and `uv run ruff check src/ tests/` (gate: clean)
 - [ ] **Step 2:** Also fix the spec's Problem-section wording while here: the wisp:6666 stanza lives in the *ansells-aps-base post-reload-hook* (OpenWISP-delivered), not the image bootstrap; the image sets nothing (verified by grep across `*-image/`). One-paragraph correction in the spec, committed as `docs: spec correction — syslog stanza lives in the base-template hook, not the image`.
 - [ ] **Step 3:** `git push -u origin wifi-syslog` and open a PR titled "generators: per-net remote syslog capture + one-off migration" with a summary referencing the spec; CI must be green.
 
@@ -696,17 +707,55 @@ known gotcha: netjsonconfig renders the literal `{{ syslog_ip }}` string
 onto devices if the context key is missing — the default MUST land in the
 same `default_values` the base template already uses.
 
-- [ ] **Step 3: Verify by grep**
+- [ ] **Step 3: Add the template-builder test (spec Testing requirement)**
+
+gwifi-openwrt has no repo-root pytest harness (only
+`tools/gwifi-netboot` has its own), so create
+`tests/openwisp/test_build_templates.py` as a standalone pytest file
+doing **text-level** assertions on the script source (build-templates.py
+executes work at import time — never import it in tests):
+
+```python
+"""Text-level checks on openwisp/build-templates.py (it runs at import,
+so tests assert on the source, not the module)."""
+
+from pathlib import Path
+
+SRC = (Path(__file__).resolve().parents[2]
+       / "openwisp/build-templates.py").read_text()
+
+
+def test_hook_targets_syslog_ip_variable_on_514():
+    assert "uci set system.@system[0].log_ip='{{ syslog_ip }}'" in SRC
+    assert "uci set system.@system[0].log_port='514'" in SRC
+
+
+def test_hook_no_longer_hardcodes_wisp_syslog_target():
+    assert "log_ip='10.1.4.2'" not in SRC
+    assert "log_port='6666'" not in SRC
+
+
+def test_defaults_carry_the_syslog_ip_context():
+    # the default MUST live in the same default_values the base template
+    # uses, or devices render the literal {{ syslog_ip }} string
+    assert '"syslog_ip": "10.1.4.1"' in SRC
+```
+
+Run: `uv run --with pytest pytest tests/openwisp/ -q` — expected PASS
+(write the test AFTER steps 1–2; then also re-run it with the edits
+reverted via `git stash` to confirm it fails, `git stash pop` after).
+
+- [ ] **Step 4: Verify by grep**
 
 ```bash
 grep -n "6666" openwisp/build-templates.py   # only netconsole comments, no uci log_ip line
 grep -n "syslog_ip" openwisp/build-templates.py  # hook stanza + DEFAULTS entry
 ```
 
-- [ ] **Step 4: Commit + push + PR**
+- [ ] **Step 5: Commit + push + PR**
 
 ```bash
-git add openwisp/build-templates.py
+git add openwisp/build-templates.py tests/openwisp/test_build_templates.py
 git commit -m "openwisp: base template points logd at the site router's wifi leg (:514)"
 git push -u origin wifi-syslog
 ```

@@ -16,8 +16,10 @@ device class at a time:
   `/var/log/network/<hostname>.log` (`z-network-switches.conf`, hand-written,
   welland-deployed).
 - WiFi devices (gale pucks, tenwrt): OpenWrt `logd` is pointed at
-  **wisp:6666** by a shell stanza baked into the fleet image's bootstrap
-  script (`openwisp/build-templates.py`). That port is `netconsole_rx`, the
+  **wisp:6666** by a shell stanza in the `ansells-aps-base` OpenWISP
+  template's post-reload-hook (delivered by wisp; defined in
+  `openwisp/build-templates.py`) — the flashed image itself sets no
+  syslog config. That port is `netconsole_rx`, the
   kernel-panic/printk receiver — so device *syslog* and raw kernel
   *netconsole* currently mix into per-source-IP files under
   `/var/log/gale-netconsole/` with no rotation and no hostname keying.
@@ -103,10 +105,11 @@ of link state when rsyslog starts.
 
 ### Push side: OpenWISP base template (gwifi-openwrt)
 
-- The `uci set system.@system[0].log_ip/log_port/log_proto` stanza is
-  **removed from the image bootstrap script** in
-  `openwisp/build-templates.py` — the image needs no syslog config;
-  adoption by wisp is what configures logging (user decision).
+- The `uci set system.@system[0].log_ip/log_port/log_proto` stanza in
+  the `ansells-aps-base` template's post-reload-hook
+  (`openwisp/build-templates.py`) **stops hardcoding wisp:6666** — the
+  image needs no syslog config; adoption by wisp is what configures
+  logging (user decision).
 - The `ansells-aps-base` template gains the equivalent as OpenWISP
   *configuration*: `log_ip = {{ syslog_ip }}` (template default context
   `syslog_ip = "10.1.4.1"`, overridable per device/group for any future

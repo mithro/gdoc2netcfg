@@ -17,6 +17,7 @@ from __future__ import annotations
 from gdoc2netcfg.derivations.dns_names import common_suffix
 from gdoc2netcfg.generators.dnsmasq_common import (
     _ipv6_for_ip,
+    dhcp_suppressed,
     identity_ipv4,
     sections_to_text,
     shared_dns_sections,
@@ -46,22 +47,13 @@ def _generate_host_internal(host: Host, inventory: NetworkInventory) -> str:
     return sections_to_text(sections)
 
 
-_NO_DHCP_TYPES = {"dhcp:wisp", "static"}  # entries MUST be lowercase — compared against .lower()
-
-
 def _host_dhcp_config(host: Host, inventory: NetworkInventory) -> list[str]:
     """Generate dhcp-host entries for a single host.
 
-    A `Type` of `DHCP:wisp` means DHCP for this host is served elsewhere
-    (e.g. wisp on the pucks' VLAN, netboot design D7) — emit no bindings
-    so ten64 never competes. A `Type` of `static` means the address is
-    statically configured on the device itself (e.g. IP-Allocation-mirror
-    rows for ten64/wisp on the wifi tab) — a second dhcp-host binding for
-    an IP already bound elsewhere is a FATAL dnsmasq startup error, so
-    this is suppressed too. The comparison is case-insensitive since the
-    sheet value is hand-typed.
+    Suppressed entirely for `Type=DHCP:wisp` / `Type=static` hosts — see
+    dnsmasq_common.dhcp_suppressed() for the semantics.
     """
-    if host.extra.get("Type", "").strip().lower() in _NO_DHCP_TYPES:
+    if dhcp_suppressed(host):
         return []
 
     if not host.interfaces:

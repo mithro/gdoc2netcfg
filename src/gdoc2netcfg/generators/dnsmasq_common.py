@@ -31,6 +31,25 @@ def identity_ipv4(ip: str) -> str:
     return ip
 
 
+_NO_DHCP_TYPES = {"dhcp:wisp", "static"}  # entries MUST be lowercase — compared against .lower()
+
+
+def dhcp_suppressed(host: Host) -> bool:
+    """Should this host emit NO dhcp-host bindings at all?
+
+    A `Type` of `DHCP:wisp` means DHCP for this host is served elsewhere
+    (e.g. wisp on the pucks' VLAN, netboot design D7) — emit no bindings
+    so ten64 never competes. A `Type` of `static` means the address is
+    statically configured on the device itself (e.g. IP-Allocation-mirror
+    rows for ten64/wisp on the wifi tab) — a second dhcp-host binding for
+    an IP already bound elsewhere is a FATAL dnsmasq startup error, so
+    this is suppressed too. The comparison is case-insensitive since the
+    sheet value is hand-typed. Shared by the internal and leaf generators
+    so every dnsmasq flavour agrees on suppression.
+    """
+    return host.extra.get("Type", "").strip().lower() in _NO_DHCP_TYPES
+
+
 def host_record_config(
     host: Host,
     inventory: NetworkInventory,

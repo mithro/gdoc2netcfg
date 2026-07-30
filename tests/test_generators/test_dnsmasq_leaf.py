@@ -196,3 +196,43 @@ class TestMacLessInterfaces:
         conf = files["int/generated/gw.conf"]
         assert "dhcp-host=" not in conf
         assert "host-record=gw.int.welland.mithis.com,10.1.10.9" in conf
+
+
+class TestNoDhcpTypes:
+    def test_static_type_suppresses_dhcp_host(self):
+        """Type=static (IP-Allocation-mirror rows, e.g. ten64.wifi) must
+        suppress dhcp-host in leaves too — a second binding for an IP
+        already bound elsewhere is a fatal dnsmasq startup error."""
+        host = Host(
+            machine_name="ten64",
+            hostname="ten64.wifi",
+            interfaces=[_iface("br-wifi", "01", "10.1.10.9")],
+            extra={"Type": "static"},
+        )
+        files = generate_dnsmasq_leaf(_inventory(host))
+        conf = files["int/generated/ten64.wifi.conf"]
+        assert "dhcp-host=" not in conf
+        assert "host-record=ten64.wifi.int.welland.mithis.com,10.1.10.9" in conf
+
+    def test_dhcp_wisp_type_suppresses_dhcp_host_case_insensitively(self):
+        """Type=DHCP:wisp (served elsewhere, netboot design D7) is
+        suppressed too, matching the internal generator's semantics."""
+        host = Host(
+            machine_name="tenwrt",
+            hostname="tenwrt.wifi",
+            interfaces=[_iface("eth0", "02", "10.1.10.10")],
+            extra={"Type": "DHCP:Wisp"},
+        )
+        files = generate_dnsmasq_leaf(_inventory(host))
+        conf = files["int/generated/tenwrt.wifi.conf"]
+        assert "dhcp-host=" not in conf
+
+    def test_other_type_values_still_emit_dhcp_host(self):
+        host = Host(
+            machine_name="cam",
+            hostname="cam",
+            interfaces=[_iface("eth0", "03", "10.1.10.11")],
+            extra={"Type": "DHCP"},
+        )
+        files = generate_dnsmasq_leaf(_inventory(host))
+        assert "dhcp-host=" in files["int/generated/cam.conf"]

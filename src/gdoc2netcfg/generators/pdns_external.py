@@ -23,6 +23,7 @@ from gdoc2netcfg.generators.pdns_zones import (
     RECORD_TTL,
     SERIAL_PLACEHOLDER,
     ZONE_TTL,
+    _dedupe_record_lines,
     _sshfp_lines,
     finalize_zone_serials,
 )
@@ -74,6 +75,10 @@ def generate_pdns_external(
         lines.append(f"$INCLUDE {site_extra_include}")
 
     files = {f"zones-external/{domain}.zone": "\n".join(lines) + "\n"}
+    # Two rows sharing an interface name yield DISTINCT private records
+    # but identical public A lines (all map to the site IPv4) — dedupe
+    # like the internal generator (pdns rejects rrset duplicates).
+    files = _dedupe_record_lines(files)
     files = finalize_zone_serials(files, serial)
     files["bind-external.conf"] = (
         f'zone "{domain}" {{ type primary; '

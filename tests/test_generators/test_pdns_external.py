@@ -204,3 +204,23 @@ class TestCgnatOmission:
         assert "100.110.251.12" not in zone
         # the site name still gets the public transform of the RFC1918 addr
         assert f"x1c-work.{DOMAIN}. 300 IN A {PUBLIC_V4}" in zone
+
+
+class TestDuplicateRecordLines:
+    """Two rows with one interface name produce DISTINCT private A
+    records but the SAME public A (both map to the site IPv4) —
+    external must dedupe identical lines (pdns rejects rrset dupes)."""
+
+    def test_same_named_interfaces_dedupe_public_a(self):
+        host = Host(
+            machine_name="sw3",
+            hostname="sw3",
+            interfaces=[
+                _iface("manage", "31", "10.1.10.24", "2404:e80:a137:110::24"),
+                _iface("manage", "32", "10.1.10.31", "2404:e80:a137:110::31"),
+            ],
+        )
+        files = _generate(_ten64(), host)
+        zone = files[f"zones-external/{DOMAIN}.zone"]
+        line = f"manage.sw3.{DOMAIN}. 300 IN A 87.121.95.37"
+        assert zone.count(line) == 1

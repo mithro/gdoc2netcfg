@@ -708,8 +708,8 @@ class TestMacLessAndCrossHostDuplicates:
         from gdoc2netcfg.constraints.validators import (
             validate_cross_record_constraints,
         )
-        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
         from gdoc2netcfg.models.addressing import IPv4Address
+        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
 
         hosts = [
             Host(
@@ -734,8 +734,8 @@ class TestMacLessAndCrossHostDuplicates:
         from gdoc2netcfg.constraints.validators import (
             validate_cross_record_constraints,
         )
-        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
         from gdoc2netcfg.models.addressing import IPv4Address
+        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
 
         hosts = [
             Host(
@@ -764,8 +764,8 @@ class TestMacLessAndCrossHostDuplicates:
         from gdoc2netcfg.constraints.validators import (
             validate_cross_record_constraints,
         )
-        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
         from gdoc2netcfg.models.addressing import IPv4Address
+        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
 
         hosts = [
             Host(
@@ -792,8 +792,8 @@ class TestMacLessAndCrossHostDuplicates:
         from gdoc2netcfg.constraints.validators import (
             validate_cross_record_constraints,
         )
-        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
         from gdoc2netcfg.models.addressing import IPv4Address, MACAddress
+        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
 
         host = Host(
             machine_name="lap",
@@ -825,8 +825,8 @@ class TestMacLessAndCrossHostDuplicates:
         from gdoc2netcfg.constraints.validators import (
             validate_cross_record_constraints,
         )
-        from gdoc2netcfg.models.host import NetworkInventory
         from gdoc2netcfg.models.addressing import MACAddress
+        from gdoc2netcfg.models.host import NetworkInventory
 
         hosts = [
             _host("wisp", [
@@ -855,8 +855,8 @@ class TestMacLessAndCrossHostDuplicates:
         from gdoc2netcfg.constraints.validators import (
             validate_cross_record_constraints,
         )
-        from gdoc2netcfg.models.host import NetworkInventory
         from gdoc2netcfg.models.addressing import MACAddress
+        from gdoc2netcfg.models.host import NetworkInventory
 
         hosts = [
             _host("big-storage", [

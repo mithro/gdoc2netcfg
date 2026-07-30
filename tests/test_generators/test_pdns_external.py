@@ -127,7 +127,7 @@ class TestExternalZone:
         files = _generate(_big_storage(), _ten64())
         zone = files[f"zones-external/{DOMAIN}.zone"]
         assert " CNAME " not in zone
-        assert f" IN NS gw." not in zone
+        assert " IN NS gw." not in zone
 
     def test_public_v4_deduplicated_per_name(self):
         """Both RFC1918 addresses map to the same public IP — one A each."""

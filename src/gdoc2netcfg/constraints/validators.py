@@ -393,6 +393,15 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
         # addresses legitimately move between devices.
         if roam_prefix and ip_str.startswith(roam_prefix):
             continue
+        # Same cross-sheet-mirror carve-out as ip_multiple_macs: an IP
+        # Allocation row and its wifi-tab formula row share one MAC+IP by
+        # design. A MAC-less duplicate never qualifies (the predicate
+        # requires the identical MAC on every colliding record), so the
+        # stale-row cases this check exists for still error.
+        if _is_cross_sheet_mirror(
+            inventory.ip_to_macs.get(ip_str, []), ip_str, mac_to_hosts
+        ):
+            continue
         if len(hostnames) > 1:
             result.add(ConstraintViolation(
                 severity=Severity.ERROR,

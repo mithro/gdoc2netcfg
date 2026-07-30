@@ -223,4 +223,6 @@ class TestDuplicateRecordLines:
         files = _generate(_ten64(), host)
         zone = files[f"zones-external/{DOMAIN}.zone"]
         line = f"manage.sw3.{DOMAIN}. 300 IN A 87.121.95.37"
-        assert zone.count(line) == 1
+        # exact-line count: substring count would also match the
+        # ipv4.-prefixed record containing this line as a suffix
+        assert zone.splitlines().count(line) == 1

@@ -20,13 +20,13 @@ site zone (verifications V1/V2).
 
 from __future__ import annotations
 
+from gdoc2netcfg.derivations.vlan import ip_to_net
 from gdoc2netcfg.generators.dnsmasq_leaf import _non_leaf_nets
 from gdoc2netcfg.generators.pdns_zones import (
     DELEGATED_NET_SERVERS,
     ROUTER_HOSTNAME,
     _central_nets,
 )
-from gdoc2netcfg.derivations.vlan import ip_to_net
 from gdoc2netcfg.models.host import NetworkInventory
 from gdoc2netcfg.models.network import Site
 

@@ -22,8 +22,8 @@ from gdoc2netcfg.derivations.dns_names import _anchored_net, common_suffix
 from gdoc2netcfg.derivations.vlan import DELEGATED_NETS, ip_to_net
 from gdoc2netcfg.generators.dnsmasq_common import (
     _ipv4_to_ptr,
-    _ipv6_to_ptr,
     _ipv6_for_ip,
+    _ipv6_to_ptr,
     _most_specific_fqdn,
     host_record_config,
     identity_ipv4,
@@ -32,6 +32,7 @@ from gdoc2netcfg.generators.dnsmasq_common import (
 from gdoc2netcfg.models.host import Host, NetworkInventory, VirtualInterface
 from gdoc2netcfg.models.network import Site
 from gdoc2netcfg.utils.ip import ip_sort_key
+
 
 def _non_leaf_nets(site: Site) -> frozenset[str]:
     """Nets that get no dnsmasq leaf: transit zones + wg (central-authored)

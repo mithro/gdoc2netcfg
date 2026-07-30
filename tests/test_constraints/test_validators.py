@@ -708,8 +708,8 @@ class TestMacLessAndCrossHostDuplicates:
         from gdoc2netcfg.constraints.validators import (
             validate_cross_record_constraints,
         )
-        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
         from gdoc2netcfg.models.addressing import IPv4Address
+        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
 
         hosts = [
             Host(
@@ -734,8 +734,8 @@ class TestMacLessAndCrossHostDuplicates:
         from gdoc2netcfg.constraints.validators import (
             validate_cross_record_constraints,
         )
-        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
         from gdoc2netcfg.models.addressing import IPv4Address
+        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
 
         hosts = [
             Host(
@@ -764,8 +764,8 @@ class TestMacLessAndCrossHostDuplicates:
         from gdoc2netcfg.constraints.validators import (
             validate_cross_record_constraints,
         )
-        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
         from gdoc2netcfg.models.addressing import IPv4Address
+        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
 
         hosts = [
             Host(
@@ -792,8 +792,8 @@ class TestMacLessAndCrossHostDuplicates:
         from gdoc2netcfg.constraints.validators import (
             validate_cross_record_constraints,
         )
-        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
         from gdoc2netcfg.models.addressing import IPv4Address, MACAddress
+        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
 
         host = Host(
             machine_name="lap",
@@ -816,3 +816,66 @@ class TestMacLessAndCrossHostDuplicates:
         inv = NetworkInventory(site=SITE, hosts=[host])
         result = validate_cross_record_constraints(inv)
         assert not [v for v in result.errors if v.code == "ip_multiple_hosts"]
+
+    def test_cross_sheet_mirror_is_exempt(self):
+        """The same cross-sheet-mirror carve-out as ip_multiple_macs: an IP
+        Allocation row ('wisp') and its wifi-tab formula row ('wisp.wifi')
+        record the identical MAC+IP under one machine_name — permanent by
+        design, so ip_multiple_hosts must not fire either."""
+        from gdoc2netcfg.constraints.validators import (
+            validate_cross_record_constraints,
+        )
+        from gdoc2netcfg.models.addressing import MACAddress
+        from gdoc2netcfg.models.host import NetworkInventory
+
+        hosts = [
+            _host("wisp", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="wisp"),
+            ], machine_name="wisp", sheet_type="Network"),
+            _host("wisp.wifi", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="wisp.wifi"),
+            ], machine_name="wisp", sheet_type="WiFi"),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.4.2": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wisp"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wisp.wifi"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        assert not result.errors
+
+    def test_same_sheet_machine_name_split_still_errors(self):
+        """A same-sheet machine_name split (e.g. a BMC row copy-pasted with
+        its parent's exact MAC+IP, both sheet_type 'Network') is NOT a
+        mirror — ip_multiple_hosts must still fire."""
+        from gdoc2netcfg.constraints.validators import (
+            validate_cross_record_constraints,
+        )
+        from gdoc2netcfg.models.addressing import MACAddress
+        from gdoc2netcfg.models.host import NetworkInventory
+
+        hosts = [
+            _host("big-storage", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.5.31",
+                       dhcp_name="big-storage"),
+            ], machine_name="big-storage", sheet_type="Network"),
+            _host("bmc.big-storage", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.5.31",
+                       dhcp_name="bmc.big-storage"),
+            ], machine_name="big-storage", sheet_type="Network"),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.5.31": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "big-storage"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "bmc.big-storage"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        assert [v for v in result.errors if v.code == "ip_multiple_hosts"]

@@ -65,7 +65,8 @@ disabled_prefixes = [
 
 # ── Site-specific: each site customizes this list. Monarto runs
 # ── ["dnsmasq_internal", "dnsmasq_external", "nginx"] (no wifi generator —
-# ── the gale puck fleet is welland-only). ─────
+# ── the gale puck fleet is welland-only). "rsyslog" belongs in the list at
+# ── both sites once its host runs the capture stack. ─────
 [generators]
 # Which generators to enable
 enabled = ["dnsmasq_internal", "dnsmasq_external", "nagios", "nginx",
@@ -179,3 +180,8 @@ output_dir = "etc/powerdns"
 
 [generators.recursor_forward]
 output = "etc/powerdns/forward-zones.yml"
+
+# Per-net remote syslog capture (rsyslog drop-in + logrotate; out/etc
+# mirrors /etc — deployed by `sudo make deploy-syslog`).
+[generators.rsyslog]
+output_dir = "etc"

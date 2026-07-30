@@ -127,3 +127,10 @@ class TestLogrotate:
         rot = generate_rsyslog(_default_inventory())["logrotate.d/remote-logs"]
         assert "/var/log/tmp/" not in rot
         assert "/var/log/guest/" not in rot
+
+
+class TestRegistry:
+    def test_rsyslog_resolves_in_cli_registry(self):
+        from gdoc2netcfg.cli import main as cli_main
+        func = cli_main._get_generator("rsyslog")
+        assert func is generate_rsyslog

@@ -54,13 +54,57 @@ def generate_dnsmasq_leaf(inventory: NetworkInventory) -> dict[str, str]:
     non_leaf = _non_leaf_nets(inventory.site)
     files: dict[str, str] = {}
     for host in inventory.hosts_sorted():
-        for net in _host_nets(host, inventory.site):
+        host_nets = _host_nets(host, inventory.site)
+        for net in host_nets:
             if net in non_leaf:
                 continue
             content = _host_leaf_fragment(host, net, inventory)
             if content:
                 files[f"{net}/generated/{host.hostname}.conf"] = content
+
+        # Zone-cut names: a hostname suffix that names a net (e.g.
+        # 'openmesh-96-00.wifi') places the host's site-scope names under
+        # that net's zone cut. The recursor forwards the WHOLE cut to the
+        # leaf, shadowing the central auth — so when the host has no
+        # interface on that net (nothing above emitted its names there),
+        # the leaf must still serve them or they are NXDOMAIN everywhere.
+        cut = _name_cut_net(host, inventory.site)
+        if cut and cut not in host_nets and cut not in non_leaf:
+            content = _zone_cut_fragment(host, cut, inventory)
+            if content:
+                files[f"{cut}/generated/{host.hostname}.conf"] = content
     return files
+
+
+def _name_cut_net(host: Host, site: Site) -> str | None:
+    """The net whose zone cut the hostname falls under, by NAME alone.
+
+    Unlike _anchored_net this does not require an interface on the net —
+    the zone cut is a namespace fact, not an interface fact.
+    """
+    if "." not in host.hostname:
+        return None
+    suffix = host.hostname.rsplit(".", 1)[1]
+    net_names = {vlan.subdomain for vlan in site.vlans.values()}
+    net_names.update(site.network_subdomains.values())
+    return suffix if suffix in net_names else None
+
+
+def _zone_cut_fragment(host: Host, net: str, inventory: NetworkInventory) -> str:
+    """Site-scope records for a host whose NAME (not interfaces) lives
+    under this leaf's zone cut: every FQDN of the host ending inside
+    {net}.{domain}, with the host's real (other-net) addresses. No DHCP,
+    PTR, or SSHFP sections — those belong to the nets the interfaces are
+    actually on."""
+    domain = inventory.site.domain
+    cut_suffix = f".{net}.{domain}"
+    cut_names = [
+        n for n in host.dns_names if n.is_fqdn and n.name.endswith(cut_suffix)
+    ]
+    sections = [
+        host_record_config(host, inventory, identity_ipv4, dns_names=cut_names),
+    ]
+    return sections_to_text(sections)
 
 
 def _host_nets(host: Host, site: Site) -> list[str]:

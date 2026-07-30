@@ -198,6 +198,59 @@ class TestMacLessInterfaces:
         assert "host-record=gw.int.welland.mithis.com,10.1.10.9" in conf
 
 
+class TestZoneCutNames:
+    def test_suffix_named_host_without_interface_on_that_net_served_by_cut_leaf(self):
+        """A hostname suffix that names a net (e.g. 'openmesh-96-00.wifi')
+        puts the host's site-scope names UNDER that net's zone cut — the
+        recursor forwards the whole cut to that leaf, so the leaf must
+        serve them even when the host has no interface on the net,
+        otherwise the canonical name is NXDOMAIN everywhere (central has
+        the records but is shadowed by the forward)."""
+        host = Host(
+            machine_name="ap1",
+            hostname="ap1.iot",
+            interfaces=[
+                _iface("mgmt", "01", "10.1.10.40", "2404:e80:a137:110::40"),
+            ],
+        )
+        files = generate_dnsmasq_leaf(_inventory(host))
+        assert "iot/generated/ap1.iot.conf" in files
+        cut = files["iot/generated/ap1.iot.conf"]
+        assert "host-record=ap1.iot.welland.mithis.com,10.1.10.40" in cut
+        assert "host-record=ipv4.ap1.iot.welland.mithis.com,10.1.10.40" in cut
+        # No interface on iot — no DHCP binding or PTRs in the cut leaf.
+        assert "dhcp-host=" not in cut
+        assert "ptr-record=" not in cut
+        # The int leaf still carries the net-native records as usual.
+        assert "host-record=ap1.iot.int.welland.mithis.com,10.1.10.40" in (
+            files["int/generated/ap1.iot.conf"]
+        )
+
+    def test_suffix_anchored_host_with_interface_gets_no_duplicate_file(self):
+        """A host actually ON its suffix net (e.g. 'plug.iot' with an iot
+        interface) is already served by the normal per-net path — the
+        zone-cut path must not double-emit."""
+        host = Host(
+            machine_name="plug",
+            hostname="plug.iot",
+            interfaces=[_iface("wl0", "02", "10.1.90.7")],
+        )
+        files = generate_dnsmasq_leaf(_inventory(host))
+        conf = files["iot/generated/plug.iot.conf"]
+        assert conf.count("host-record=plug.iot.welland.mithis.com,10.1.90.7") == 1
+
+    def test_non_net_suffix_hostname_unaffected(self):
+        """A dotted hostname whose suffix is NOT a net (e.g. a BMC's
+        'bmc.big-storage') gets no zone-cut fragment."""
+        host = Host(
+            machine_name="big-storage",
+            hostname="bmc.big-storage",
+            interfaces=[_iface("bmc", "03", "10.1.10.60")],
+        )
+        files = generate_dnsmasq_leaf(_inventory(host))
+        assert set(files) == {"int/generated/bmc.big-storage.conf"}
+
+
 class TestNoDhcpTypes:
     def test_static_type_suppresses_dhcp_host(self):
         """Type=static (IP-Allocation-mirror rows, e.g. ten64.wifi) must

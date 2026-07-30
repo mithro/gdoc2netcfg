@@ -76,10 +76,14 @@ def parse_csv(csv_text: str, sheet_name: str) -> list[DeviceRecord]:
     - Key field extraction (machine, mac, ip, interface)
     - Row length validation (skips rows not matching header count)
     - Empty row filtering
+    - WiFi-sheet-only Site carry-forward within a contiguous machine block
+      (see the inline comment above the row loop for the rationale)
 
     Args:
         csv_text: Raw CSV text content.
-        sheet_name: Name of the sheet (e.g. 'Network', 'IoT').
+        sheet_name: Name of the sheet (e.g. 'Network', 'IoT'). Also drives
+            behaviour, not just metadata: Site carry-forward is enabled
+            only when this is 'wifi' (case-insensitive).
 
     Returns:
         List of DeviceRecord objects, one per valid row.
@@ -110,6 +114,22 @@ def parse_csv(csv_text: str, sheet_name: str) -> list[DeviceRecord]:
     site_col = _find_col(_SITE_COLUMNS)
 
     records: list[DeviceRecord] = []
+
+    # WiFi-sheet-only Site carry-forward: the formatter merges the Site
+    # cell per host block, and a merged cell exports its value only on
+    # the anchor (first) row of the published CSV -- covered rows read
+    # blank. Site filtering treats blank as "all sites"
+    # (derivations/ip_remap.py::is_record_for_site), so without inheriting
+    # the anchor's value, covered rows would become phantom partial hosts
+    # at every other site. This rule is scoped to the wifi sheet only:
+    # other sheets legitimately mix a non-blank anchor Site with blank
+    # all-sites continuation rows for the SAME machine (e.g. rpiz-usbdev
+    # in 'Welland - IP Allocation', where the blanks really do mean "all
+    # sites", not "same site as above") -- global inheritance would
+    # silently drop those records from the other sites' inventories.
+    is_wifi_sheet = sheet_name.lower() == "wifi"
+    prev_machine: str | None = None
+    prev_site = ""
 
     for row_idx, row in enumerate(rows[header_idx + 1 :], start=header_idx + 1):
         # Skip rows that don't match header column count
@@ -149,6 +169,15 @@ def parse_csv(csv_text: str, sheet_name: str) -> list[DeviceRecord]:
         site_value = ""
         if site_col is not None and site_col < len(row):
             site_value = row[site_col].strip()
+
+        if is_wifi_sheet and not site_value and machine and machine == prev_machine:
+            site_value = prev_site
+
+        # Update carry-forward trackers on every data row (including rows
+        # whose Site was just inherited, so an inherited value keeps
+        # propagating through the rest of the block).
+        prev_machine = machine
+        prev_site = site_value
 
         # Collect extra columns (everything except the key fields)
         key_cols = {machine_col, mac_col, ip_col, interface_col, site_col} - {None}

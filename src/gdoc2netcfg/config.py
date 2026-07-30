@@ -77,6 +77,18 @@ class TasmotaConfig:
 
 
 @dataclass
+class WifiConfig:
+    """WiFi-device per-device MQTT credential derivation ([wifi]).
+
+    `mqtt_secret` derives each WiFi-sheet host's MqttUser (`wifi-<id>`) and
+    MqttPassword (`sha256(secret+<id>)`); the broker stores the pre-hashed
+    form.
+    """
+
+    mqtt_secret: str = ""
+
+
+@dataclass
 class Sensors2mqttConfig:
     """sensors2mqtt credential issuance settings ([sensors2mqtt]).
 
@@ -163,6 +175,7 @@ class PipelineConfig:
     cache: CacheConfig = field(default_factory=CacheConfig)
     generators: dict[str, GeneratorConfig] = field(default_factory=dict)
     tasmota: TasmotaConfig = field(default_factory=TasmotaConfig)
+    wifi: WifiConfig = field(default_factory=WifiConfig)
     sensors2mqtt: Sensors2mqttConfig = field(default_factory=Sensors2mqttConfig)
     homeassistant: HomeAssistantConfig = field(default_factory=HomeAssistantConfig)
     zigbee: ZigbeeConfig = field(default_factory=ZigbeeConfig)
@@ -276,6 +289,16 @@ def _build_tasmota(data: dict) -> TasmotaConfig:
     )
 
 
+def _build_wifi(data: dict) -> WifiConfig:
+    """Build wifi config from parsed TOML data."""
+    if "gwifi" in data:
+        raise ValueError("[gwifi] was renamed to [wifi]; update your gdoc2netcfg.toml")
+    section = data.get("wifi", {})
+    if not section:
+        return WifiConfig()
+    return WifiConfig(mqtt_secret=section.get("mqtt_secret", ""))
+
+
 def _build_sensors2mqtt(data: dict) -> Sensors2mqttConfig:
     """Build sensors2mqtt config from parsed TOML data."""
     section = data.get("sensors2mqtt", {})
@@ -346,6 +369,7 @@ def load_config(config_path: Path | str | None = None) -> PipelineConfig:
         ),
         generators=_build_generators(data),
         tasmota=_build_tasmota(data),
+        wifi=_build_wifi(data),
         sensors2mqtt=_build_sensors2mqtt(data),
         homeassistant=_build_homeassistant(data),
         zigbee=_build_zigbee(data),

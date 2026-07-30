@@ -8,6 +8,7 @@ internal/
 external/
 nginx/
 letsencrypt/
+wisp/
 nagios-switches.cfg
 dhcpd.static.conf
 info.json

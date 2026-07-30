@@ -25,10 +25,11 @@ def _record(machine="desktop", mac="aa:bb:cc:dd:ee:ff", ip="10.1.10.1", extra=No
     )
 
 
-def _host(hostname, interfaces):
+def _host(hostname, interfaces, machine_name=None, sheet_type="Network"):
     return Host(
-        machine_name=hostname,
+        machine_name=hostname if machine_name is None else machine_name,
         hostname=hostname,
+        sheet_type=sheet_type,
         interfaces=interfaces,
     )
 
@@ -237,6 +238,299 @@ class TestCrossRecordConstraints:
                 "10.1.10.1": [
                     (MACAddress.parse("aa:bb:cc:dd:ee:01"), "a"),
                     (MACAddress.parse("aa:bb:cc:dd:ee:02"), "b"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        assert result.has_errors
+        assert result.errors[0].code == "ip_multiple_macs"
+
+    def test_multiple_macs_on_non_roaming_ip_same_host_ok(self):
+        """Multiple MACs on one non-roaming IP is fine when they're both
+        interfaces of the SAME host (e.g. a puck's wan + lan ports sharing
+        one fixed IP)."""
+        hosts = [
+            _host("puck12", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.112", dhcp_name="wan-puck12"),
+                _iface(mac="aa:bb:cc:dd:ee:02", ip="10.1.4.112", dhcp_name="lan-puck12"),
+            ]),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.4.112": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wan-puck12"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:02"), "lan-puck12"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        ip_errors = [v for v in result.errors if v.code == "ip_multiple_macs"]
+        assert len(ip_errors) == 0
+
+    def test_multiple_macs_on_non_roaming_ip_different_hosts_still_error(self):
+        """Multiple MACs on one non-roaming IP from TWO different hosts
+        remains an error."""
+        hosts = [
+            _host("a", [_iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.10.1", dhcp_name="a")]),
+            _host("b", [_iface(mac="aa:bb:cc:dd:ee:02", ip="10.1.10.1", dhcp_name="b")]),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.10.1": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "a"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:02"), "b"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        assert result.has_errors
+        assert result.errors[0].code == "ip_multiple_macs"
+
+    def test_multiple_macs_on_non_roaming_ip_same_mac_different_hosts_is_error(self):
+        """Regression: if two DIFFERENT hosts both list the SAME MAC on one
+        non-roaming IP (a sheet copy-paste error), the collision must still
+        be flagged. A naive last-writer-wins mac→hostname map would collapse
+        this to a single owner and wrongly skip the violation."""
+        hosts = [
+            _host("a", [_iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.10.1", dhcp_name="a")]),
+            _host("b", [_iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.10.1", dhcp_name="b")]),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.10.1": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "a"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "b"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        assert result.has_errors
+        assert result.errors[0].code == "ip_multiple_macs"
+
+    def test_multiple_macs_on_non_roaming_ip_unowned_mac_still_error(self):
+        """A MAC absent from any host (unowned) on a non-roaming IP keeps
+        the violation even when the other MAC on that IP IS owned by a
+        host — an unowned MAC never counts as 'same host'."""
+        hosts = [
+            _host("a", [_iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.10.1", dhcp_name="a")]),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.10.1": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "a"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:99"), "unknown"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        assert result.has_errors
+        assert result.errors[0].code == "ip_multiple_macs"
+
+    def test_multiple_macs_on_roaming_ip_unchanged_different_hosts(self):
+        """Roaming range still allows multiple MACs from different hosts,
+        regardless of host mapping."""
+        hosts = [
+            _host("laptop", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.20.1", dhcp_name="laptop-wifi"),
+            ]),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.20.1": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "laptop-wifi"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:02"), "laptop-eth"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        ip_errors = [v for v in result.errors if v.code == "ip_multiple_macs"]
+        assert len(ip_errors) == 0
+
+    def test_cross_sheet_mirror_identical_mac_ip_same_machine_name_ok(self):
+        """Cross-sheet mirror: the IP Allocation row (host 'wisp') and the
+        wifi-tab formula row (host 'wisp.wifi') record the IDENTICAL
+        (MAC, IP) pair under one machine_name ('wisp'). This is a
+        deliberate permanent duplication (spec 2026-07-29 wifi-sheet
+        tenwrt-site-merge §3b), not a data-entry error."""
+        hosts = [
+            _host("wisp", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="wisp"),
+            ], machine_name="wisp", sheet_type="Network"),
+            _host("wisp.wifi", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="wisp.wifi"),
+            ], machine_name="wisp", sheet_type="WiFi"),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.4.2": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wisp"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wisp.wifi"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        ip_errors = [v for v in result.errors if v.code == "ip_multiple_macs"]
+        assert len(ip_errors) == 0
+
+    def test_cross_sheet_mirror_different_machine_name_still_error(self):
+        """Same MAC+IP pair recorded twice, but the two hosts have
+        DIFFERENT machine_names — this is not a recognized mirror and must
+        still error."""
+        hosts = [
+            _host("wisp", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="wisp"),
+            ], machine_name="wisp", sheet_type="Network"),
+            _host("other.wifi", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="other.wifi"),
+            ], machine_name="other", sheet_type="WiFi"),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.4.2": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wisp"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "other.wifi"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        assert result.has_errors
+        assert result.errors[0].code == "ip_multiple_macs"
+
+    def test_cross_sheet_mirror_same_machine_name_different_macs_still_error(self):
+        """Same machine_name on both hosts, but the MACs on the IP are
+        DIFFERENT — not an identical-pair mirror, and not the single-host
+        puck exception either (two distinct hostnames), so this must still
+        error."""
+        hosts = [
+            _host("wisp", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="wisp"),
+            ], machine_name="wisp", sheet_type="Network"),
+            _host("wisp.wifi", [
+                _iface(mac="aa:bb:cc:dd:ee:02", ip="10.1.4.2", dhcp_name="wisp.wifi"),
+            ], machine_name="wisp", sheet_type="WiFi"),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.4.2": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wisp"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:02"), "wisp.wifi"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        assert result.has_errors
+        assert result.errors[0].code == "ip_multiple_macs"
+
+    def test_bmc_typo_not_masked_by_coexisting_genuine_mirror(self):
+        """Reviewer-verified hole: a same-IP+MAC BMC copy-paste typo must
+        still error even when a THIRD, genuinely-mirrored host is also
+        present for the same machine_name+MAC+IP. Three hosts, all
+        machine_name='wisp', all sharing the identical MAC+IP: 'wisp'
+        (Network, real), 'bmc.wisp' (Network, typo — duplicate of wisp),
+        'wisp.wifi' (WiFi, genuine mirror). A carve-out that only checks
+        "more than one sheet_type present" (2: Network+WiFi) wrongly
+        accepts this, because it doesn't notice there are 3 owners for
+        only 2 sheet_types (i.e. two hosts sharing one sheet_type, one of
+        which must be the typo). The exception must require exactly one
+        owning host PER sheet_type."""
+        hosts = [
+            _host("wisp", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="wisp"),
+            ], machine_name="wisp", sheet_type="Network"),
+            _host("bmc.wisp", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="bmc-wisp"),
+            ], machine_name="wisp", sheet_type="Network"),
+            _host("wisp.wifi", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.4.2", dhcp_name="wisp.wifi"),
+            ], machine_name="wisp", sheet_type="WiFi"),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.4.2": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wisp"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "bmc-wisp"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wisp.wifi"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        assert result.has_errors
+        assert result.errors[0].code == "ip_multiple_macs"
+
+    def test_bmc_typo_not_masked_by_mirror_sharing_mac_on_different_ip(self):
+        """Reviewer-verified hole: the same-IP typo ('srv' + 'bmc.srv',
+        both Network, identical MAC+IP — a real copy-paste error) must
+        still error even when a totally separate host ('srv.wifi', WiFi
+        sheet) happens to reuse that MAC on a DIFFERENT IP. A naive
+        MAC-global owner lookup leaks 'srv.wifi' into this IP's decision
+        (it never actually owns an interface on THIS IP), which — combined
+        with the sheet_type-span check — would wrongly suppress the typo's
+        error. Owner sets for the mirror exception must be derived only
+        from hosts that own an interface on the COLLIDING IP.
+
+        Note: 'srv.wifi' reusing MAC A on a different IP also legitimately
+        trips the separate mac_duplicate_ip check (a MAC on two distinct
+        IPs) — expected and irrelevant here. This test isolates whether
+        ip_multiple_macs specifically still fires for the same-IP typo,
+        filtering by code rather than asserting on error order."""
+        hosts = [
+            _host("srv", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.10.50", dhcp_name="srv"),
+            ], machine_name="srv", sheet_type="Network"),
+            _host("bmc.srv", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.10.50", dhcp_name="bmc-srv"),
+            ], machine_name="srv", sheet_type="Network"),
+            _host("srv.wifi", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.20.7", dhcp_name="srv.wifi"),
+            ], machine_name="srv", sheet_type="WiFi"),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.10.50": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "srv"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "bmc-srv"),
+                ],
+                "10.1.20.7": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "srv.wifi"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        ip_errors = [v for v in result.errors if v.code == "ip_multiple_macs"]
+        assert len(ip_errors) == 1
+
+    def test_bmc_split_same_machine_name_same_sheet_type_mac_ip_copy_paste_still_error(self):
+        """A BMC row legitimately shares machine_name with its parent (see
+        CLAUDE.md 'BMC Handling': both 'big-storage' and 'bmc.big-storage'
+        carry machine_name='big-storage'), but both come from the SAME
+        sheet ('Network') — there is no cross-sheet signal here. If a
+        copy-paste error gave the BMC row its parent's exact MAC+IP, that
+        must still be flagged: same machine_name alone is not sufficient
+        for the mirror carve-out, only a genuine cross-sheet mirror is."""
+        hosts = [
+            _host("big-storage", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.10.50", dhcp_name="big-storage"),
+            ], machine_name="big-storage", sheet_type="Network"),
+            _host("bmc.big-storage", [
+                _iface(mac="aa:bb:cc:dd:ee:01", ip="10.1.10.50", dhcp_name="bmc-big-storage"),
+            ], machine_name="big-storage", sheet_type="Network"),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.10.50": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "big-storage"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "bmc-big-storage"),
                 ],
             },
         )

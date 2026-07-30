@@ -21,6 +21,18 @@ site_octet = 1  # Second octet: 10.1.X.X for Welland, 10.2.X.X for Monarto
 network = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=1476589425&single=true&output=csv"
 iot = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=1695016218&single=true&output=csv"
 vlan_allocations = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=208407908&single=true&output=csv"
+# 'wifi.welland - WiFi Infrastructure' tab — gale puck, OpenMesh AP, and
+# VLAN-4 infra-mirror (ten64/wisp/tenwrt) hosts on the wifi VLAN. BOTH
+# sites fetch this sheet: the "Site" column (with WiFi-sheet-only Site
+# carry-forward down each merged host block — see sources/parser.py)
+# filters each site to its own rows, e.g. welland gets the 12 pucks + its
+# 2 welland OpenMesh APs + ten64.wifi/wisp.wifi/tenwrt.wifi, monarto gets
+# its 4 OpenMesh APs + its own three mirrors. Rows are parsed as ordinary
+# hosts (sheet_type "WiFi", hostname suffix ".wifi"); puck rows
+# additionally carry '#'/'Serial' extras that feed the `wifi` generator
+# (`[generators.wifi]`, below) — which stays WELLAND ONLY regardless (the
+# gale puck fleet is welland-only; see the `[generators]` comment below).
+wifi = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=1724224613&single=true&output=csv"
 # Sites tab: drives all_sites (valid "Site" values) and is cross-checked against [site]/[ipv6].
 sites = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=582797138&single=true&output=csv"
 # Edit URL of the same spreadsheet — used by 'zigbee update-sheet' for write access.
@@ -52,10 +64,12 @@ disabled_prefixes = [
 # VLAN Allocations spreadsheet sheet, not configured here.
 
 # ── Site-specific: each site customizes this list. Monarto runs
-# ── ["dnsmasq_internal", "dnsmasq_external", "nginx"]. ─────
+# ── ["dnsmasq_internal", "dnsmasq_external", "nginx"] (no wifi generator —
+# ── the gale puck fleet is welland-only). ─────
 [generators]
 # Which generators to enable
-enabled = ["dnsmasq_internal", "dnsmasq_external", "nagios", "nginx"]
+enabled = ["dnsmasq_internal", "dnsmasq_external", "nagios", "nginx",
+           "wifi"]
 
 [generators.dnsmasq_internal]
 output_dir = "internal"
@@ -84,6 +98,12 @@ show_unknown_macs = "false"
 
 [generators.known_hosts]
 output = "known_hosts"
+
+# gale puck identity for wisp's gwifi-netboot service (welland only).
+# Deploy: scp wisp/pucks.json to wisp.welland.mithis.com and restart
+# gwifi-netboot (see gwifi-openwrt docs/wisp-netboot-runbook.md).
+[generators.wifi]
+output = "wisp/pucks.json"
 
 # ── Home Assistant: the API + the one MQTT broker everything uses ─
 [homeassistant]
@@ -117,6 +137,15 @@ syslog_port = 514
 # Site default SysLog level (0=off, 1=error, 2=info, 3=debug, 4=more debug);
 # override per device via the sheet's "Syslog Level" column.
 syslog_level = 2
+
+# ── Optional: WiFi-device per-device MQTT credentials ─────────
+# Broker host/port come from [homeassistant.mqtt]. mqtt_secret derives each
+# device's MqttUser (wifi-<id>) + MqttPassword; keep the toml 0600 (and mirror
+# into any vault that re-derives). `gdoc2netcfg wifi register-broker`
+# registers the pre-hashed logins on the broker.
+# mqtt_secret: high-entropy (openssl rand -hex 32).
+[wifi]
+mqtt_secret = ""
 
 # ── Optional: sensors2mqtt per-host MQTT credentials ─────────
 # Issues a per-host broker login for each `local` host in the Network sheet's

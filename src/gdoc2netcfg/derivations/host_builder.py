@@ -39,6 +39,8 @@ def _build_interface(record: DeviceRecord, site: Site) -> NetworkInterface:
         sheet_type = "Network"
     elif sheet_type.lower() == "iot":
         sheet_type = "IoT"
+    elif sheet_type.lower() == "wifi":
+        sheet_type = "WiFi"
 
     dhcp_name = compute_dhcp_name(record.machine, record.interface, sheet_type)
 
@@ -99,6 +101,8 @@ def build_hosts(records: list[DeviceRecord], site: Site) -> list[Host]:
             sheet_type = "Network"
         elif sheet_type.lower() == "iot":
             sheet_type = "IoT"
+        elif sheet_type.lower() == "wifi":
+            sheet_type = "WiFi"
 
         base_hostname = compute_hostname(record.machine, sheet_type)
 

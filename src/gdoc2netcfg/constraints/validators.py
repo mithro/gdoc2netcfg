@@ -16,7 +16,7 @@ from gdoc2netcfg.constraints.errors import (
 )
 from gdoc2netcfg.derivations.ipv6 import ipv4_to_ipv6_list
 from gdoc2netcfg.derivations.vlan import ip_to_vlan_id
-from gdoc2netcfg.models.addressing import IPv4Address
+from gdoc2netcfg.models.addressing import IPv4Address, MACAddress
 from gdoc2netcfg.models.host import Host, NetworkInventory
 from gdoc2netcfg.models.network import Site
 from gdoc2netcfg.sources.parser import DeviceRecord
@@ -243,12 +243,71 @@ def validate_record_constraints(hosts: list[Host], site: Site) -> ValidationResu
 # Cross-Record Constraints (on NetworkInventory)
 # ---------------------------------------------------------------------------
 
+def _is_cross_sheet_mirror(
+    macs: list[tuple[MACAddress, str]],
+    ip_str: str,
+    mac_to_hosts: dict[str, list[Host]],
+) -> bool:
+    """Is this IP's MAC collision a deliberate cross-sheet mirror?
+
+    A mirror is an IP Allocation row and a wifi-tab formula row recording
+    the SAME device twice under two hostnames (e.g. "wisp" from the
+    Network sheet, "wisp.wifi" from the WiFi sheet) — permanent by design,
+    not a data-entry error. It holds when every colliding record for this
+    IP pairs the identical MAC, and the owning hosts — restricted to hosts
+    that actually own an interface with that MAC on THIS ip_str, not
+    merely hosts that share the MAC via some other IP — share one
+    machine_name with exactly one owner per sheet_type (equivalently: as
+    many distinct hostnames as distinct sheet_types).
+
+    The per-sheet_type-one-owner requirement is what makes this
+    "cross-sheet" and excludes a same-sheet machine_name split, e.g. a BMC
+    row sharing machine_name with its parent (both sheet_type "Network",
+    see CLAUDE.md 'BMC Handling') — a copy-paste error giving a BMC its
+    parent's exact MAC+IP must still error, even when an unrelated
+    genuine mirror also happens to exist for the same machine_name+IP.
+
+    The per-IP restriction (rather than a MAC-global owner lookup) avoids
+    two failure modes: a genuine same-IP duplicate getting masked by an
+    unrelated host that merely reuses the MAC elsewhere, and a genuine
+    same-IP mirror getting wrongly rejected by such an unrelated host.
+    """
+    unique_macs = {str(mac) for mac, _ in macs}
+    if len(unique_macs) != 1:
+        return False
+
+    # Host isn't hashable (mutable dataclass with list fields), so dedupe
+    # by identity rather than using a set[Host].
+    owning_hosts: dict[int, Host] = {}
+    for mac_str in unique_macs:
+        for host in mac_to_hosts.get(mac_str, []):
+            if any(
+                str(iface.mac) == mac_str and str(iface.ipv4) == ip_str
+                for iface in host.interfaces
+            ):
+                owning_hosts[id(host)] = host
+
+    hostnames = {h.hostname for h in owning_hosts.values()}
+    machine_names = {h.machine_name for h in owning_hosts.values()}
+    sheet_types = {h.sheet_type for h in owning_hosts.values()}
+    return (
+        len(machine_names) == 1
+        and len(sheet_types) > 1
+        and len(hostnames) == len(sheet_types)
+    )
+
+
 def validate_cross_record_constraints(inventory: NetworkInventory) -> ValidationResult:
     """Validate cross-record constraints on the full inventory.
 
     Checks:
     - MAC address must not be assigned to multiple different IPs
-    - IP address uniqueness (multiple MACs on same IP only in roaming range)
+    - IP address uniqueness: multiple MACs on the same non-roaming IP are
+      allowed only when (a) all MACs belong to one host (e.g. a puck's
+      wan+lan interfaces sharing one fixed IP), or (b) the collision is a
+      deliberate cross-sheet mirror — see _is_cross_sheet_mirror() for the
+      exact predicate. Multiple MACs are always allowed in the roaming
+      range.
     """
     result = ValidationResult()
 
@@ -277,20 +336,47 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
                 field="mac_address",
             ))
 
-    # Multiple MACs per IP: only allowed in roaming range
+    # mac → hosts that own an interface with this MAC (normally exactly
+    # one, but a sheet copy-paste error can list the same MAC on two
+    # different hosts — track the full list, not last-writer-wins, so the
+    # collision is visible to the checks below).
+    mac_to_hosts: dict[str, list[Host]] = {}
+    for host in inventory.hosts:
+        for iface in host.interfaces:
+            mac_to_hosts.setdefault(str(iface.mac), []).append(host)
+
+    # Multiple MACs per IP: allowed in the roaming range, or when all MACs
+    # belong to one host (e.g. a multi-port endpoint like a puck's wan+lan
+    # interfaces sharing one fixed IP — this owner check stays MAC-global,
+    # matching a host across all its interfaces regardless of IP), or when
+    # the collision is a deliberate cross-sheet mirror (per-IP owners only
+    # — see _is_cross_sheet_mirror()).
     for ip_str, macs in inventory.ip_to_macs.items():
         is_roaming = roam_prefix and ip_str.startswith(roam_prefix)
-        if len(macs) > 1 and not is_roaming:
-            mac_list = ", ".join(f"{mac} ({name})" for mac, name in macs)
-            result.add(ConstraintViolation(
-                severity=Severity.ERROR,
-                code="ip_multiple_macs",
-                message=(
-                    f"Multiple MACs for non-roaming IP {ip_str}: {mac_list}"
-                ),
-                record_id=ip_str,
-                field="ip",
-            ))
+        if len(macs) <= 1 or is_roaming:
+            continue
+        owning_hostnames: set[str] = set()
+        has_unowned_mac = False
+        for mac, _ in macs:
+            hosts = mac_to_hosts.get(str(mac))
+            if not hosts:
+                has_unowned_mac = True
+            else:
+                owning_hostnames.update(h.hostname for h in hosts)
+        if not has_unowned_mac and len(owning_hostnames) == 1:
+            continue
+        if _is_cross_sheet_mirror(macs, ip_str, mac_to_hosts):
+            continue
+        mac_list = ", ".join(f"{mac} ({name})" for mac, name in macs)
+        result.add(ConstraintViolation(
+            severity=Severity.ERROR,
+            code="ip_multiple_macs",
+            message=(
+                f"Multiple MACs for non-roaming IP {ip_str}: {mac_list}"
+            ),
+            record_id=ip_str,
+            field="ip",
+        ))
 
     return result
 

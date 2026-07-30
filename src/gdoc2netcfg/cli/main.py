@@ -480,6 +480,10 @@ def _build_pipeline(config):
             hosts, db.discovery.load_latest_tasmota() if db else None,
         )
 
+        from gdoc2netcfg.derivations.wifi_data import enrich_hosts_with_wifi_data
+
+        enrich_hosts_with_wifi_data(hosts)
+
         # Validate
         result = validate_all(all_records, hosts, inventory)
 
@@ -626,6 +630,7 @@ def _get_generator(name: str):
         "nginx": ("gdoc2netcfg.generators.nginx", "generate_nginx"),
         "topology": ("gdoc2netcfg.generators.topology", "generate_topology"),
         "known_hosts": ("gdoc2netcfg.generators.known_hosts", "generate_known_hosts"),
+        "wifi": ("gdoc2netcfg.generators.wifi", "generate_wifi"),
     }
     if name not in generators:
         return None
@@ -2338,6 +2343,46 @@ def cmd_sensors2mqtt_status(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: wifi register-broker
+# ---------------------------------------------------------------------------
+
+
+def cmd_wifi_register_broker(args: argparse.Namespace) -> int:
+    """Register WiFi-device broker logins on the HA Mosquitto add-on."""
+    from gdoc2netcfg.derivations.wifi_credentials import PREFIX, build_logins
+    from gdoc2netcfg.supplements.mqtt_broker import register_logins
+
+    config = _load_config(args)
+
+    if not config.homeassistant.ssh_host:
+        print("Error: [homeassistant] ssh_host not configured", file=sys.stderr)
+        return 1
+
+    _records, hosts, _inventory, _result = _build_pipeline(config)
+
+    try:
+        logins = build_logins(config.wifi.mqtt_secret, hosts)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    verify = (
+        (config.homeassistant.mqtt.host, config.homeassistant.mqtt.port)
+        if not args.dry_run
+        else None
+    )
+    register_logins(
+        config.homeassistant.ssh_host,
+        PREFIX,
+        logins,
+        dry_run=args.dry_run,
+        prune=args.prune,
+        verify=verify,
+    )
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Subcommands: zigbee scan / show / update-sheet
 # ---------------------------------------------------------------------------
 
@@ -3062,6 +3107,19 @@ def main(argv: list[str] | None = None) -> int:
     reg.add_argument("--dry-run", action="store_true", help="Show changes without applying")
     reg.add_argument("--prune", action="store_true", help="Remove logins not in current host list")
 
+    # wifi (with subcommands)
+    wifi_parser = subparsers.add_parser(
+        "wifi", help="WiFi infrastructure MQTT credentials",
+    )
+    wifi_subparsers = wifi_parser.add_subparsers(dest="wifi_command")
+    wifi_rb = wifi_subparsers.add_parser(
+        "register-broker", help="Register WiFi-device broker logins on HA Mosquitto",
+    )
+    wifi_rb.add_argument("--dry-run", action="store_true", help="Show changes without applying")
+    wifi_rb.add_argument(
+        "--prune", action="store_true", help="Remove logins not in current device list",
+    )
+
     # zigbee (with subcommands)
     zigbee_parser = subparsers.add_parser(
         "zigbee", help="Zigbee2MQTT device scanning and sheet updates",
@@ -3225,6 +3283,14 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_sensors2mqtt_status(args)
         else:
             s2m_parser.print_help()
+            return 0
+
+    # Handle wifi subcommands
+    if args.command == "wifi":
+        if args.wifi_command == "register-broker":
+            return cmd_wifi_register_broker(args)
+        else:
+            wifi_parser.print_help()
             return 0
 
     # Handle reachability subcommands

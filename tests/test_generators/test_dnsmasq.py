@@ -174,6 +174,92 @@ class TestDnsmasqGenerator:
         assert "10.1.10.2" in result["bravo.conf"]
         assert "10.1.10.1" not in result["bravo.conf"]
 
+    def test_dhcp_wisp_type_suppresses_dhcp_host_lines(self):
+        """Type=DHCP:wisp hosts get no dhcp-host lines (DHCP served by wisp)."""
+        inv = _inventory_with_host("puck06", "aa:bb:cc:dd:ee:ff", "10.1.10.1", dhcp_name="puck06")
+        inv.hosts[0].extra["Type"] = "DHCP:wisp"
+        result = generate_dnsmasq_internal(inv)
+        output = result["puck06.conf"]
+
+        assert "dhcp-host=" not in output
+        # host-records / DNS entries are unaffected
+        assert "host-record=" in output
+
+    def test_dhcp_wisp_type_strips_whitespace(self):
+        """Stray whitespace around the Type value still triggers suppression."""
+        inv = _inventory_with_host("puck07", "aa:bb:cc:dd:ee:ff", "10.1.10.2", dhcp_name="puck07")
+        inv.hosts[0].extra["Type"] = " DHCP:wisp "
+        result = generate_dnsmasq_internal(inv)
+        output = result["puck07.conf"]
+
+        assert "dhcp-host=" not in output
+
+    def test_other_type_value_keeps_dhcp_host_lines(self):
+        """A Type value that is not a suppressing value is unaffected."""
+        inv = _inventory_with_host("iot1", "aa:bb:cc:dd:ee:ff", "10.1.10.3", dhcp_name="iot1")
+        inv.hosts[0].extra["Type"] = "DHCP"
+        result = generate_dnsmasq_internal(inv)
+        output = result["iot1.conf"]
+
+        assert "dhcp-host=" in output
+
+    def test_dhcp_wisp_type_lowercase_suppresses_dhcp_host_lines(self):
+        """Type comparison is case-insensitive: 'dhcp:wisp' also suppresses."""
+        inv = _inventory_with_host("puck08", "aa:bb:cc:dd:ee:ff", "10.1.10.4", dhcp_name="puck08")
+        inv.hosts[0].extra["Type"] = "dhcp:wisp"
+        result = generate_dnsmasq_internal(inv)
+        output = result["puck08.conf"]
+
+        assert "dhcp-host=" not in output
+        assert "host-record=" in output
+
+    def test_static_type_suppresses_dhcp_host_lines(self):
+        """Type=static hosts get no dhcp-host lines (statically-configured address)."""
+        inv = _inventory_with_host("wisp", "aa:bb:cc:dd:ee:ff", "10.1.10.5", dhcp_name="wisp")
+        inv.hosts[0].extra["Type"] = "static"
+        result = generate_dnsmasq_internal(inv)
+        output = result["wisp.conf"]
+
+        assert "dhcp-host=" not in output
+        # host-records / DNS entries are unaffected
+        assert "host-record=" in output
+
+    def test_static_type_titlecase_suppresses_dhcp_host_lines(self):
+        """Type=Static (title case) also suppresses."""
+        inv = _inventory_with_host("ten64", "aa:bb:cc:dd:ee:ff", "10.1.10.6", dhcp_name="ten64")
+        inv.hosts[0].extra["Type"] = "Static"
+        result = generate_dnsmasq_internal(inv)
+        output = result["ten64.conf"]
+
+        assert "dhcp-host=" not in output
+
+    def test_static_type_uppercase_suppresses_dhcp_host_lines(self):
+        """Type=STATIC (upper case) also suppresses."""
+        inv = _inventory_with_host("tenwrt", "aa:bb:cc:dd:ee:ff", "10.1.10.7", dhcp_name="tenwrt")
+        inv.hosts[0].extra["Type"] = "STATIC"
+        result = generate_dnsmasq_internal(inv)
+        output = result["tenwrt.conf"]
+
+        assert "dhcp-host=" not in output
+
+    def test_blank_type_keeps_dhcp_host_lines(self):
+        """An empty Type value is unaffected — the binding is still emitted."""
+        inv = _inventory_with_host("iot2", "aa:bb:cc:dd:ee:ff", "10.1.10.8", dhcp_name="iot2")
+        inv.hosts[0].extra["Type"] = ""
+        result = generate_dnsmasq_internal(inv)
+        output = result["iot2.conf"]
+
+        assert "dhcp-host=" in output
+
+    def test_absent_type_keeps_dhcp_host_lines(self):
+        """No Type key at all is unaffected — the binding is still emitted."""
+        inv = _inventory_with_host("iot3", "aa:bb:cc:dd:ee:ff", "10.1.10.9", dhcp_name="iot3")
+        assert "Type" not in inv.hosts[0].extra
+        result = generate_dnsmasq_internal(inv)
+        output = result["iot3.conf"]
+
+        assert "dhcp-host=" in output
+
     def test_all_record_types_in_single_file(self):
         host = _host_with_iface("server", "aa:bb:cc:dd:ee:ff", "10.1.10.1", dhcp_name="server")
         host.sshfp_records = ["server IN SSHFP 1 2 abc123"]

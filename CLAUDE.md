@@ -41,6 +41,8 @@ uv run gdoc2netcfg tasmota show            # Show cached Tasmota device data
 uv run gdoc2netcfg tasmota configure --dry-run --all  # Preview config changes
 uv run gdoc2netcfg tasmota configure <host>      # Push config to a specific device
 uv run gdoc2netcfg tasmota ha-status       # Check Home Assistant integration
+uv run gdoc2netcfg tasmota register-broker --dry-run  # Preview Tasmota broker login changes
+uv run gdoc2netcfg wifi register-broker --dry-run     # Preview WiFi-device broker login changes
 uv run gdoc2netcfg zigbee scan --force     # Scan Zigbee2MQTT sites via MQTT
 uv run gdoc2netcfg zigbee show             # Show cached Zigbee device data
 uv run gdoc2netcfg zigbee update-sheet --dry-run  # Preview Zigbee sheet updates
@@ -76,7 +78,9 @@ The system is a data pipeline in `src/gdoc2netcfg/`:
 
 ```
 Sources (sources/)     Fetch CSV from Google Sheets, cache locally, parse into DeviceRecord
-    │                  Also parses VLAN Allocations sheet (vlan_parser.py)
+    │                  One parser handles Network/IoT/WiFi sheets alike (sheet_type
+    │                  drives the hostname suffix — WiFi gets `.wifi`, same as `.iot`);
+    │                  also parses VLAN Allocations sheet (vlan_parser.py)
     │
 Derivations (derivations/)  Pure functions: IPv4→IPv6, IP→VLAN, hostname, DHCP name, DNS names,
     │                        default IP, hardware type detection, site IP remapping
@@ -113,6 +117,94 @@ The CLI (`cli/main.py`) wires the pipeline via `_build_pipeline()` which returns
 ### BMC Handling
 
 BMCs (Baseboard Management Controllers) are physically separate machines attached to a primary host. When a spreadsheet row has interface="bmc" on machine="big-storage", `build_hosts()` creates a separate host `bmc.big-storage` — not a sub-interface. The BMC gets its own hostname, DNS records, DHCP binding, and PTR entry.
+
+### WiFi Sheet Hosts (gale pucks + OpenMesh APs + VLAN-4 infra mirrors)
+
+The `wifi` sheet (`[sheets] wifi` in `gdoc2netcfg.toml`, fetched by BOTH sites) is parsed
+by the standard CSV parser — there is no bespoke source module. Rows get `sheet_type="WiFi"`
+and a `.wifi` hostname/DHCP-name suffix (`dns_names.py`), exactly like `.iot`. Per-record
+Site filtering (`derivations/ip_remap.py`) gives each site only its own rows: welland gets
+the 12 fleet pucks + its 2 welland OpenMesh APs + its three `ten64.wifi`/`wisp.wifi`/
+`tenwrt.wifi` VLAN-4 mirrors (see below); monarto gets its 4 OpenMesh APs + its own three
+mirrors.
+
+**WiFi-sheet-only Site carry-forward** (`sources/parser.py::parse_csv`): the tab's Site
+column is merged per host block in the live spreadsheet (`wifi-sheet-format.py`), so a
+merged cell's value exports only on its anchor (first) row of the published CSV — covered
+rows read blank. `parse_csv` inherits the immediately preceding row's Site onto a blank-Site
+row when that row's machine name matches (a contiguous same-machine block); a genuinely
+blank first row of a block stays blank (all-sites). This inheritance is gated on
+`sheet_name.lower() == "wifi"` only — other sheets (e.g. `Welland - IP Allocation`) keep
+strictly per-row Site semantics, since they legitimately mix a non-blank anchor with blank
+all-sites continuation rows for the same machine; global inheritance there would silently
+drop those records from every other site's inventory.
+
+OpenWRT fleet puck rows carry two interfaces per host (`wan` + `lan`) sharing one fixed IPv4 — an
+exception in `ip_multiple_macs` (`constraints/validators.py`) allows multiple MACs on
+one IP when every MAC belongs to the same host. Fleet puck rows also carry `#` (puck number,
+never merged — present on both interface rows in the published CSV) and `Serial` (one of the
+six columns `wifi-sheet-format.py` merges per host block, so post-format it only exports on
+the wan/anchor row) extra columns; `host_builder.py::build_hosts()` takes a host's `extra`
+dict from `group[0]`, the FIRST record encountered for that host — the wan row, since it
+precedes lan in the sheet — so puck identity depends on wan-row-first ordering, not on
+Serial being duplicated onto the lan row. `wifi_data.py::enrich_hosts_with_wifi_data()`
+attaches a `WifiData(number, serial)` to `host.wifi_data` from those `group[0]` extras. Rows with
+neither column (the OpenMesh APs and the VLAN-4 infra rows below) get no `wifi_data` and
+stay out of `pucks.json`; rows with them must be machine-named `puckNN` matching `#` (checked
+in `enrich_hosts_with_wifi_data()`, every run) and carry both `wan`/`lan` interfaces
+(checked in `generators/wifi.py::_puck_entry`, at generate time). Today all 12 fleet
+pucks (`puck01`–`puck12`) qualify.
+`generators/wifi.py` iterates hosts with `wifi_data` set to emit `wisp/pucks.json`
+(see `[generators.wifi]` in the toml — WELLAND ONLY regardless of which sites fetch the
+sheet — and *Models* below).
+
+**VLAN-4 infra mirror rows** (`ten64`, `wisp`, `tenwrt`; one row per machine per site, six
+rows total): these record the SAME devices already present in `Welland - IP Allocation`
+under their `ten64`/`wisp`/`tenwrt` Network-sheet hostnames, permanently and deliberately.
+`wifi-sheet-migrate.py`'s `populate` phase writes their MAC/IP as spreadsheet formulas
+pulling from the IP Allocation VLAN-4 rows (single-source maintenance, matched by
+Site+Machine+VLAN==4 content, never a fixed row/column — see the script's module docstring);
+the published CSV exports the evaluated (site-literal) values. Each site therefore gains
+three extra WiFi-sheet hosts, `ten64.wifi`/`wisp.wifi`/`tenwrt.wifi`, alongside the
+pre-existing `ten64`/`wisp`/`tenwrt` Network-sheet hosts — identical MAC+IP under two
+hostnames. This is a deliberate, additive carve-out in `ip_multiple_macs`
+(`constraints/validators.py::_is_cross_sheet_mirror`): the collision is accepted only when
+every colliding record on that IP shares one MAC, the owning hosts share one `machine_name`,
+and there is exactly one owning host per `sheet_type` — so a genuine same-sheet copy-paste
+error (e.g. a BMC row accidentally cloning its parent's exact MAC+IP) still errors even when
+an unrelated genuine mirror coexists for the same machine_name. `mac_duplicate_ip` needs no
+carve-out — it only fires when one MAC maps to multiple *distinct* IPs, which an
+identical-pair mirror can never trigger.
+
+`ten64`/`wisp` infra rows set `Type=static` (address configured on the device itself);
+`tenwrt` infra rows set `Type=DHCP:wisp` like the pucks (DHCP-served by wisp's
+gwifi-netboot). `_host_dhcp_config()` in `generators/dnsmasq.py` checks the `Type` extra
+column case-insensitively and skips `dhcp-host` bindings entirely for `DHCP:wisp` (DHCP for
+that VLAN is served elsewhere, not ten64's dnsmasq) or `static` (a second binding for an
+address already bound elsewhere is a FATAL dnsmasq startup error). A/PTR and other DNS
+records still generate normally through the shared sections; only the DHCP binding is
+suppressed.
+
+Two one-off scripts support the live-sheet migration onto this `wifi` tab (see each
+script's module docstring for full phase/flag details — this is sheet surgery, not
+something run as part of the normal pipeline):
+
+- `scripts/wifi-sheet-migrate.py` — phased (`create`/`populate`/`rewrite-refs`/
+  `delete-old-rows`/`verify`) migration of gale puck + OpenMesh AP rows out
+  of the old `Google WiFi Pucks`/`Welland - IP Allocation` tabs into
+  `wifi.welland`; `populate` also overlays each OpenMesh row's Site and appends
+  the six VLAN-4 infra rows described above.
+- `scripts/wifi-sheet-scan.py` — read-only cross-tab formula and `#REF!` scanner
+  used by the `verify` phase above to confirm nothing broke before/after the move.
+- `scripts/wifi-sheet-format.py` — idempotent house-style formatter for the tab
+  (banding, borders, grid trim, and vertically merging six per-host columns — Site,
+  Physical Location, Hardware, Controlled By, Serial, Notes / Comments — over every
+  2+-row machine block); re-run it after every `populate` (populate's row builders
+  don't distinguish anchor from covered rows — e.g. puck rows write all six columns
+  per-row, OpenMesh rows write Site+Hardware per-row from the machine-level overlay/
+  hardware-map — so a populate-without-format intermediate state duplicates values the
+  formatter's merge then collapses back down to each block's anchor row, which is what
+  the carry-forward parser above expects to see on the published CSV).
 
 ### IPv4→IPv6 Mapping
 
@@ -167,6 +259,7 @@ Both inherit `BaseDatabase` (`storage/base.py`): DELETE journal mode, schema ver
 - `NetworkInventory` — the complete enriched model passed to generators
 - `VLAN`, `Site` — network topology definitions in `models/network.py`, loaded from config + VLAN Allocations sheet
 - `PortLinkStatus`, `PortTrafficStats`, `SwitchData`, `SwitchDataSource` — unified switch data model in `models/switch_data.py`, populated from SNMP or NSDP sources
+- `WifiData` (`number`, `serial`) — WiFi-device identity attached to `host.wifi_data` by `derivations/wifi_data.py`; **sheet-sourced** (from the WiFi sheet's `#`/`Serial` extra columns), unlike the scan-sourced `host.tasmota_data` (populated by the `tasmota scan` supplement)
 
 **Credential columns**: The spreadsheet may include extra columns such as `Password`, `SNMP Community`, `IPMI Username`, `IPMI Password`. These are **stripped from the world-readable cache at fetch time** and stored in the root-only `.cache/credentials.db` (see *SQLite Storage*) — they are NOT present in `Host.extra` from the cache. The `password` CLI command merges them transiently from the store onto the matched host before resolving the requested field (and so must run as root). Non-credential extra columns remain in `Host.extra` as normal.
 
@@ -238,12 +331,12 @@ Deployed on two sites, both at `/opt/gdoc2netcfg/`:
 
 | Site | Host | IP scheme | IPv6 prefix | Generators |
 |------|------|-----------|-------------|------------|
-| welland | `ten64.welland.mithis.com` (10.1.10.1) | `10.1.X.X` | `2404:e80:a137:1XX::` | internal, external, nginx, known_hosts (+ nagios, currently unused) |
+| welland | `ten64.welland.mithis.com` (10.1.10.1) | `10.1.X.X` | `2404:e80:a137:1XX::` | internal, external, nginx, known_hosts, wifi (+ nagios, currently unused) |
 | monarto | `ten64.monarto.mithis.com` (10.2.10.1) | `10.2.X.X` | `2404:e80:a137:2XX::` | internal, external, nginx |
 
 Both sites share the same Google Spreadsheet. The spreadsheet uses `10.X.Y.Z` (literal `X` in the second octet) for devices that exist at multiple sites, and a "Site" column to restrict records to a specific site. The `site_octet` in each site's `gdoc2netcfg.toml` replaces the `X` placeholder.
 
-Both sites are externally accessible (each sets its own `public_ipv4`) and run split-horizon DNS (internal **and** external dnsmasq) plus an nginx reverse proxy. The differences: welland additionally enables the `letsencrypt` generator (per-host DNS-01 certs) and `known_hosts`, whereas monarto manages its TLS certs with **certbot directly** (its `letsencrypt` generator is not enabled — see *Let's Encrypt* below). Welland's config also lists the `nagios` generator, but it is **currently unused** — nothing consumes its `nagios-switches.cfg` output.
+Both sites are externally accessible (each sets its own `public_ipv4`) and run split-horizon DNS (internal **and** external dnsmasq) plus an nginx reverse proxy. The differences: welland additionally enables the `letsencrypt` generator (per-host DNS-01 certs), `known_hosts`, and `wifi` (emits `wisp/pucks.json` — the gale puck fleet is welland-only, so monarto never enables this generator even though it now fetches the `wifi` sheet itself for its own OpenMesh/infra hosts — see *WiFi Sheet Hosts*), whereas monarto manages its TLS certs with **certbot directly** (its `letsencrypt` generator is not enabled — see *Let's Encrypt* below). Welland's config also lists the `nagios` generator, but it is **currently unused** — nothing consumes its `nagios-switches.cfg` output.
 
 ### Deploying code changes
 
@@ -349,6 +442,36 @@ The two sites forward DNS queries to each other via WireGuard tunnel (`10.98.2.1
 ### nginx
 
 Generated nginx configs are deployed to `/etc/nginx/gdoc2netcfg/` (per-host directories under `sites-available/`, plus `scripts/`, `conf.d/`, `stream.d/` for healthcheck infrastructure). Hosts are activated via symlinks: `ln -s /etc/nginx/gdoc2netcfg/sites-available/{fqdn} /etc/nginx/sites-enabled/{fqdn}`. Deployed on **both sites** (welland and monarto).
+
+### Per-device MQTT broker credentials (tasmota / wifi)
+
+Two independent `[section] mqtt_secret` consumers derive per-device broker
+logins against the same `[homeassistant.mqtt]` Mosquitto add-on, both via the
+shared `derivations/mqtt_credentials.py` core (`username`/`password`/
+`check_collisions`/`require_strong_secret`):
+
+- `[tasmota]` — one login per Tasmota IoT device (`tas-<id>`), pushed to the
+  device itself by `tasmota configure` (see below).
+- `[wifi]` (`derivations/wifi_credentials.py`, prefix `wifi-`) — one login
+  per WiFi-sheet host in THAT SITE's inventory (`sheet_type == "WiFi"`;
+  `build_logins()` runs over one site's already-filtered hosts, not the
+  whole sheet — see *WiFi Sheet Hosts* above): welland registers 17
+  (its 12 fleet pucks + its 2 welland OpenMesh APs, ab-38/96-00 + its 3
+  VLAN-4 infra mirrors, including `wisp.wifi`), monarto registers 7 (its
+  4 OpenMesh APs + its own 3 infra mirrors — no pucks; no site ever sees
+  all 6 OpenMesh APs). The OpenMesh APs can't consume the login yet (no
+  MQTT client on them), and the infra mirrors aren't standalone
+  MQTT-capable devices either — all registered anyway as deliberate
+  spares, the same precedent as the sensors2mqtt SDR Pis.
+
+`wifi` only *registers* logins on the broker (`gdoc2netcfg wifi
+register-broker`, `--dry-run`-able) — unlike Tasmota, nothing here pushes
+the credential to the consuming service; the device side must be
+configured out-of-band with the same derived `MqttUser`/`MqttPassword`
+(re-derivable from the same `mqtt_secret`). `mqtt_secret` is high-entropy
+(`openssl rand -hex 32`), lives only in the gitignored `gdoc2netcfg.toml`
+(kept `0600`), and must be mirrored into any vault that independently
+re-derives the same logins.
 
 ### Tasmota remote syslog
 

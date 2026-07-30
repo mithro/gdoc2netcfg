@@ -35,7 +35,8 @@ class TestLoadConfig:
 
         # Reserved settings keys must not leak into the sheet-URL list,
         # and the example's [sheets] creds must parse into SheetsConfig.
-        assert set(sheet_names) == {"network", "iot", "vlan_allocations", "sites"}
+        assert set(sheet_names) == {
+            "network", "iot", "vlan_allocations", "sites", "wifi"}
         assert config.sheets_config.credentials_file == ""
         assert config.sheets_config.token_cache == ".cache/google_oauth_token.json"
 
@@ -206,3 +207,22 @@ class TestSensors2mqttConfig:
         c = load_config(self._write(tmp_path, '[site]\nname="t"\ndomain="t.example"\n'))
         assert c.sensors2mqtt.mqtt_secret == ""
         assert c.sensors2mqtt.freshness_seconds == 900
+
+
+class TestWifiConfig:
+    def _write(self, tmp_path, body):
+        p = tmp_path / "gdoc2netcfg.toml"
+        p.write_text(body)
+        return p
+
+    def test_parsed(self, tmp_path):
+        from gdoc2netcfg.config import load_config
+        c = load_config(self._write(tmp_path,
+            '[site]\nname="t"\ndomain="t.example"\n\n'
+            '[wifi]\nmqtt_secret="s"\n'))
+        assert c.wifi.mqtt_secret == "s"
+
+    def test_defaults(self, tmp_path):
+        from gdoc2netcfg.config import load_config
+        c = load_config(self._write(tmp_path, '[site]\nname="t"\ndomain="t.example"\n'))
+        assert c.wifi.mqtt_secret == ""

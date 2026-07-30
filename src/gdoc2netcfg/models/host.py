@@ -330,6 +330,27 @@ class TasmotaData:
     controls: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class WifiData:
+    """Typed WiFi-device identity lifted from the WiFi sheet's extra columns.
+
+    Populated by the wifi_data derivation from the `#` (puck number) and
+    `Serial` extra columns present on WiFi-sheet rows. Present only on
+    netboot-managed devices (today: the gale-puck fleet), whose two
+    interface rows carry identical values via sheet formulas. The `#`
+    column also fixes the machine name (a row with `#`=N must be named
+    `puckNN`), so today only gale pucks can carry it. Rows that carry no
+    `#`/`Serial` (e.g. the OpenMesh APs) leave `wifi_data` as None.
+
+    Attributes:
+        number: Device number parsed from the `#` column (1..99).
+        serial: Device serial number from the `Serial` column.
+    """
+
+    number: int
+    serial: str
+
+
 @dataclass
 class Host:
     """A logical host with one or more network interfaces.
@@ -365,6 +386,7 @@ class Host:
     nsdp_data: NSDPData | None = None
     switch_data: SwitchData | None = None
     tasmota_data: TasmotaData | None = None
+    wifi_data: WifiData | None = None
 
     @property
     def first_ipv4(self) -> IPv4Address | None:

@@ -25,6 +25,7 @@ from gdoc2netcfg.generators.dnsmasq_common import (
     _ipv6_for_ip,
     _ipv6_to_ptr,
     _most_specific_fqdn,
+    dhcp_suppressed,
     host_record_config,
     identity_ipv4,
     sections_to_text,
@@ -120,6 +121,9 @@ def _anchored_caa(host: Host, net: str, inventory: NetworkInventory) -> list[str
 
 def _net_dhcp_config(host: Host, net: str, inventory: NetworkInventory) -> list[str]:
     """dhcp-host entries for the host's interfaces on this net."""
+    if dhcp_suppressed(host):
+        return []
+
     vis = _net_virtual_interfaces(host, net, inventory.site)
     if not vis:
         return []

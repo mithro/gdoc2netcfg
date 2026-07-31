@@ -86,7 +86,7 @@ class TestRsyslogConf:
         assert ('string="/var/log/wifi/%hostname:::secpath-replace%.log"') in conf
         assert 'fileOwner="root" fileGroup="adm"' in conf
         assert 'fileCreateMode="0640" dirCreateMode="0755"' in conf
-        assert conf.count("    stop") == 3
+        assert conf.count("    stop") == 6
 
     def test_transition_input_10514_targets_remote_net(self):
         conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
@@ -109,6 +109,42 @@ class TestRsyslogConf:
         inv = _inventory([_leg("br-tmp", "04", "10.1.1.1")])
         with pytest.raises(ValueError):
             generate_rsyslog(inv)
+
+
+class TestNetconsole:
+    def test_kernel_input_per_served_leg_on_6666(self):
+        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
+        assert ('input(type="imudp" port="6666" address="10.1.4.1" '
+                'ruleset="remote-wifi-kernel")') in conf
+        assert ('input(type="imudp" port="6666" address="10.1.5.1" '
+                'ruleset="remote-net-kernel")') in conf
+        assert ('input(type="imudp" port="6666" address="10.1.90.1" '
+                'ruleset="remote-iot-kernel")') in conf
+        assert conf.count('port="6666"') == 3
+
+    def test_kernel_dynafile_keys_on_fromhost_with_kernel_suffix(self):
+        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
+        # sender reverse-DNS, NOT %hostname% — netconsole payloads carry none
+        assert ('string="/var/log/wifi/%fromhost:::secpath-replace%'
+                '.kernel.log"') in conf
+        assert conf.count("%fromhost:::secpath-replace%.kernel.log") == 3
+
+    def test_kernel_line_template_defined_once_stamps_arrival_and_rawmsg(self):
+        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
+        assert conf.count('template(name="KernelLine"') == 1
+        assert "%timegenerated:::date-rfc3339%" in conf
+        # literal backslash-n in the emitted config (rsyslog escape, not Python's)
+        assert r"%rawmsg:::drop-last-lf%\n" in conf
+
+    def test_kernel_actions_use_kernel_line_template(self):
+        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
+        assert conf.count('template="KernelLine"') == 3
+
+    def test_kernel_rulesets_isolated_and_tmp_guest_excluded(self):
+        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
+        assert conf.count('-kernel") {') == 3
+        assert "remote-tmp-kernel" not in conf
+        assert "remote-guest-kernel" not in conf
 
 
 class TestLogrotate:

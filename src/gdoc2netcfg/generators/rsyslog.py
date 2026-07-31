@@ -17,6 +17,18 @@ directory; dynafile dirs are auto-created (0755, files root:adm 0640).
 A transition input on 10514 feeds remote-net so existing switch/wisp
 senders keep logging until they are re-pointed at <net-leg>:514
 (dropping it is a documented follow-up, spec §out-of-scope).
+
+Kernel netconsole capture rides the same file: one leg-bound imudp input
+per served net on UDP 6666 (the fleet's netconsole port), ruleset
+remote-<net>-kernel, files /var/log/<net>/<sender>.kernel.log. Netconsole
+payloads are raw printk — no syslog header, no hostname — so filenames
+key on the sender's reverse-DNS name (fromhost; PTR coverage comes from
+the DNS stack, unresolvable senders degrade to their bare IP) and the
+shared KernelLine template stamps wall-clock arrival next to the raw
+payload (whose level,seq,monotonic-ts prefix survives for gap
+detection). Receive-only for now: the pucks still stream to wisp:6666;
+re-pointing them (and retiring wisp's receiver) is a documented
+follow-up, like the 10514 transition input.
 """
 
 from __future__ import annotations
@@ -34,6 +46,14 @@ _HEADER = """\
 # hand-written tasmota.conf + z-network-switches.conf (this file now
 # performs the single allowed imudp module load).
 module(load="imudp")
+
+# Kernel netconsole capture: raw printk datagrams (no syslog header, no
+# hostname) arrive on UDP 6666, one leg-bound input per served net.
+# Filenames key on the sender's reverse-DNS name; each line is stamped
+# with wall-clock arrival time (the payload carries only the extended
+# netconsole level,seq,monotonic-ts prefix, preserved for gap detection).
+template(name="KernelLine" type="string"
+         string="%timegenerated:::date-rfc3339% %rawmsg:::drop-last-lf%\\n")
 """
 
 _TRANSITION = """\
@@ -71,6 +91,21 @@ ruleset(name="remote-{net}") {{
     stop
 }}
 input(type="imudp" port="514" address="{addr}" ruleset="remote-{net}")
+"""
+
+
+def _kernel_block(net: str, addr: str) -> str:
+    """Netconsole template + ruleset + leg-bound :6666 input for one net."""
+    return f"""\
+template(name="KernelLog-{net}" type="string"
+         string="/var/log/{net}/%fromhost:::secpath-replace%.kernel.log")
+ruleset(name="remote-{net}-kernel") {{
+    action(type="omfile" dynaFile="KernelLog-{net}" template="KernelLine"
+           fileOwner="root" fileGroup="adm"
+           fileCreateMode="0640" dirCreateMode="0755")
+    stop
+}}
+input(type="imudp" port="6666" address="{addr}" ruleset="remote-{net}-kernel")
 """
 
 
@@ -124,7 +159,9 @@ def generate_rsyslog(inventory: NetworkInventory) -> dict[str, str]:
         )
 
     parts = [_HEADER]
-    parts.extend(_net_block(net, legs[net]) for net in sorted(legs))
+    for net in sorted(legs):
+        parts.append(_net_block(net, legs[net]))
+        parts.append(_kernel_block(net, legs[net]))
     parts.append(_TRANSITION)
     return {
         "rsyslog.d/remote-logs.conf": "\n".join(parts),

@@ -561,8 +561,8 @@ Where each sender class lands:
   `/var/log/wifi/wisp.log` (it lives on the wifi net).
 - **Pucks + tenwrt** → `/var/log/wifi/` — the OpenWISP
   `ansells-aps-base` template (gwifi-openwrt repo) pushes
-  `log_ip`/`log_port`/`log_proto`. Kernel netconsole is separate and
-  unchanged: crash forensics stays on wisp:6666 (`netconsole_rx`), now
+  `log_ip`/`log_port`/`log_proto`. Kernel netconsole's **sender side** is
+  unchanged: the pucks still stream to wisp:6666 (`netconsole_rx`), now
   unpolluted by device syslog.
 
 `scripts/migrate-remote-syslog.py` is the one-off per-site migration,
@@ -588,6 +588,18 @@ automatically — but as with other heavyweight upgrades, stop
 `gdoc2netcfg-reachability.service` first and restart it afterwards, to
 avoid the known crash-loop gotcha where the daemon hits the DB mid
 schema-upgrade.
+
+The same drop-in also receives **kernel netconsole** (raw printk, no
+syslog header): one leg-bound input per served net on UDP 6666 into
+`/var/log/<net>/<sender>.kernel.log`, filename keyed on the sender's
+reverse-DNS name, each line stamped with wall-clock arrival ahead of the
+raw payload (the extended-netconsole `level,seq,ts,-;` prefix survives,
+so message drops show as sequence gaps). The per-net logrotate globs
+(`*.log`) cover these files — no extra stanzas. Receive-only today: the
+gale pucks still stream netconsole to wisp:6666 (`gwifi-netconsole.service`);
+re-pointing them at a ten64 leg and retiring the wisp receiver is a
+documented follow-up (gwifi-openwrt image + live push), like the 10514
+transition input.
 
 ### Let's Encrypt
 

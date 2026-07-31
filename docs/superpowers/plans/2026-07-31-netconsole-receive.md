@@ -245,7 +245,11 @@ Claude-Session: https://claude.ai/code/session_01BSHiudkQxHncLaoZeKPMDt"
 
 - [ ] **Step 1: Add the netconsole paragraph to CLAUDE.md**
 
-Locate the `### Per-net remote syslog` section (added by the earlier syslog work — `grep -n "Per-net remote syslog" CLAUDE.md`). Append this paragraph at the END of that section, after the migration-procedure text:
+Locate the `### Per-net remote syslog` section (added by the earlier syslog work — `grep -n "Per-net remote syslog" CLAUDE.md`). Two edits:
+
+**(a)** That section contains the sentence "Kernel netconsole is separate and unchanged: crash forensics stays on wisp:6666 (`netconsole_rx`), now unpolluted by device syslog." — now stale (ten64 *does* receive netconsole, even if nothing sends yet). Replace that sentence with: "Kernel netconsole's **sender side** is unchanged: the pucks still stream to wisp:6666 (`netconsole_rx`), now unpolluted by device syslog."
+
+**(b)** Append this paragraph at the END of the section, immediately before the next `###` heading:
 
 ```markdown
 The same drop-in also receives **kernel netconsole** (raw printk, no

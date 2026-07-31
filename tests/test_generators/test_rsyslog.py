@@ -166,6 +166,16 @@ class TestLogrotate:
         assert "/var/log/tmp/" not in rot
         assert "/var/log/guest/" not in rot
 
+    def test_logrotate_untouched_by_netconsole(self):
+        # The /var/log/<net>/*.log globs already match *.kernel.log — the
+        # kernel files ride the same 1-year-floor stanzas. Pin: no
+        # kernel-specific stanza, and exactly one glob per served net.
+        rot = generate_rsyslog(_default_inventory())["logrotate.d/remote-logs"]
+        assert "kernel" not in rot
+        assert rot.count("/var/log/") == 3
+        for net in ("wifi", "net", "iot"):
+            assert rot.count(f"/var/log/{net}/*.log {{") == 1
+
 
 class TestRegistry:
     def test_rsyslog_resolves_in_cli_registry(self):

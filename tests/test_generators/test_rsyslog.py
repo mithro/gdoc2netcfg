@@ -122,12 +122,40 @@ class TestNetconsole:
                 'ruleset="remote-iot-kernel")') in conf
         assert conf.count('port="6666"') == 3
 
-    def test_kernel_dynafile_keys_on_fromhost_with_kernel_suffix(self):
+    def test_kernel_dynafile_keys_on_extracted_short_name(self):
         conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
-        # sender reverse-DNS, NOT %hostname% — netconsole payloads carry none
-        assert ('string="/var/log/wifi/%fromhost:::secpath-replace%'
+        # the short name is extracted into $.short (see below), so the
+        # dynafile keys on that — still secpath-guarded, because the
+        # no-match fallback puts the raw sender name in there.
+        assert ('string="/var/log/wifi/%$.short:::secpath-replace%'
                 '.kernel.log"') in conf
-        assert conf.count("%fromhost:::secpath-replace%.kernel.log") == 3
+        assert conf.count("%$.short:::secpath-replace%.kernel.log") == 3
+
+    def test_kernel_extracts_short_name_from_sender_reverse_dns(self):
+        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
+        # netconsole payloads carry no hostname, so the name comes from the
+        # sender's PTR — which in this estate is ipv4-prefixed
+        # (ipv4.wisp.wifi.welland.mithis.com). Take the first real label so
+        # kernel files sit next to their syslog siblings (wisp.kernel.log
+        # beside wisp.log). Literal dots as [.] keep the conf backslash-free.
+        assert conf.count(
+            'set $.short = re_extract($fromhost, '
+            '"^(ipv4[.]|ipv6[.])?([a-zA-Z][a-zA-Z0-9-]*)[.]", 0, 2, "");'
+        ) == 3
+
+    def test_kernel_falls_back_to_full_sender_when_regex_misses(self):
+        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
+        # rsyslog's own no-match modes are useless here: DFLT yields the
+        # literal "**NO MATCH**", collapsing every PTR-less sender into one
+        # file. An explicit fallback keeps e.g. 10.1.4.99.log distinct.
+        assert conf.count('if $.short == "" then') == 3
+        assert conf.count("set $.short = $fromhost;") == 3
+
+    def test_kernel_name_extraction_precedes_the_write(self):
+        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
+        block = conf[conf.index('ruleset(name="remote-wifi-kernel")'):]
+        block = block[:block.index("input(")]
+        assert block.index("re_extract") < block.index("action(")
 
     def test_kernel_line_template_defined_once_stamps_arrival_and_rawmsg(self):
         conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]

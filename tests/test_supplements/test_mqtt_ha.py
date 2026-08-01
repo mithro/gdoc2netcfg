@@ -1,6 +1,8 @@
 """Tests for the MQTT HA discovery publisher."""
 
 import json
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -25,6 +27,7 @@ from gdoc2netcfg.supplements.mqtt_ha import (
     _iface_entities,
     _iface_entity_state_topic,
     _iface_slug,
+    _publish_hosts_to_client,
     build_host_state,
     build_interface_state,
     discovery_payload,
@@ -1083,3 +1086,24 @@ class TestHostDirectoryPublishing:
         ]
         # "big-storage" maps to itself (machine_name == hostname), so 1 entry
         assert state_call[0].args[1] == "1"
+
+
+# ---------------------------------------------------------------------------
+# stop_event short-circuit in _publish_hosts_to_client
+# ---------------------------------------------------------------------------
+
+def test_publish_stop_event_short_circuits_discovery_wait():
+    """A pre-set stop_event must short-circuit the 2-second discovery wait."""
+    client = MagicMock()
+    host = _make_host()
+    hr = _make_reachability()
+    stop_event = threading.Event()
+    stop_event.set()  # pre-set so wait(2) returns immediately
+
+    t0 = time.monotonic()
+    _publish_hosts_to_client(client, [host], {"big-storage": hr}, stop_event=stop_event)
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < 1.0, (
+        f"Expected < 1s but took {elapsed:.3f}s — stop_event did not short-circuit"
+    )

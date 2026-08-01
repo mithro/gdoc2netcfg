@@ -65,12 +65,33 @@ into the same `etc/rsyslog.d/remote-logs.conf`:
 Three properties differ from the syslog blocks, all forced by the
 payload shape:
 
-- **Filename keys on `%fromhost%`** — the sender's reverse-DNS name (the
-  payload has no hostname). The DNS stack gives ten64 complete PTR
-  coverage, and rsyslog's default `preserveFQDN=off` shortens
-  `puck07.wifi.welland.mithis.com` to `puck07`, aligning with the syslog
-  file next door. An unresolvable sender falls back to its bare IP —
-  degraded but never lost. `secpath-replace` still guards the path.
+- **Filename keys on a short name extracted from `%fromhost%`** — the
+  sender's reverse-DNS name (the payload has no hostname).
+
+  > **Corrected 2026-08-01 after live rollout.** This section originally
+  > claimed rsyslog's default `preserveFQDN=off` would shorten
+  > `puck07.wifi.welland.mithis.com` to `puck07`. It does not: the first
+  > deployment produced
+  > `/var/log/wifi/ipv4.wisp.wifi.welland.mithis.com.kernel.log`. Worse,
+  > this estate's PTRs are **ipv4-prefixed**, so naive first-label
+  > truncation would yield a useless `ipv4`. The extraction below replaces
+  > that assumption.
+
+  The ruleset extracts the first real label with
+  `re_extract($fromhost, "^(ipv4[.]|ipv6[.])?([a-zA-Z][a-zA-Z0-9-]*)[.]",
+  0, 2, "")`, falling back to the full `$fromhost` when the regex misses,
+  so `wisp.kernel.log` sits beside `wisp.log`. The explicit fallback is
+  required: rsyslog's own no-match modes are unusable here — `DFLT`
+  substitutes the literal string `**NO MATCH**`, which would collapse
+  every PTR-less sender into one shared file. With the fallback, a sender
+  with no PTR keeps its bare IP (`10.1.4.99.kernel.log`) — degraded but
+  distinct and never lost. `secpath-replace` still guards the path,
+  covering the fallback branch where a broken or hostile PTR lands
+  verbatim.
+
+  All of the above was verified against live rsyslog 8.2606 in a sandbox
+  before deployment (short-name, no-prefix, router-leg, bare-IP,
+  single-label and path-traversal cases).
 - **Line template = arrival timestamp + `%rawmsg%`** — the receiver
   stamps wall-clock arrival (RFC 3339), same job the wisp receiver does
   today; `rawmsg` preserves the extended-netconsole prefix

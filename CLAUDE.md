@@ -591,10 +591,21 @@ schema-upgrade.
 
 The same drop-in also receives **kernel netconsole** (raw printk, no
 syslog header): one leg-bound input per served net on UDP 6666 into
-`/var/log/<net>/<sender>.kernel.log`, filename keyed on the sender's
-reverse-DNS name, each line stamped with wall-clock arrival ahead of the
-raw payload (the extended-netconsole `level,seq,ts,-;` prefix survives,
-so message drops show as sequence gaps). The per-net logrotate globs
+`/var/log/<net>/<sender>.kernel.log`, each line stamped with wall-clock
+arrival ahead of the raw payload (the extended-netconsole
+`level,seq,ts,-;` prefix survives, so message drops show as sequence
+gaps).
+
+The filename is the **short name extracted from the sender's PTR**
+(`re_extract` on `%fromhost%`, first real label after an optional
+`ipv4.`/`ipv6.`), so `wisp.kernel.log` sits beside `wisp.log`. Do not
+"simplify" this to plain `%fromhost%`: rsyslog does **not** shorten
+(`preserveFQDN=off` notwithstanding) and this estate's PTRs are
+ipv4-prefixed, so you get `ipv4.wisp.wifi.welland.mithis.com.kernel.log`.
+Nor rely on rsyslog's no-match modes — `DFLT` substitutes the literal
+`**NO MATCH**` and collapses every PTR-less sender into one file; the
+generator uses an explicit fallback so such a sender keeps its bare IP.
+The per-net logrotate globs
 (`*.log`) cover these files — no extra stanzas. Receive-only today: the
 gale pucks still stream netconsole to wisp:6666 (`gwifi-netconsole.service`);
 re-pointing them at a ten64 leg and retiring the wisp receiver is a

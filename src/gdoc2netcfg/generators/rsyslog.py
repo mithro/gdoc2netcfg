@@ -22,8 +22,8 @@ Kernel netconsole capture rides the same file: one leg-bound imudp input
 per served net on UDP 6666 (the fleet's netconsole port), ruleset
 remote-<net>-kernel, files /var/log/<net>/<sender>.kernel.log. Netconsole
 payloads are raw printk — no syslog header, no hostname — so filenames
-key on the sender's reverse-DNS name (fromhost; PTR coverage comes from
-the DNS stack, unresolvable senders degrade to their bare IP) and the
+key on the SHORT name extracted from the sender's reverse-DNS name (see
+_SHORT_NAME_RE; unresolvable senders degrade to their bare IP) and the
 shared KernelLine template stamps wall-clock arrival next to the raw
 payload (whose level,seq,monotonic-ts prefix survives for gap
 detection). Receive-only for now: the pucks still stream to wisp:6666;
@@ -94,12 +94,35 @@ input(type="imudp" port="514" address="{addr}" ruleset="remote-{net}")
 """
 
 
+# Short-name extraction for netconsole senders.
+#
+# Netconsole payloads carry no hostname, so the name comes from the sender's
+# PTR — and in this estate PTRs are ipv4-prefixed, e.g.
+# ipv4.wisp.wifi.welland.mithis.com (or ipv4.br-net.ten64.net.<domain> for a
+# router leg). Taking the first real label gives wisp/br-net/puck07, so a
+# kernel file sits next to its syslog sibling: wisp.kernel.log by wisp.log.
+#
+# Literal dots are written [.] so the emitted conf needs no backslashes
+# (rsyslog's parser treats backslashes in "..." as escapes).
+#
+# The submatch can only be [a-zA-Z][a-zA-Z0-9-]* — inherently path-safe. The
+# FALLBACK is the risky one (a broken or hostile PTR lands there verbatim),
+# hence secpath-replace stays on the dynafile. Verified live on rsyslog
+# 8.2606: secpath-replace turns ../../etc/passwd into .._.._etc_passwd and
+# nothing escapes the directory.
+_SHORT_NAME_RE = "^(ipv4[.]|ipv6[.])?([a-zA-Z][a-zA-Z0-9-]*)[.]"
+
+
 def _kernel_block(net: str, addr: str) -> str:
     """Netconsole template + ruleset + leg-bound :6666 input for one net."""
     return f"""\
 template(name="KernelLog-{net}" type="string"
-         string="/var/log/{net}/%fromhost:::secpath-replace%.kernel.log")
+         string="/var/log/{net}/%$.short:::secpath-replace%.kernel.log")
 ruleset(name="remote-{net}-kernel") {{
+    set $.short = re_extract($fromhost, "{_SHORT_NAME_RE}", 0, 2, "");
+    if $.short == "" then {{
+        set $.short = $fromhost;
+    }}
     action(type="omfile" dynaFile="KernelLog-{net}" template="KernelLine"
            fileOwner="root" fileGroup="adm"
            fileCreateMode="0640" dirCreateMode="0755")

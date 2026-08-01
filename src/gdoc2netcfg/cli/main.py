@@ -724,6 +724,7 @@ def _get_generator(name: str):
         "topology": ("gdoc2netcfg.generators.topology", "generate_topology"),
         "known_hosts": ("gdoc2netcfg.generators.known_hosts", "generate_known_hosts"),
         "wifi": ("gdoc2netcfg.generators.wifi", "generate_wifi"),
+        "rsyslog": ("gdoc2netcfg.generators.rsyslog", "generate_rsyslog"),
     }
     if name not in generators:
         return None

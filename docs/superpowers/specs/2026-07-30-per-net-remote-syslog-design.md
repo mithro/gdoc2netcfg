@@ -69,6 +69,14 @@ on both sites. Output keys are deploy-relative paths mirroring `/etc`
   re-pointed at `<net-leg>:514`. Dropping 10514 is a documented follow-up,
   not part of this work.
 
+  > **Status 2026-08-02 — the transition input has been REMOVED.** Every
+  > sender it existed for was re-pointed: wisp to `10.1.4.1:514` on
+  > 2026-08-01, and all five CLI-capable switches (welland's two m4300s
+  > and two gsm7252ps, monarto's gs728tpp) to their net leg `:514` on
+  > 2026-08-02. Two independent tcpdump captures totalling 300s saw zero
+  > packets on 10514 before removal. The generator no longer emits it, and
+  > a `net` leg is consequently no longer required.
+
 - `etc/logrotate.d/remote-logs` — one stanza per `/var/log/<net>/*.log`
   with the existing 1-year-floor policy verbatim (daily, rotate 400,
   compress, delaycompress, missingok, notifempty, rsyslog-rotate

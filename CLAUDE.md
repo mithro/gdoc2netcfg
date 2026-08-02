@@ -553,12 +553,22 @@ Where each sender class lands:
 
 - **Tasmota devices** → `/var/log/iot/` — device side unchanged
   (`tasmota configure` already points them at the iot leg `:514`).
-- **Switches + wisp's forward** → `/var/log/net/` via a transition input
-  on UDP 10514 (bound to the `remote-net` ruleset) so existing senders
-  keep logging unchanged. Follow-up: re-point each at its net leg
-  `:514`, then drop the 10514 input. wisp is re-pointed at
-  `10.1.4.1:514` as part of the rollout and then lands in
-  `/var/log/wifi/wisp.log` (it lives on the wifi net).
+- **Switches** → `/var/log/net/`, each sending to the net leg
+  `10.X.5.1:514`. **wisp** forwards to `10.1.4.1:514` and so lands in
+  `/var/log/wifi/wisp.log` (it lives on the wifi net), configured by hand
+  in its `/etc/rsyslog.d/90-forward-ten64.conf`.
+
+  A transition input on UDP 10514 briefly existed so these senders could
+  keep logging while being re-pointed; all of them were moved on
+  2026-08-02 and the input is gone. Switch-side gotchas, should another
+  need configuring: on FASTPATH there is no `no logging host` — use
+  `logging host remove <index>`, and `reconfigure` changes only the
+  address, so a port change means remove-then-add; a configured host is
+  **not** sufficient, the global `logging syslog` toggle ships *disabled*
+  on the gsm7252ps (symptom: host listed Active, `show logging` reports
+  `Log Messages Relayed: 0`). Monarto's gs728tpp is telnet-only with a
+  Cisco-SMB CLI instead (`logging host <ip>`, `show syslog-servers`,
+  `copy running-config startup-config`).
 - **Pucks + tenwrt** → `/var/log/wifi/` — the OpenWISP
   `ansells-aps-base` template (gwifi-openwrt repo) pushes
   `log_ip`/`log_port`/`log_proto`. Kernel netconsole's **sender side** is
@@ -609,8 +619,7 @@ The per-net logrotate globs
 (`*.log`) cover these files — no extra stanzas. Receive-only today: the
 gale pucks still stream netconsole to wisp:6666 (`gwifi-netconsole.service`);
 re-pointing them at a ten64 leg and retiring the wisp receiver is a
-documented follow-up (gwifi-openwrt image + live push), like the 10514
-transition input.
+documented follow-up (gwifi-openwrt image + live push).
 
 ### Let's Encrypt
 

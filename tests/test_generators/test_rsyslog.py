@@ -88,9 +88,13 @@ class TestRsyslogConf:
         assert 'fileCreateMode="0640" dirCreateMode="0755"' in conf
         assert conf.count("    stop") == 6
 
-    def test_transition_input_10514_targets_remote_net(self):
+    def test_no_10514_transition_input(self):
+        # The transition input existed only so switches and wisp could keep
+        # logging while they were re-pointed at their net leg :514. All of
+        # them were re-pointed on 2026-08-02, so it is gone: every sender
+        # now uses the well-known port on the leg it arrives from.
         conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
-        assert 'input(type="imudp" port="10514" ruleset="remote-net")' in conf
+        assert "10514" not in conf
 
     def test_no_leg_no_input(self):
         inv = _inventory([
@@ -100,10 +104,14 @@ class TestRsyslogConf:
         conf = generate_rsyslog(inv)["rsyslog.d/remote-logs.conf"]
         assert "remote-wifi" not in conf
 
-    def test_no_net_leg_fails_loud(self):
+    def test_net_leg_is_no_longer_required(self):
+        # A 'net' leg used to be mandatory purely because the 10514
+        # transition input hard-referenced the remote-net ruleset. With that
+        # input gone there is nothing special about 'net'.
         inv = _inventory([_leg("br-iot", "03", "10.1.90.1")])
-        with pytest.raises(ValueError, match="net"):
-            generate_rsyslog(inv)
+        conf = generate_rsyslog(inv)["rsyslog.d/remote-logs.conf"]
+        assert 'ruleset="remote-iot"' in conf
+        assert "remote-net" not in conf
 
     def test_no_served_legs_fails_loud(self):
         inv = _inventory([_leg("br-tmp", "04", "10.1.1.1")])

@@ -14,10 +14,6 @@ isolation + stop), never /var/log/syslog; local messages never reach the
 remote dirs; secpath-replace prevents hostile hostnames escaping the
 directory; dynafile dirs are auto-created (0755, files root:adm 0640).
 
-A transition input on 10514 feeds remote-net so existing switch/wisp
-senders keep logging until they are re-pointed at <net-leg>:514
-(dropping it is a documented follow-up, spec §out-of-scope).
-
 Kernel netconsole capture rides the same file: one leg-bound imudp input
 per served net on UDP 6666 (the fleet's netconsole port), ruleset
 remote-<net>-kernel, files /var/log/<net>/<sender>.kernel.log. Netconsole
@@ -28,7 +24,7 @@ shared KernelLine template stamps wall-clock arrival next to the raw
 payload (whose level,seq,monotonic-ts prefix survives for gap
 detection). Receive-only for now: the pucks still stream to wisp:6666;
 re-pointing them (and retiring wisp's receiver) is a documented
-follow-up, like the 10514 transition input.
+follow-up.
 """
 
 from __future__ import annotations
@@ -54,12 +50,6 @@ module(load="imudp")
 # netconsole level,seq,monotonic-ts prefix, preserved for gap detection).
 template(name="KernelLine" type="string"
          string="%timegenerated:::date-rfc3339% %rawmsg:::drop-last-lf%\\n")
-"""
-
-_TRANSITION = """\
-# Transition input: switches + wisp still send to :10514 — keep feeding
-# them into /var/log/net/ until they are re-pointed at the net leg :514.
-input(type="imudp" port="10514" ruleset="remote-net")
 """
 
 
@@ -175,17 +165,10 @@ def generate_rsyslog(inventory: NetworkInventory) -> dict[str, str]:
             "rsyslog generator: router has no served legs — check the "
             "inventory has a 'ten64' host with leaf-net interfaces"
         )
-    if "net" not in legs:
-        raise ValueError(
-            "rsyslog generator: router has no 'net' leg — the 10514 "
-            "transition input needs the remote-net ruleset"
-        )
-
     parts = [_HEADER]
     for net in sorted(legs):
         parts.append(_net_block(net, legs[net]))
         parts.append(_kernel_block(net, legs[net]))
-    parts.append(_TRANSITION)
     return {
         "rsyslog.d/remote-logs.conf": "\n".join(parts),
         "logrotate.d/remote-logs": _logrotate(sorted(legs)),

@@ -26,7 +26,8 @@ arrival time must be stamped by the receiver.
 1. **Receive-only for now.** ten64 gains netconsole inputs; no puck-side
    change ships with this work. The pucks keep streaming to wisp:6666,
    and wisp's receiver stays. Nothing arrives at ten64 until a later
-   re-point (documented follow-up, like the 10514 transition input).
+   re-point (documented follow-up, as the 10514 transition input was —
+   that one was completed and removed on 2026-08-02).
 2. **Every served leg listens** — the same net set as the syslog inputs
    (all leaf legs except tmp/guest), port **6666** on each leg address.
    6666 matches the fleet convention, so the eventual re-point is a

@@ -9,7 +9,7 @@ incident (see *History* below).
 | Site | Role | Hardware | Firmware | Where |
 |------|------|----------|----------|-------|
 | welland | Coordinator | Sonoff ZBDongle-E (Silabs EFR32MG21, `usb-ITEAD_SONOFF_Zigbee_3.0_USB_Dongle_Plus_V2`) | EmberZNet 7.4.5 | on the welland Z2M host |
-| monarto | Coordinator | CC2652P stick, CH340 serial (`usb-1a86_USB_Serial`), **launchpad-pinout board** | Koenkk Z-Stack `CC1352P2_CC2652P_launchpad_coordinator_20250321` | ten64.monarto USB (bus 1 port 2), passed through to the `homeassistant` QEMU VM via `/home/tim/local/tmp/usb-zigbee-passthrough.xml` |
+| monarto | Coordinator | CC2652P stick, CH340 serial (`usb-1a86_USB_Serial`), **launchpad-pinout board** | Koenkk Z-Stack `CC1352P2_CC2652P_launchpad_coordinator_20250321` | ten64.monarto USB (bus 1 port 2), passed through to the `homeassistant` QEMU VM |
 | monarto | Standalone router | `USB-Zigbee-Router` — TI CC2652 stick, IEEE `0x00124b0030e1c0ac`, Koenkk `ti.router` build 20250403 (variant unverified) | Koenkk Z-Stack router | outdoors, "Outside Purple Room behind BBQ", USB-charger powered |
 
 Both networks share IEEE `0x00124b001cccafc1`, PAN `0x189e`, channel 11 —
@@ -39,11 +39,25 @@ use `transmit_power: 20`.
 
 ## Remote reflash procedure (monarto coordinator)
 
-No physical access needed; ~3 min Zigbee downtime. From ten64.monarto:
+No physical access needed; ~3 min Zigbee downtime. The recovery kit
+(firmware hexes, `cc2538-bsl.py`, passthrough XML, coordinator backups, NV
+tooling) lives in **`/home/tim/local/zigbee/`** on ten64.monarto. The
+passthrough XML, for reference:
+
+```xml
+<hostdev mode='subsystem' type='usb' managed='yes'>
+  <source>
+    <vendor id='0x1a86'/>
+    <product id='0x7523'/>
+  </source>
+</hostdev>
+```
+
+From ten64.monarto, in `/home/tim/local/zigbee/`:
 
 ```sh
 # 1. Detach the stick from the HA VM (Z2M will crash-loop; see step 4)
-sudo virsh detach-device homeassistant /home/tim/local/tmp/usb-zigbee-passthrough.xml --live
+sudo virsh detach-device homeassistant usb-zigbee-passthrough.xml --live
 
 # 2. Flash (plain DTR/RTS bootloader entry works; --bootloader-sonoff-usb does NOT)
 sudo chmod 666 /dev/ttyUSB0
@@ -51,7 +65,7 @@ uv run --with pyserial --with intelhex cc2538-bsl.py -p /dev/ttyUSB0 -evw \
   CC1352P2_CC2652P_launchpad_coordinator_<date>.hex
 
 # 3. Reattach
-sudo virsh attach-device homeassistant /home/tim/local/tmp/usb-zigbee-passthrough.xml --live
+sudo virsh attach-device homeassistant usb-zigbee-passthrough.xml --live
 
 # 4. The Z2M addon watchdog gives up during the detach window — restart it:
 sudo virsh qemu-agent-command homeassistant \
@@ -70,7 +84,7 @@ variants, so a bad flash is always serially recoverable.
 
 - 2026-03-16: monarto migrated from an Ember TCP bridge
   (`bridge-zigbee-1`, decommissioned) to the CC2652P stick — flashed with the
-  **`other`** variant (hex kept in `/home/tim/local/tmp/`, do not reuse).
+  **`other`** variant (hex kept in `/home/tim/local/zigbee/`, do not reuse).
 - 2026-03..08: coordinator RX crippled (neighbor LQI median 4, e.g. heard
   Z10 at 7 while Z10 heard it at 95); worked well enough to go unnoticed
   until LQI landed in the `zigbee topology` tree output.

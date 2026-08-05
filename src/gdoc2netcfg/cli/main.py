@@ -379,15 +379,30 @@ def _open_databases(config):
     read-only — this works even when they are root-owned and the caller is a
     non-root user.  Both files must exist (a read-only open cannot create a
     missing one); otherwise we fall back to the flat-file caches.
+
+    A read-only open cannot run schema upgrades, and every scan command
+    reads its baseline before it writes — without help, a schema bump
+    would brick the scan commands until some other writer upgraded the
+    files.  On SchemaVersionError we therefore attempt one write-mode
+    open (which upgrades in place) and retry; a caller without write
+    access (e.g. a non-root user on prod) keeps the original error.
     """
     from gdoc2netcfg.storage import open_databases
+    from gdoc2netcfg.storage.base import SchemaVersionError
 
-    if (
+    if not (
         config.cache.config_db_path.exists()
         and config.cache.discovery_db_path.exists()
     ):
+        return None
+    try:
         return open_databases(config.cache.directory, read_only=True)
-    return None
+    except SchemaVersionError as schema_err:
+        try:
+            open_databases(config.cache.directory, read_only=False).close()
+        except Exception:
+            raise schema_err from None
+        return open_databases(config.cache.directory, read_only=True)
 
 
 def _build_pipeline(config):

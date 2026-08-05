@@ -404,3 +404,42 @@ class TestZigbeeTopology:
 
         assert rc == 1
         assert "No [zigbee] section configured" in capsys.readouterr().err
+
+
+class TestOpenDatabasesSelfUpgrade:
+    """A read-only open cannot upgrade an old schema, and every scan
+    command reads its baseline before writing — _open_databases must
+    upgrade in place (via one write open) instead of bricking every
+    command until some other writer runs."""
+
+    def test_old_schema_is_upgraded_in_place(self, tmp_path):
+        import sqlite3
+
+        from gdoc2netcfg.cli.main import _open_databases
+        from gdoc2netcfg.storage.base import SchemaVersionError
+
+        config = _config(tmp_path)
+        _seed_db(config, {
+            "welland": _site_doc("welland", _device("welland", "0x01")),
+        })
+
+        # Regress the discovery DB to a v9 schema.
+        raw = sqlite3.connect(config.cache.directory / "discovery.db")
+        for col in ("connected_via_kind", "disabled"):
+            raw.execute(f"ALTER TABLE zigbee_devices DROP COLUMN {col}")
+        raw.execute("UPDATE _meta SET value = '9' WHERE key = 'schema_version'")
+        raw.commit()
+        raw.close()
+
+        # Sanity: a plain read-only open refuses the old schema.
+        with pytest.raises(SchemaVersionError):
+            open_databases(config.cache.directory, read_only=True)
+
+        # _open_databases upgrades in place and returns a usable pair.
+        db = _open_databases(config)
+        assert db is not None
+        try:
+            loaded = db.discovery.load_latest_zigbee()
+        finally:
+            db.close()
+        assert loaded["welland"]["devices"]["0x01"]["disabled"] is False

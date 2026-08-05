@@ -77,28 +77,29 @@ GDOC2NETCFG_VERSION := $(shell git describe --tags --always --dirty 2>/dev/null 
 # Path-scoped etckeeper commit of a deploy. Usage: $(ETCKEEPER_COMMIT) "<msg>" <path>
 ETCKEEPER_COMMIT := $(VENV_BIN)/python scripts/etckeeper_commit.py --message
 
-.PHONY: deploy-dnsmasq-internal
-deploy-dnsmasq-internal: generate ## Generate and deploy internal dnsmasq configs (run with sudo)
-	rm $(DNSMASQ_CONF_DIR)/internal/generated/*.conf
-	cp $(OUTPUT_DIR)/internal/*.conf $(DNSMASQ_CONF_DIR)/internal/generated/
-	systemctl restart dnsmasq@internal
-	$(ETCKEEPER_COMMIT) "gdoc2netcfg deploy dnsmasq-internal: $(GDOC2NETCFG_VERSION)" $(DNSMASQ_CONF_DIR)/internal/generated
+.PHONY: validate
+validate: $(VENV)/.stamp ## Validate sheet data (deploys require 0 errors — never --force)
+	$(VENV_BIN)/gdoc2netcfg validate
 
-.PHONY: deploy-dnsmasq-external
-deploy-dnsmasq-external: generate ## Generate and deploy external dnsmasq configs (run with sudo)
-	rm $(DNSMASQ_CONF_DIR)/external/generated/*.conf
-	cp $(OUTPUT_DIR)/external/*.conf $(DNSMASQ_CONF_DIR)/external/generated/
-	systemctl restart dnsmasq@external
-	$(ETCKEEPER_COMMIT) "gdoc2netcfg deploy dnsmasq-external: $(GDOC2NETCFG_VERSION)" $(DNSMASQ_CONF_DIR)/external/generated
+# dns-redesign layout: out/etc mirrors /etc (per-net dnsmasq leaves + pdns
+# internal/external views + recursor forward-zones). The dnsmasq@internal /
+# @external instances are retired — their deploy targets are gone with them.
+DEPLOY_GENERATORS := dnsmasq_leaf pdns_internal pdns_external recursor_forward nginx known_hosts
 
-.PHONY: deploy-dnsmasq
-deploy-dnsmasq: deploy-dnsmasq-internal deploy-dnsmasq-external ## Deploy both internal and external dnsmasq configs (run with sudo)
+.PHONY: generate-deploy
+generate-deploy: $(VENV)/.stamp fetch validate ## Fetch + validate + generate everything `deploy` needs
+	rm -rf $(OUTPUT_DIR)
+	$(VENV_BIN)/gdoc2netcfg generate $(DEPLOY_GENERATORS) --output-dir $(OUTPUT_DIR)
+
+.PHONY: deploy-dns
+deploy-dns: generate-deploy ## Deploy dnsmasq leaves + pdns zones + recursor (diff-aware; run with sudo)
+	$(VENV_BIN)/python scripts/deploy_dns.py --out $(OUTPUT_DIR) --version-label "$(GDOC2NETCFG_VERSION)"
 
 NGINX_CONF_DIR := /etc/nginx
 NGINX_GEN_DIR := $(NGINX_CONF_DIR)/gdoc2netcfg
 
 .PHONY: deploy-nginx
-deploy-nginx: generate ## Generate and deploy nginx configs (run with sudo)
+deploy-nginx: generate-deploy ## Generate and deploy nginx configs (run with sudo)
 	rm -rf $(NGINX_GEN_DIR)/sites-available $(NGINX_GEN_DIR)/scripts $(NGINX_GEN_DIR)/conf.d $(NGINX_GEN_DIR)/stream.d
 	mkdir -p $(NGINX_GEN_DIR)
 	cp -r $(OUTPUT_DIR)/nginx/* $(NGINX_GEN_DIR)/
@@ -110,7 +111,7 @@ deploy-nginx: generate ## Generate and deploy nginx configs (run with sudo)
 SSH_KNOWN_HOSTS := /etc/ssh/ssh_known_hosts
 
 .PHONY: deploy-known-hosts
-deploy-known-hosts: generate ## Generate and deploy system-wide SSH known_hosts (run with sudo)
+deploy-known-hosts: generate-deploy ## Generate and deploy system-wide SSH known_hosts (run with sudo)
 	cp $(OUTPUT_DIR)/known_hosts $(SSH_KNOWN_HOSTS)
 	$(ETCKEEPER_COMMIT) "gdoc2netcfg deploy known-hosts: $(GDOC2NETCFG_VERSION)" $(SSH_KNOWN_HOSTS)
 
@@ -126,7 +127,7 @@ deploy-syslog: $(VENV)/.stamp ## Deploy generated per-net remote syslog + logrot
 	$(ETCKEEPER_COMMIT) "gdoc2netcfg deploy syslog: $(GDOC2NETCFG_VERSION)" /etc/rsyslog.d /etc/logrotate.d
 
 .PHONY: deploy
-deploy: deploy-dnsmasq deploy-nginx deploy-known-hosts ## Run all deploy steps (run with sudo)
+deploy: deploy-dns deploy-nginx deploy-known-hosts ## Run all deploy steps (run with sudo)
 
 .PHONY: install
 install: ## Install into /opt/gdoc2netcfg

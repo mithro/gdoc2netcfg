@@ -30,6 +30,7 @@ _ANSI_ONLINE = "32"   # green
 _ANSI_OFFLINE = "31"  # red
 _ANSI_UNKNOWN = "90"  # bright black / grey
 _ANSI_HEADER = "1"    # bold
+_ANSI_STRIKE = "9"    # strikethrough (disabled devices)
 
 # Zigbee LQI is 0-255; Z2M itself calls <30 "poor" and >100 "good".
 _LQI_GOOD = 100
@@ -502,18 +503,29 @@ def _format_node(device: ZigbeeDevice, use_color: bool) -> str:
         # No reading (e.g. no networkmap parent): blank spacer keeps
         # sibling names aligned.
         bar = " " * len(_LQI_BARS)
-    parts = [f"{marker} [{role}] {bar} {device.friendly_name:<3}"]
+    text_parts = [f"{device.friendly_name:<3}"]
 
     if device.description:
         # Z2M descriptions can span multiple lines; join with " / " so
         # the tree layout stays one line per device.
-        parts.append(" / ".join(
+        text_parts.append(" / ".join(
             line.strip() for line in device.description.splitlines()
             if line.strip()
         ))
     model = device.model or device.model_id
     if model:
-        parts.append(f"({model})")
+        text_parts.append(f"({model})")
+
+    text = " ".join(text_parts).rstrip()
+    if device.disabled:
+        # Struck-through on a colour terminal; the plain tag keeps the
+        # state visible when ANSI is off (pipes, NO_COLOR).
+        if use_color:
+            text = colorize(text, _ANSI_STRIKE, True)
+        else:
+            text = f"{text} [disabled]"
+
+    parts = [f"{marker} [{role}] {bar} {text}"]
     if device.connected_via_kind == "mesh":
         # Routers keep no parent records; this one is attached via its
         # strongest sibling link (see _anchor_mesh_routers).

@@ -1222,6 +1222,7 @@ def _zb_device(site: str, ieee: str, **overrides) -> dict:
         "definition_description": "Temperature and humidity sensor",
         "connected_via": "Coordinator",
         "connected_via_kind": "parent",
+        "disabled": False,
     }
     d.update(overrides)
     return d
@@ -1565,7 +1566,9 @@ class TestZigbeeNetworkmapMigration:
 
 
 class TestZigbeeMeshKindMigration:
-    def test_v10_adds_column_and_preserves_data(self, tmp_path: Path):
+    _V10_COLUMNS = ("connected_via_kind", "disabled")
+
+    def test_v10_adds_columns_and_preserves_data(self, tmp_path: Path):
         path = tmp_path / "discovery.db"
         db = DiscoveryDB(path)
         s = db.begin_scan("zigbee")
@@ -1577,11 +1580,10 @@ class TestZigbeeMeshKindMigration:
         db.finish_scan(s, host_count=1, changed_count=2)
         db.close()
 
-        # Simulate a pre-v10 DB: drop the column and reset the version.
+        # Simulate a pre-v10 DB: drop the columns and reset the version.
         raw = sqlite3.connect(path)
-        raw.execute(
-            "ALTER TABLE zigbee_devices DROP COLUMN connected_via_kind"
-        )
+        for col in self._V10_COLUMNS:
+            raw.execute(f"ALTER TABLE zigbee_devices DROP COLUMN {col}")
         raw.execute("UPDATE _meta SET value = '9' WHERE key = 'schema_version'")
         raw.commit()
         raw.close()
@@ -1590,24 +1592,40 @@ class TestZigbeeMeshKindMigration:
         db2 = DiscoveryDB(path)
         cols = [r[1] for r in db2.connection.execute(
             "PRAGMA table_info(zigbee_devices)")]
-        assert "connected_via_kind" in cols
+        for col in self._V10_COLUMNS:
+            assert col in cols
         version = db2.connection.execute(
             "SELECT value FROM _meta WHERE key = 'schema_version'"
         ).fetchone()[0]
         assert int(version) == DiscoveryDB.SCHEMA_VERSION
         # The pre-upgrade row reads back with the kind defaulted to ""
-        # (unknown provenance), everything else intact.
+        # (unknown provenance) and disabled False, everything else intact.
         loaded = db2.load_latest_zigbee()["welland"]["devices"]["0x01"]
         assert loaded == _zb_device(
-            "welland", "0x01", connected_via_kind="",
+            "welland", "0x01", connected_via_kind="", disabled=False,
         )
         db2.close()
 
-    def test_fresh_db_has_kind_column(self, tmp_path: Path):
+    def test_fresh_db_has_v10_columns(self, tmp_path: Path):
         db = DiscoveryDB(tmp_path / "fresh.db")
         cols = [r[1] for r in db.connection.execute(
             "PRAGMA table_info(zigbee_devices)")]
-        assert "connected_via_kind" in cols
+        for col in self._V10_COLUMNS:
+            assert col in cols
+        db.close()
+
+    def test_disabled_flag_roundtrips_as_bool(self, tmp_path: Path):
+        db = DiscoveryDB(tmp_path / "d.db")
+        s = db.begin_scan("zigbee")
+        db.save_zigbee(s, {"welland": {
+            "bridge": _zb_bridge("welland"),
+            "devices": {"0x01": _zb_device(
+                "welland", "0x01", disabled=True,
+            )},
+        }})
+        db.finish_scan(s, host_count=1, changed_count=2)
+        loaded = db.load_latest_zigbee()["welland"]["devices"]["0x01"]
+        assert loaded["disabled"] is True
         db.close()
 
     def test_kind_change_writes_a_delta_row(self, tmp_path: Path):

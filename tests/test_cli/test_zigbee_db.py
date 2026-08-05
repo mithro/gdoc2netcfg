@@ -65,6 +65,7 @@ def _device(site: str, ieee: str, **overrides) -> dict:
         "definition_description": "",
         "connected_via": "",
         "connected_via_kind": "",
+        "disabled": False,
     }
     d.update(overrides)
     return d

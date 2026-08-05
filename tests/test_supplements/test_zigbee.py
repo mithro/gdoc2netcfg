@@ -481,6 +481,26 @@ class TestBuildParentMap:
         assert zigbee._build_parent_map(nm) == {"0x02": ("Z1", None)}
 
 
+class TestParseDeviceDisabled:
+    def test_disabled_flag_is_captured(self):
+        d = zigbee._parse_device(
+            "welland",
+            {"ieee_address": "0x01", "friendly_name": "T9",
+             "type": "EndDevice", "disabled": True},
+            {},
+        )
+        assert d.disabled is True
+
+    def test_disabled_defaults_false_when_absent(self):
+        d = zigbee._parse_device(
+            "welland",
+            {"ieee_address": "0x01", "friendly_name": "T1",
+             "type": "EndDevice"},
+            {},
+        )
+        assert d.disabled is False
+
+
 class TestAnchorMeshRouters:
     """Routers are mesh peers: after joining they keep only IS_SIBLING
     neighbor records, so a parentless router is NOT an orphan — it is

@@ -208,6 +208,7 @@ _ZIGBEE_DEVICE_FIELDS = (
     ("definition_description", str),  # Z2M model description
     ("connected_via", str),           # uplink friendly_name from networkmap
     ("connected_via_kind", str),      # "parent" | "mesh" | ""
+    ("disabled", bool),               # Z2M registry "disabled" flag
 )
 
 _ZIGBEE_BRIDGE_FIELDS = (
@@ -658,7 +659,8 @@ def _insert_zigbee_device_tombstone(
     (history is never deleted) that drops it from reads; a later real
     row resurrects it."""
     placeholders = tuple(
-        "" if typ is str else None for _key, typ in _ZIGBEE_DEVICE_FIELDS
+        "" if typ is str else (False if typ is bool else None)
+        for _key, typ in _ZIGBEE_DEVICE_FIELDS
     )
     values = tuple(
         ieee if key == "ieee_address" else placeholder
@@ -698,12 +700,12 @@ def _upgrade_v9_zigbee_networkmap(conn: sqlite3.Connection) -> None:
 
 
 def _upgrade_v10_zigbee_mesh_kind(conn: sqlite3.Connection) -> None:
-    """Schema v10: zigbee devices gained connected_via_kind.
+    """Schema v10: zigbee devices gained connected_via_kind + disabled.
 
-    Pre-v10 rows default to "" (unknown provenance); rows written by a
-    v10+ scan carry "parent" or "mesh".  Column-existence is checked
-    first so the step is idempotent — fresh schemas already carry the
-    column via _ZIGBEE_DEVICE_FIELDS.
+    Pre-v10 rows default the kind to "" (unknown provenance) and
+    disabled to 0; rows written by a v10+ scan carry real values.
+    Column-existence is checked first so the step is idempotent —
+    fresh schemas already carry the columns via _ZIGBEE_DEVICE_FIELDS.
     """
     existing = {
         row[1] for row in conn.execute("PRAGMA table_info(zigbee_devices)")
@@ -712,6 +714,11 @@ def _upgrade_v10_zigbee_mesh_kind(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE zigbee_devices ADD COLUMN "
             "connected_via_kind TEXT NOT NULL DEFAULT ''"
+        )
+    if "disabled" not in existing:
+        conn.execute(
+            "ALTER TABLE zigbee_devices ADD COLUMN "
+            "disabled INTEGER NOT NULL DEFAULT 0"
         )
 
 
@@ -1669,6 +1676,11 @@ class DiscoveryDB(BaseDatabase):
                 continue
             device = {"site": site}
             device.update(zip((k for k, _t in _ZIGBEE_DEVICE_FIELDS), values))
+            # SQLite stores bools as 0/1 — restore the Python type so
+            # the document round-trips exactly.
+            for key, typ in _ZIGBEE_DEVICE_FIELDS:
+                if typ is bool:
+                    device[key] = bool(device[key])
             result[site]["devices"][device["ieee_address"]] = device
         return result
 

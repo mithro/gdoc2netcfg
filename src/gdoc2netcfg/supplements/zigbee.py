@@ -53,6 +53,8 @@ class ZigbeeDevice:
     connected_via_kind: str = ""      # "parent" (child/parent record) or "mesh"
                                       # (router anchored via strongest sibling
                                       # link); "" when no uplink is known
+    disabled: bool = False            # Z2M "disabled" flag (device kept in the
+                                      # registry but not communicated with)
 
     @property
     def last_seen_str(self) -> str:
@@ -117,6 +119,7 @@ def _parse_device(site: str, d: dict, availability: dict[str, str]) -> ZigbeeDev
         network_address=d.get("network_address"),
         description=description,
         definition_description=definition_description,
+        disabled=bool(d.get("disabled", False)),
     )
 
 

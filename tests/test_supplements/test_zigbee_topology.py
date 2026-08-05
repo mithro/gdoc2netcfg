@@ -21,6 +21,7 @@ def _device(
     site: str = "welland",
     link_quality: int | None = None,
     kind: str = "",
+    disabled: bool = False,
 ) -> ZigbeeDevice:
     """Build a ZigbeeDevice with only the fields the renderer cares about."""
     return ZigbeeDevice(
@@ -43,6 +44,7 @@ def _device(
         definition_description="",
         connected_via=parent,
         connected_via_kind=kind or ("parent" if parent else ""),
+        disabled=disabled,
     )
 
 
@@ -428,3 +430,25 @@ def test_dot_mesh_edge_is_dashed() -> None:
     dot = generate_zigbee_topology(devices, _bridge(), "welland")
     assert '"R5" -> "Coordinator" [style=dashed];' in dot
     assert '"T1" -> "R5";' in dot
+
+
+def test_disabled_device_struck_through_with_color() -> None:
+    devices = [
+        _device("T9", parent="Coordinator", disabled=True),
+        _device("T1", parent="Coordinator"),
+    ]
+    out = generate_zigbee_text_tree(
+        devices, _bridge(), "welland", use_color=True,
+    )
+    t9_line = next(line for line in out.splitlines() if "T9" in line)
+    assert "\033[9m" in t9_line
+    assert "[disabled]" not in t9_line
+    t1_line = next(line for line in out.splitlines() if "T1 " in line)
+    assert "\033[9m" not in t1_line
+
+
+def test_disabled_device_tagged_without_color() -> None:
+    devices = [_device("T9", parent="Coordinator", disabled=True)]
+    out = generate_zigbee_text_tree(devices, _bridge(), "welland")
+    assert "T9  (TS0601) [disabled]" in out
+    assert "\033[9m" not in out

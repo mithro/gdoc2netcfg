@@ -20,6 +20,7 @@ def _device(
     ieee: str | None = None,
     site: str = "welland",
     link_quality: int | None = None,
+    kind: str = "",
 ) -> ZigbeeDevice:
     """Build a ZigbeeDevice with only the fields the renderer cares about."""
     return ZigbeeDevice(
@@ -41,6 +42,7 @@ def _device(
         description=description,
         definition_description="",
         connected_via=parent,
+        connected_via_kind=kind or ("parent" if parent else ""),
     )
 
 
@@ -393,3 +395,36 @@ def test_dot_renderer_still_works_alongside_text() -> None:
     assert 'digraph "zigbee_welland"' in dot
     assert '"B1" -> "Coordinator"' in dot
     assert '"T2" -> "Z1"' in dot
+
+
+def test_mesh_anchored_router_gets_tag_and_legend() -> None:
+    devices = [
+        _device("R5", parent="Coordinator", device_type="Router",
+                kind="mesh", link_quality=130),
+        _device("T1", parent="R5", link_quality=90),
+    ]
+    out = generate_zigbee_text_tree(devices, _bridge(), "welland")
+    r5_line = next(line for line in out.splitlines() if "R5" in line)
+    assert "[mesh]" in r5_line
+    t1_line = next(line for line in out.splitlines() if "T1" in line)
+    assert "[mesh]" not in t1_line
+    assert "routers keep no parent records" in out
+    assert "with uplink info: 2/2 (1 via mesh)" in out
+
+
+def test_no_mesh_no_legend() -> None:
+    devices = [_device("T1", parent="Coordinator", link_quality=90)]
+    out = generate_zigbee_text_tree(devices, _bridge(), "welland")
+    assert "[mesh]" not in out
+    assert "routers keep no parent records" not in out
+
+
+def test_dot_mesh_edge_is_dashed() -> None:
+    devices = [
+        _device("R5", parent="Coordinator", device_type="Router",
+                kind="mesh"),
+        _device("T1", parent="R5"),
+    ]
+    dot = generate_zigbee_topology(devices, _bridge(), "welland")
+    assert '"R5" -> "Coordinator" [style=dashed];' in dot
+    assert '"T1" -> "R5";' in dot

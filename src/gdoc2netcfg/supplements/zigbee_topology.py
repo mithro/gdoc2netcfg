@@ -174,15 +174,21 @@ def generate_zigbee_topology(
             )
         lines.append("")
 
-    # Edges: child -> parent (connected_via)
+    # Edges: child -> uplink (connected_via).  Parent-record links are
+    # solid; mesh-sibling anchors (routers have no parent records) are
+    # dashed.
     if connected:
-        lines.append("    // Parent links (from networkmap)")
+        lines.append("    // Uplinks (from networkmap)")
         for d in sorted(connected, key=lambda x: natural_sort_key(x.friendly_name)):
             parent = d.connected_via
             # connected_via is a friendly_name; it could be "Coordinator"
             # or another device's friendly_name
+            style = (
+                " [style=dashed]" if d.connected_via_kind == "mesh" else ""
+            )
             lines.append(
-                f'    {_dot_quote(d.friendly_name)} -> {_dot_quote(parent)};'
+                f'    {_dot_quote(d.friendly_name)} -> '
+                f'{_dot_quote(parent)}{style};'
             )
         lines.append("")
 
@@ -315,6 +321,9 @@ def generate_zigbee_text_tree(
     online = sum(1 for d in devices if d.availability == "online")
     offline = sum(1 for d in devices if d.availability == "offline")
     with_parent = sum(1 for d in devices if d.connected_via)
+    mesh_anchored = sum(
+        1 for d in devices if d.connected_via_kind == "mesh"
+    )
 
     sep = "=" * 60
     lines: list[str] = [
@@ -330,9 +339,10 @@ def generate_zigbee_text_tree(
             f"{bridge.coordinator_type} {bridge.coordinator_ieee}  |  "
             f"Ch {bridge.channel}  PAN {bridge.pan_id}"
         )
+    mesh_str = f" ({mesh_anchored} via mesh)" if mesh_anchored else ""
     lines.append(
         f"Devices: {total}  (online {online}, offline {offline})  "
-        f"with parent info: {with_parent}/{total}"
+        f"with uplink info: {with_parent}/{total}{mesh_str}"
     )
     lines.append("")
 
@@ -427,6 +437,13 @@ def generate_zigbee_text_tree(
             )
         )
 
+    if mesh_anchored:
+        lines.append("")
+        lines.append(
+            "([mesh] = router anchored via its strongest sibling link — "
+            "routers keep no parent records)"
+        )
+
     if excluded:
         lines.append("")
         lines.append(f"({excluded} offline+orphan device(s) hidden)")
@@ -497,6 +514,10 @@ def _format_node(device: ZigbeeDevice, use_color: bool) -> str:
     model = device.model or device.model_id
     if model:
         parts.append(f"({model})")
+    if device.connected_via_kind == "mesh":
+        # Routers keep no parent records; this one is attached via its
+        # strongest sibling link (see _anchor_mesh_routers).
+        parts.append(colorize("[mesh]", _ANSI_UNKNOWN, use_color))
     return " ".join(parts).rstrip()
 
 

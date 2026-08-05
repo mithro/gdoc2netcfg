@@ -1221,6 +1221,7 @@ def _zb_device(site: str, ieee: str, **overrides) -> dict:
         "description": "Kitchen bench",
         "definition_description": "Temperature and humidity sensor",
         "connected_via": "Coordinator",
+        "connected_via_kind": "parent",
     }
     d.update(overrides)
     return d
@@ -1545,6 +1546,8 @@ class TestZigbeeNetworkmapMigration:
         # The pre-upgrade row reads back with the new fields defaulted
         # to "" (the dataclass defaults), everything else intact.
         loaded = db2.load_latest_zigbee()["welland"]["devices"]["0x01"]
+        # connected_via_kind keeps its saved value — the v9 scenario
+        # only drops the v9 columns, never the v10 one.
         expected = _zb_device(
             "welland", "0x01",
             description="", definition_description="", connected_via="",
@@ -1558,6 +1561,81 @@ class TestZigbeeNetworkmapMigration:
             "PRAGMA table_info(zigbee_devices)")]
         for col in self._V9_COLUMNS:
             assert col in cols
+        db.close()
+
+
+class TestZigbeeMeshKindMigration:
+    def test_v10_adds_column_and_preserves_data(self, tmp_path: Path):
+        path = tmp_path / "discovery.db"
+        db = DiscoveryDB(path)
+        s = db.begin_scan("zigbee")
+        doc = {
+            "bridge": _zb_bridge("welland"),
+            "devices": {"0x01": _zb_device("welland", "0x01")},
+        }
+        db.save_zigbee(s, {"welland": doc})
+        db.finish_scan(s, host_count=1, changed_count=2)
+        db.close()
+
+        # Simulate a pre-v10 DB: drop the column and reset the version.
+        raw = sqlite3.connect(path)
+        raw.execute(
+            "ALTER TABLE zigbee_devices DROP COLUMN connected_via_kind"
+        )
+        raw.execute("UPDATE _meta SET value = '9' WHERE key = 'schema_version'")
+        raw.commit()
+        raw.close()
+
+        # Reopening runs the v10 upgrade.
+        db2 = DiscoveryDB(path)
+        cols = [r[1] for r in db2.connection.execute(
+            "PRAGMA table_info(zigbee_devices)")]
+        assert "connected_via_kind" in cols
+        version = db2.connection.execute(
+            "SELECT value FROM _meta WHERE key = 'schema_version'"
+        ).fetchone()[0]
+        assert int(version) == DiscoveryDB.SCHEMA_VERSION
+        # The pre-upgrade row reads back with the kind defaulted to ""
+        # (unknown provenance), everything else intact.
+        loaded = db2.load_latest_zigbee()["welland"]["devices"]["0x01"]
+        assert loaded == _zb_device(
+            "welland", "0x01", connected_via_kind="",
+        )
+        db2.close()
+
+    def test_fresh_db_has_kind_column(self, tmp_path: Path):
+        db = DiscoveryDB(tmp_path / "fresh.db")
+        cols = [r[1] for r in db.connection.execute(
+            "PRAGMA table_info(zigbee_devices)")]
+        assert "connected_via_kind" in cols
+        db.close()
+
+    def test_kind_change_writes_a_delta_row(self, tmp_path: Path):
+        db = DiscoveryDB(tmp_path / "d.db")
+        s1 = db.begin_scan("zigbee")
+        db.save_zigbee(s1, {"welland": {
+            "bridge": _zb_bridge("welland"),
+            "devices": {"0x01": _zb_device(
+                "welland", "0x01", connected_via_kind="parent",
+            )},
+        }})
+        db.finish_scan(s1, host_count=1, changed_count=2)
+
+        s2 = db.begin_scan("zigbee")
+        db.save_zigbee(s2, {"welland": {
+            "bridge": _zb_bridge("welland"),
+            "devices": {"0x01": _zb_device(
+                "welland", "0x01", connected_via_kind="mesh",
+            )},
+        }})
+        db.finish_scan(s2, host_count=1, changed_count=1)
+
+        rows = db.connection.execute(
+            "SELECT COUNT(*) FROM zigbee_devices WHERE ieee_address = '0x01'"
+        ).fetchone()[0]
+        assert rows == 2
+        loaded = db.load_latest_zigbee()["welland"]["devices"]["0x01"]
+        assert loaded["connected_via_kind"] == "mesh"
         db.close()
 
     def test_connected_via_change_writes_a_delta_row(self, tmp_path: Path):

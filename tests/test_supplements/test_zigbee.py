@@ -481,6 +481,147 @@ class TestBuildParentMap:
         assert zigbee._build_parent_map(nm) == {"0x02": ("Z1", None)}
 
 
+class TestAnchorMeshRouters:
+    """Routers are mesh peers: after joining they keep only IS_SIBLING
+    neighbor records, so a parentless router is NOT an orphan — it is
+    anchored to its strongest already-anchored sibling."""
+
+    @staticmethod
+    def _nodes(*pairs: tuple[str, str]) -> list[dict]:
+        return [{"ieeeAddr": i, "friendlyName": n} for i, n in pairs]
+
+    @staticmethod
+    def _sib(src: str, tgt: str, lqi: int) -> dict:
+        return {
+            "sourceIeeeAddr": src, "targetIeeeAddr": tgt,
+            "relationship": 2, "linkquality": lqi,
+        }
+
+    def test_router_anchors_to_coordinator_sibling(self):
+        devices = [_device(
+            "welland", "0x01", friendly_name="R1",
+            device_type="Router", link_quality=None,
+        )]
+        nm = _networkmap_response(
+            nodes=self._nodes(("0xc0", "Coordinator"), ("0x01", "R1")),
+            links=[self._sib("0x01", "0xc0", 120)],
+        )
+        out, count = zigbee._anchor_mesh_routers(devices, nm)
+        assert count == 1
+        assert out[0].connected_via == "Coordinator"
+        assert out[0].connected_via_kind == "mesh"
+        assert out[0].link_quality == 120
+
+    def test_prefers_strongest_anchored_sibling(self):
+        devices = [
+            _device("welland", "0x01", friendly_name="R1",
+                    device_type="Router", link_quality=None),
+            _device("welland", "0x02", friendly_name="Z5",
+                    device_type="Router", connected_via="Coordinator",
+                    connected_via_kind="parent"),
+        ]
+        nm = _networkmap_response(
+            nodes=self._nodes(
+                ("0xc0", "Coordinator"), ("0x01", "R1"), ("0x02", "Z5"),
+            ),
+            links=[
+                self._sib("0x01", "0xc0", 50),
+                self._sib("0x01", "0x02", 200),
+            ],
+        )
+        out, count = zigbee._anchor_mesh_routers(devices, nm)
+        assert count == 1
+        r1 = next(d for d in out if d.friendly_name == "R1")
+        assert r1.connected_via == "Z5"
+        assert r1.link_quality == 200
+
+    def test_chained_anchoring(self):
+        # R1's only sibling is R2; R2's only sibling is the Coordinator.
+        # R2 anchors first, then R1 anchors through it.
+        devices = [
+            _device("welland", "0x01", friendly_name="R1",
+                    device_type="Router", link_quality=None),
+            _device("welland", "0x02", friendly_name="R2",
+                    device_type="Router", link_quality=None),
+        ]
+        nm = _networkmap_response(
+            nodes=self._nodes(
+                ("0xc0", "Coordinator"), ("0x01", "R1"), ("0x02", "R2"),
+            ),
+            links=[
+                self._sib("0x02", "0xc0", 90),
+                self._sib("0x01", "0x02", 110),
+            ],
+        )
+        out, count = zigbee._anchor_mesh_routers(devices, nm)
+        assert count == 2
+        by_name = {d.friendly_name: d for d in out}
+        assert by_name["R2"].connected_via == "Coordinator"
+        assert by_name["R1"].connected_via == "R2"
+        assert by_name["R1"].connected_via_kind == "mesh"
+
+    def test_zero_lqi_sibling_is_stale(self):
+        devices = [_device(
+            "welland", "0x01", friendly_name="R1",
+            device_type="Router", link_quality=None,
+        )]
+        nm = _networkmap_response(
+            nodes=self._nodes(("0xc0", "Coordinator"), ("0x01", "R1")),
+            links=[self._sib("0x01", "0xc0", 0)],
+        )
+        out, count = zigbee._anchor_mesh_routers(devices, nm)
+        assert count == 0
+        assert out[0].connected_via == ""
+
+    def test_end_devices_are_never_mesh_anchored(self):
+        devices = [_device(
+            "welland", "0x01", friendly_name="T1",
+            device_type="EndDevice", link_quality=None,
+        )]
+        nm = _networkmap_response(
+            nodes=self._nodes(("0xc0", "Coordinator"), ("0x01", "T1")),
+            links=[self._sib("0x01", "0xc0", 150)],
+        )
+        out, count = zigbee._anchor_mesh_routers(devices, nm)
+        assert count == 0
+        assert out[0].connected_via == ""
+
+    def test_unanchored_island_stays_orphan(self):
+        # Two routers sibling only to each other, neither reaches the
+        # Coordinator: both must stay unanchored (real signal).
+        devices = [
+            _device("welland", "0x01", friendly_name="R1",
+                    device_type="Router", link_quality=None),
+            _device("welland", "0x02", friendly_name="R2",
+                    device_type="Router", link_quality=None),
+        ]
+        nm = _networkmap_response(
+            nodes=self._nodes(
+                ("0xc0", "Coordinator"), ("0x01", "R1"), ("0x02", "R2"),
+            ),
+            links=[self._sib("0x01", "0x02", 180)],
+        )
+        out, count = zigbee._anchor_mesh_routers(devices, nm)
+        assert count == 0
+        assert all(d.connected_via == "" for d in out)
+
+    def test_parented_router_is_untouched(self):
+        devices = [_device(
+            "welland", "0x01", friendly_name="R1",
+            device_type="Router", connected_via="Coordinator",
+            connected_via_kind="parent", link_quality=77,
+        )]
+        nm = _networkmap_response(
+            nodes=self._nodes(("0xc0", "Coordinator"), ("0x01", "R1")),
+            links=[self._sib("0x01", "0xc0", 200)],
+        )
+        out, count = zigbee._anchor_mesh_routers(devices, nm)
+        assert count == 0
+        assert out[0].connected_via == "Coordinator"
+        assert out[0].connected_via_kind == "parent"
+        assert out[0].link_quality == 77
+
+
 class TestValidateParents:
     """EndDevices can only hang under Routers or the Coordinator."""
 

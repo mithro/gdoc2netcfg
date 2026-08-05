@@ -49,7 +49,10 @@ class ZigbeeDevice:
     network_address: int | None
     description: str = ""             # user-set description in Z2M (top-level field)
     definition_description: str = ""  # Z2M model description (definition.description)
-    connected_via: str = ""           # parent device friendly_name from networkmap
+    connected_via: str = ""           # uplink device friendly_name from networkmap
+    connected_via_kind: str = ""      # "parent" (child/parent record) or "mesh"
+                                      # (router anchored via strongest sibling
+                                      # link); "" when no uplink is known
 
     @property
     def last_seen_str(self) -> str:
@@ -245,19 +248,8 @@ def _request_networkmap(
     return response
 
 
-def _build_parent_map(networkmap: dict) -> dict[str, tuple[str, int | None]]:
-    """Map ieee_address -> (parent friendly_name, link LQI) from a networkmap.
-
-    Uses Zigbee neighbor table relationship types:
-      - relationship=1 (IS_CHILD): source's parent is target — most reliable
-      - relationship=0 (IS_PARENT): source is parent of target — secondary signal
-
-    Relationship=2 (IS_SIBLING) is ignored as it only indicates neighbor
-    awareness, not routing.
-
-    The LQI is the quality of the child<->parent link itself (raw
-    networkmap ``linkquality`` field), which is the meaningful signal
-    number for a routing topology.
+def _networkmap_nodes_links(networkmap: dict) -> tuple[list, list]:
+    """Validate a raw networkmap response and return its (nodes, links).
 
     Raises RuntimeError if the response is not shaped like a raw
     networkmap — an unexpected shape must not silently reduce to "no
@@ -282,6 +274,28 @@ def _build_parent_map(networkmap: dict) -> dict[str, tuple[str, int | None]]:
             "Networkmap contains no nodes — a raw map always includes "
             "at least the coordinator"
         )
+    return nodes, links
+
+
+def _build_parent_map(networkmap: dict) -> dict[str, tuple[str, int | None]]:
+    """Map ieee_address -> (parent friendly_name, link LQI) from a networkmap.
+
+    Uses Zigbee neighbor table relationship types:
+      - relationship=1 (IS_CHILD): source's parent is target — most reliable
+      - relationship=0 (IS_PARENT): source is parent of target — secondary signal
+
+    Relationship=2 (IS_SIBLING) is not a parent record — routers are
+    mesh peers of each other; see ``_anchor_mesh_routers`` for how
+    parentless routers are attached to the tree via sibling links.
+
+    The LQI is the quality of the child<->parent link itself (raw
+    networkmap ``linkquality`` field), which is the meaningful signal
+    number for a routing topology.
+
+    Raises RuntimeError on an unexpected response shape (see
+    ``_networkmap_nodes_links``).
+    """
+    nodes, links = _networkmap_nodes_links(networkmap)
 
     # ieee -> friendly_name lookup (includes Coordinator)
     ieee_to_name: dict[str, str] = {}
@@ -316,6 +330,103 @@ def _build_parent_map(networkmap: dict) -> dict[str, tuple[str, int | None]]:
             )
 
     return parent_map
+
+
+def _anchor_mesh_routers(
+    devices: list[ZigbeeDevice],
+    networkmap: dict,
+) -> tuple[list[ZigbeeDevice], int]:
+    """Attach parentless routers to the tree via their sibling links.
+
+    Routers in a Zigbee mesh are peers: after joining they keep no
+    parent/child relationship, only IS_SIBLING (relationship=2) neighbor
+    entries.  A router with no rel-0/1 record is therefore NOT an orphan
+    — it is reachable through the mesh.  This pass anchors each such
+    router to its strongest sibling that is itself already anchored to
+    the Coordinator (directly, via a parent chain, or via an earlier
+    mesh anchor), setting ``connected_via`` with
+    ``connected_via_kind="mesh"``.
+
+    Sibling entries with LQI 0 are stale never-heard rows and are not
+    usable as anchors.  A router whose every sibling is unanchored or
+    stale keeps ``connected_via=""`` and still shows in the orphan
+    section — that is real signal, not a rendering gap.
+
+    Returns the updated device list and the number of routers anchored.
+    """
+    nodes, links = _networkmap_nodes_links(networkmap)
+    ieee_to_name: dict[str, str] = {}
+    for node in nodes:
+        ieee_to_name[node["ieeeAddr"]] = node.get("friendlyName", node["ieeeAddr"])
+
+    by_name = {d.friendly_name: d for d in devices}
+
+    # Sibling adjacency: name -> [(neighbor_name, lqi, measured_at_neighbor)].
+    # A rel=2 link's LQI is measured by the TARGET (the neighbor-table
+    # owner) receiving the SOURCE; prefer edges where the anchor is the
+    # receiver, matching the parent-link LQI convention.
+    edges: dict[str, list[tuple[str, int, bool]]] = {}
+    for link in links:
+        if link.get("relationship") != 2:
+            continue
+        src = link.get("sourceIeeeAddr") or link.get("source", {}).get("ieeeAddr", "")
+        tgt = link.get("targetIeeeAddr") or link.get("target", {}).get("ieeeAddr", "")
+        lqi = link.get("linkquality")
+        if not src or not tgt or not isinstance(lqi, int) or lqi <= 0:
+            continue
+        src_name = ieee_to_name.get(src, src)
+        tgt_name = ieee_to_name.get(tgt, tgt)
+        edges.setdefault(src_name, []).append((tgt_name, lqi, True))
+        edges.setdefault(tgt_name, []).append((src_name, lqi, False))
+
+    # Names already anchored: Coordinator plus every device whose
+    # connected_via chain reaches it.
+    parent_of = {
+        d.friendly_name: d.connected_via for d in devices if d.connected_via
+    }
+    anchored = {"Coordinator"}
+    for name in parent_of:
+        chain, cur = [], name
+        while cur in parent_of and cur not in anchored and cur not in chain:
+            chain.append(cur)
+            cur = parent_of[cur]
+        if cur in anchored or cur == "Coordinator":
+            anchored.update(chain)
+
+    def anchorable(name: str) -> bool:
+        if name == "Coordinator":
+            return True
+        d = by_name.get(name)
+        return d is not None and d.device_type == "Router"
+
+    updated = {d.friendly_name: d for d in devices}
+    mesh_count = 0
+    progress = True
+    while progress:
+        progress = False
+        for d in sorted(devices, key=lambda d: d.friendly_name):
+            cur = updated[d.friendly_name]
+            if cur.device_type != "Router" or cur.connected_via:
+                continue
+            candidates = [
+                (lqi, at_neighbor, neighbor)
+                for neighbor, lqi, at_neighbor in edges.get(cur.friendly_name, [])
+                if neighbor in anchored and anchorable(neighbor)
+            ]
+            if not candidates:
+                continue
+            lqi, _at_neighbor, neighbor = max(candidates)
+            updated[cur.friendly_name] = replace(
+                cur,
+                connected_via=neighbor,
+                connected_via_kind="mesh",
+                link_quality=cur.link_quality if cur.link_quality is not None else lqi,
+            )
+            anchored.add(cur.friendly_name)
+            mesh_count += 1
+            progress = True
+
+    return [updated[d.friendly_name] for d in devices], mesh_count
 
 
 def _validate_parents(site_name: str, devices: list[ZigbeeDevice]) -> None:
@@ -513,14 +624,26 @@ def scan_zigbee_site(
         # only signal reading available.  A device-reported value
         # still wins when present.
         lqi = d.link_quality if d.link_quality is not None else link_lqi
-        updated.append(replace(d, connected_via=parent, link_quality=lqi))
+        updated.append(replace(
+            d,
+            connected_via=parent,
+            connected_via_kind="parent" if parent else "",
+            link_quality=lqi,
+        ))
     devices = updated
+    # Routers keep no parent records once joined (they are mesh peers);
+    # anchor parentless routers via their strongest sibling link.
+    devices, mesh_count = _anchor_mesh_routers(devices, networkmap)
     _validate_parents(site_name, devices)
     assigned = sum(1 for d in devices if d.connected_via)
     if verbose:
+        mesh_str = (
+            f" ({mesh_count} router(s) anchored via mesh sibling)"
+            if mesh_count else ""
+        )
         print(
             f"  [{site_name}] Network map: {assigned}/{len(devices)} "
-            f"device(s) have parent info",
+            f"device(s) have uplink info{mesh_str}",
             file=sys.stderr,
         )
 

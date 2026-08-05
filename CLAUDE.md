@@ -374,6 +374,10 @@ sudo .venv/bin/gdoc2netcfg password --type ipmi bmc.server1  # IPMI username + p
 
 Credentials are stored root-only in `.cache/credentials.db`, so the `password` command must run as **root** on prod (`sudo .venv/bin/gdoc2netcfg password <query>`, not `uv run`). It reads the host inventory from the credential-free CSV cache and the secret from `credentials.db` (`gdoc2netcfg fetch` must have been run at least once); it does not contact the Google Sheet directly. `generate`, `db`, `validate`, and the show commands stay sudo-free — the rest of the cache is credential-free. A `password --field <non-credential-column>` lookup also stays sudo-free (it never opens the credential store).
 
+### Zigbee radios
+
+Welland's coordinator is a Sonoff ZBDongle-E (EmberZNet). Monarto's is a CC2652P stick on ten64 USB, passed through to the `homeassistant` VM — it is a **launchpad-pinout board and must run Koenkk's `CC1352P2_CC2652P_launchpad_*` firmware**; the `other` variant cripples RX (~25 dB, the 2026-03..08 low-LQI incident). Use `advanced.transmit_power: 20` (127 is not max). Hardware table, variant rule, and the remote reflash runbook: `docs/zigbee-coordinators.md`.
+
 ### Other
 
 SSH host keys live in `discovery.db` (scan_type `ssh_host_keys`). SSHFP records are derived from these keys at runtime.

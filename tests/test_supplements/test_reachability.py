@@ -1,6 +1,8 @@
 """Tests for the shared reachability module."""
 
 import socket
+import threading
+import time
 from unittest.mock import patch
 
 from gdoc2netcfg.models.addressing import IPv4Address, IPv6Address, MACAddress
@@ -253,6 +255,31 @@ class TestCheckAllHostsReachability:
         # Both should be present regardless of order
         assert "zebra.example.com" in result
         assert "alpha.example.com" in result
+
+    @patch("gdoc2netcfg.supplements.reachability.check_reachable")
+    def test_aborts_promptly_when_stop_event_set(self, mock_reachable):
+        """A set stop_event makes the sweep return without blocking on pings."""
+        release = threading.Event()
+
+        def slow_ping(ip):
+            # Mimic a slow unreachable host. If the sweep collected this
+            # result it would block here; the abort path must not wait on it.
+            release.wait(timeout=5)
+            return False
+
+        mock_reachable.side_effect = slow_ping
+
+        stop = threading.Event()
+        stop.set()
+        hosts = [_make_host(f"h{i}", f"10.1.10.{i}") for i in range(1, 8)]
+
+        start = time.monotonic()
+        result = check_all_hosts_reachability(hosts, stop_event=stop)
+        elapsed = time.monotonic() - start
+        release.set()  # unblock any worker threads so the pool can drain
+
+        assert elapsed < 1.0
+        assert len(result) < len(hosts)
 
 
 def _make_hr(hostname, pings_per_iface):

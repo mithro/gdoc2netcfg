@@ -27,6 +27,9 @@ import paho.mqtt.client as mqtt
 from gdoc2netcfg.utils.mqtt import node_id
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from types import FrameType
+
     from gdoc2netcfg.config import MqttBrokerConfig, PipelineConfig
     from gdoc2netcfg.models.host import Host, VirtualInterface
     from gdoc2netcfg.supplements.reachability import (
@@ -552,6 +555,7 @@ def _publish_hosts_to_client(
     hosts: list[Host],
     reachability: dict[str, HostReachability],
     verbose: bool = False,
+    stop_event: threading.Event | None = None,
 ) -> tuple[int, int, int]:
     """Publish discovery + state for all hosts to an MQTT client.
 
@@ -646,14 +650,18 @@ def _publish_hosts_to_client(
     client.publish(dir_disco_topic, json.dumps(dir_disco), retain=True)
     discovery_count += 1
 
-    # Wait for HA to process discovery and subscribe to state topics
+    # Wait for HA to process discovery and subscribe to state topics. Use
+    # stop_event.wait so a shutdown signal doesn't burn the full 2 seconds.
     if verbose:
         print(
             f"Published {discovery_count} discovery messages, "
             f"waiting 2s for HA to subscribe...",
             file=sys.stderr,
         )
-    time.sleep(2)
+    if stop_event is not None:
+        stop_event.wait(2)
+    else:
+        time.sleep(2)
 
     # Phase 2: Publish ALL state messages (not retained)
     for host in sorted_hosts:
@@ -778,6 +786,26 @@ def _rebuild_hosts(config: PipelineConfig, previous_hosts, cycle: int):
         return previous_hosts
 
 
+def _make_signal_handler(
+    stop_event: threading.Event, caught: dict[str, int]
+) -> Callable[[int, FrameType | None], None]:
+    """Build an async-signal-safe SIGTERM/SIGINT handler.
+
+    A signal handler runs on the main thread between bytecodes; doing
+    anything that could re-enter a lock the main thread already holds (such
+    as writing to the buffered stderr) raises ``RuntimeError: reentrant
+    call inside <_io.BufferedWriter>``. So the handler does the minimum:
+    record the signal number and set the stop event. The shutdown message
+    is printed by the main loop once it observes the event.
+    """
+
+    def signal_handler(signum: int, frame: FrameType | None) -> None:
+        caught["signum"] = signum
+        stop_event.set()
+
+    return signal_handler
+
+
 def run_daemon(
     config: PipelineConfig,
     interval: int = 300,
@@ -802,16 +830,10 @@ def run_daemon(
     open_databases(config.cache.directory).close()
 
     stop_event = threading.Event()
-
-    def signal_handler(signum, frame):
-        print(
-            f"\nReceived signal {signum}, shutting down...",
-            file=sys.stderr,
-        )
-        stop_event.set()
-
-    signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
+    caught: dict[str, int] = {}
+    handler = _make_signal_handler(stop_event, caught)
+    signal.signal(signal.SIGTERM, handler)
+    signal.signal(signal.SIGINT, handler)
 
     mqtt_config = config.homeassistant.mqtt
 
@@ -849,11 +871,18 @@ def run_daemon(
             # Rebuild from the current cached CSVs + supplements each cycle so
             # host-list / supplement changes are picked up without a restart.
             hosts = _rebuild_hosts(config, hosts, cycle)
+            if stop_event.is_set():
+                break
 
             # Scan reachability
             reachability = check_all_hosts_reachability(
-                hosts, verbose=verbose,
+                hosts, verbose=verbose, stop_event=stop_event,
             )
+            if stop_event.is_set():
+                # Aborted mid-sweep: the partial result is not real data.
+                # Saving it would tombstone not-yet-pinged hosts and publish
+                # them as false-unreachable, so discard the whole cycle.
+                break
 
             # Save to DiscoveryDB (delta-based historical storage),
             # tombstoning hosts that vanished from the inventory.
@@ -864,7 +893,7 @@ def run_daemon(
             # Publish discovery + state using shared helper
             published, disc, state = _publish_hosts_to_client(
                 client, hosts, reachability,
-                verbose=verbose,
+                verbose=verbose, stop_event=stop_event,
             )
 
             # Bridge online
@@ -878,6 +907,14 @@ def run_daemon(
                 )
 
             stop_event.wait(timeout=interval)
+
+        # The loop only exits once stop_event is set (handler-driven).
+        if verbose:
+            signum = caught.get("signum")
+            print(
+                f"\nReceived signal {signum}, shutting down...",
+                file=sys.stderr,
+            )
 
     finally:
         # Mark bridge offline on clean shutdown

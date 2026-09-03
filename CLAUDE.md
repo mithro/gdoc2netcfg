@@ -32,7 +32,8 @@ uv run gdoc2netcfg snmp-switch --force  # Scan switches for bridge/topology via 
 uv run gdoc2netcfg bmc-firmware --force # Probe BMC firmware versions via ipmitool
 uv run gdoc2netcfg bridge              # Unified switch data (SNMP + NSDP)
 uv run gdoc2netcfg nsdp                # Scan Netgear switches via NSDP
-uv run gdoc2netcfg cron                # Manage scheduled cron jobs
+uv run gdoc2netcfg cron                # Manage scheduled cron jobs (show/install/uninstall)
+uv run gdoc2netcfg cron run <job>      # What the crontab lines call: flock + cron.log + mail on failure
 uv run gdoc2netcfg db info             # Show SQLite DB sizes and per-scan_type scan counts
 uv run gdoc2netcfg db history          # Show scan history (flags: --type, --since, --limit)
 uv run gdoc2netcfg password <query>        # Look up device password by hostname/MAC/IP
@@ -410,6 +411,31 @@ cd /opt/gdoc2netcfg && .venv/bin/gdoc2netcfg db info   # sudo-free (read-only)
 ```
 
 **Ownership: root writes, anyone reads.** The reachability daemon runs as root, so `/opt/gdoc2netcfg/.cache` and `.venv` are owned by `root`. Reads are sudo-free — the DBs use DELETE journal and read-only opens (see *Journal mode* under *SQLite Storage*), so commands that only read (`generate`, `validate`, `password`, `db info`, `db history`, the show commands) work as a normal user. Commands that **write** the DBs (the supplement scan commands, `fetch`) must run via `sudo`, using the direct `.venv/bin/gdoc2netcfg` (not `uv run`, which would re-sync the root-owned venv). The reachability daemon writes a new `reachability` scan to `discovery.db` each 5-minute cycle; the other supplements only gain history when their scan commands are run.
+
+### Scheduled jobs (cron)
+
+`sudo gdoc2netcfg cron install` (from `/opt/gdoc2netcfg`) writes a managed block
+into root's crontab: fetch + generate every 15 min, the supplement scans nightly
+(sshfp 02:00, ssl-certs 02:05, tasmota 02:10, snmp-host 03:00, bridge 03:05),
+bmc-firmware weekly, zigbee hourly when configured. **Re-run `cron install`
+after deploying a change to `cli/cron.py`** — the crontab is a snapshot.
+
+Every line is `uv --quiet --directory /opt/gdoc2netcfg run gdoc2netcfg cron run <job>`
+with **no shell redirect**. The `cron run` wrapper:
+
+- takes `flock(2)` on `.cache/cron-<job>.lock` (non-blocking);
+- streams the job's stdout+stderr into `.cache/cron.log` between timestamped
+  `==== <ts> START gdoc2netcfg <job>` / `==== <ts> END ... exit=N (Ns)` markers
+  (`tail -f` it to watch a run);
+- prints **nothing on success**; on non-zero exit, or when the lock is still
+  held by a previous run, prints a summary plus the last 200 output lines and
+  exits with the job's status. cron mails whatever a job prints to the crontab
+  owner (root → the site's `servers+…` relay address), so **a failing job is an
+  email; silence means it succeeded.**
+
+Why: cron ignores exit codes and only mails output. The previous lines ended in
+`>>cron.log 2>&1`, so a job could traceback nightly for weeks with no signal
+(the sshfp scan did, 2026-08-21 → 2026-09-03, while a host was re-keyed).
 
 ### DNS deployment
 

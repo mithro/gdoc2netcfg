@@ -3198,6 +3198,18 @@ def main(argv: list[str] | None = None) -> int:
     cron_subparsers.add_parser("show", help="Display cron entries that would be installed")
     cron_subparsers.add_parser("install", help="Install cron entries into user's crontab")
     cron_subparsers.add_parser("uninstall", help="Remove gdoc2netcfg cron entries from crontab")
+    cron_run_parser = cron_subparsers.add_parser(
+        "run",
+        help="Run one scheduled job under the cron wrapper "
+             "(flock + cron.log + report on stdout only on failure/skip)",
+    )
+    cron_run_parser.add_argument(
+        "name", help="Job name = its lock name (fetch, generate, sshfp, ...)",
+    )
+    cron_run_parser.add_argument(
+        "--tail-lines", type=int, default=200,
+        help="Trailing output lines included in a failure report (default: 200)",
+    )
 
     # bridge (unified switch data: SNMP + NSDP)
     bridge_parser = subparsers.add_parser(

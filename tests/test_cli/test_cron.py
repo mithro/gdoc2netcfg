@@ -305,34 +305,9 @@ class TestFormatCronLine:
         line = format_cron_line(entry, Path("/usr/bin/uv"), Path("/opt/gdoc2netcfg"))
         assert line.startswith("*/15 * * * *")
 
-    def test_contains_flock(self):
-        """Formatted line should include flock with non-blocking flag."""
-        from gdoc2netcfg.cli.cron import CronEntry, format_cron_line
-
-        entry = CronEntry(
-            schedule="*/15 * * * *",
-            command="gdoc2netcfg fetch",
-            lock_name="fetch",
-            comment="Fetch CSVs",
-        )
-        line = format_cron_line(entry, Path("/usr/bin/uv"), Path("/opt/gdoc2netcfg"))
-        assert "flock -n" in line
-
-    def test_lock_file_path(self):
-        """Lock file should be in .cache/ under the project root."""
-        from gdoc2netcfg.cli.cron import CronEntry, format_cron_line
-
-        entry = CronEntry(
-            schedule="*/15 * * * *",
-            command="gdoc2netcfg fetch",
-            lock_name="fetch",
-            comment="Fetch CSVs",
-        )
-        line = format_cron_line(entry, Path("/usr/bin/uv"), Path("/opt/gdoc2netcfg"))
-        assert "/opt/gdoc2netcfg/.cache/cron-fetch.lock" in line
-
-    def test_uses_uv_with_directory(self):
-        """Should use 'uv --directory <project> run <command>'."""
+    def test_runs_job_through_cron_run_wrapper(self):
+        """The line must invoke 'gdoc2netcfg cron run <lock_name>', not the
+        job directly, so locking/logging/failure-mail live in Python."""
         from gdoc2netcfg.cli.cron import CronEntry, format_cron_line
 
         entry = CronEntry(
@@ -342,10 +317,14 @@ class TestFormatCronLine:
             comment="Scan SSH fingerprints",
         )
         line = format_cron_line(entry, Path("/usr/bin/uv"), Path("/opt/gdoc2netcfg"))
-        assert "/usr/bin/uv --directory /opt/gdoc2netcfg run gdoc2netcfg sshfp" in line
+        assert line == (
+            "0 2 * * * /usr/bin/uv --quiet --directory /opt/gdoc2netcfg "
+            "run gdoc2netcfg cron run sshfp"
+        )
 
-    def test_appends_to_log_file(self):
-        """Output should be appended to .cache/cron.log."""
+    def test_no_shell_redirect_or_flock(self):
+        """No '>>log 2>&1' and no flock: output must reach cron so failures
+        get mailed; the wrapper does the locking and logging itself."""
         from gdoc2netcfg.cli.cron import CronEntry, format_cron_line
 
         entry = CronEntry(
@@ -355,7 +334,9 @@ class TestFormatCronLine:
             comment="Fetch CSVs",
         )
         line = format_cron_line(entry, Path("/usr/bin/uv"), Path("/opt/gdoc2netcfg"))
-        assert ">>/opt/gdoc2netcfg/.cache/cron.log 2>&1" in line
+        assert ">>" not in line
+        assert "2>&1" not in line
+        assert "flock" not in line
 
     def test_rejects_uv_path_with_whitespace(self):
         """Should raise ValueError if uv path contains whitespace."""
@@ -708,7 +689,7 @@ class TestCmdCronShow:
         captured = capsys.readouterr()
         assert "BEGIN gdoc2netcfg" in captured.out
         assert "END gdoc2netcfg" in captured.out
-        assert "flock" in captured.out
+        assert "cron run fetch" in captured.out
 
     def test_prints_detected_paths(self, capsys):
         """Should print detected uv and project root paths."""
@@ -898,3 +879,169 @@ class TestCmdCron:
         args = argparse.Namespace(cron_command=None)
         result = cmd_cron(args)
         assert result == 0
+
+
+# ---------------------------------------------------------------------------
+# cron run — the per-job wrapper (lock + log + mail-on-failure)
+# ---------------------------------------------------------------------------
+
+class TestResolveJobArgv:
+    """Tests for resolve_job_argv()."""
+
+    def test_maps_lock_name_to_module_invocation(self):
+        """'sshfp' -> [python, -m, gdoc2netcfg.cli.main, sshfp]."""
+        import sys
+
+        from gdoc2netcfg.cli.cron import generate_cron_entries, resolve_job_argv
+
+        argv = resolve_job_argv("sshfp", generate_cron_entries())
+        assert argv == [sys.executable, "-m", "gdoc2netcfg.cli.main", "sshfp"]
+
+    def test_multi_word_command(self):
+        """'tasmota' -> ... tasmota scan (all words after 'gdoc2netcfg')."""
+        from gdoc2netcfg.cli.cron import generate_cron_entries, resolve_job_argv
+
+        argv = resolve_job_argv("tasmota", generate_cron_entries())
+        assert argv[-2:] == ["tasmota", "scan"]
+
+    def test_unknown_name_raises(self):
+        from gdoc2netcfg.cli.cron import generate_cron_entries, resolve_job_argv
+
+        with pytest.raises(KeyError, match="nope"):
+            resolve_job_argv("nope", generate_cron_entries())
+
+
+def _py(code: str) -> list[str]:
+    """argv for a small inline python program (portable fake job)."""
+    import sys
+
+    return [sys.executable, "-c", code]
+
+
+class TestRunCronJob:
+    """Tests for run_cron_job()."""
+
+    def test_success_is_silent_and_logged(self, tmp_path, capsys):
+        """Exit 0: nothing on stdout (so cron sends no mail); full output
+        and START/END markers land in the log."""
+        from gdoc2netcfg.cli.cron import run_cron_job
+
+        log = tmp_path / "cron.log"
+        rc = run_cron_job(
+            "fetch",
+            _py("import sys; print('hello'); print('warn', file=sys.stderr)"),
+            lock_file=tmp_path / "cron-fetch.lock",
+            log_file=log,
+        )
+
+        assert rc == 0
+        assert capsys.readouterr().out == ""
+        text = log.read_text()
+        assert "START gdoc2netcfg fetch" in text
+        assert "hello\n" in text
+        assert "warn\n" in text
+        assert "END gdoc2netcfg fetch exit=0" in text
+
+    def test_failure_reports_to_stdout(self, tmp_path, capsys):
+        """Non-zero exit: summary + output tail on stdout (cron mails it),
+        the wrapper's own exit code mirrors the job's."""
+        from gdoc2netcfg.cli.cron import run_cron_job
+
+        log = tmp_path / "cron.log"
+        rc = run_cron_job(
+            "sshfp",
+            _py(
+                "import sys; print('scanning'); "
+                "print('Traceback: boom', file=sys.stderr); sys.exit(3)"
+            ),
+            lock_file=tmp_path / "cron-sshfp.lock",
+            log_file=log,
+        )
+
+        assert rc == 3
+        out = capsys.readouterr().out
+        assert "gdoc2netcfg sshfp FAILED" in out
+        assert "exit status 3" in out
+        assert str(log) in out
+        assert "scanning" in out
+        assert "Traceback: boom" in out
+        assert "END gdoc2netcfg sshfp exit=3" in log.read_text()
+
+    def test_failure_output_is_tail_limited(self, tmp_path, capsys):
+        """Only the last N lines are mailed (tracebacks are at the end);
+        the log still has everything."""
+        from gdoc2netcfg.cli.cron import run_cron_job
+
+        log = tmp_path / "cron.log"
+        rc = run_cron_job(
+            "sshfp",
+            _py("import sys\nfor i in range(500): print(f'line {i}')\nsys.exit(1)"),
+            lock_file=tmp_path / "cron-sshfp.lock",
+            log_file=log,
+            tail_lines=50,
+        )
+
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "Last 50 of 500 output lines" in out
+        assert "line 0\n" not in out
+        assert "line 449\n" not in out
+        assert "line 450\n" in out
+        assert "line 499\n" in out
+        assert "line 0\n" in log.read_text()
+
+    def test_lock_held_skips_and_reports(self, tmp_path, capsys):
+        """A concurrent run holds the flock: skip the job, say so on stdout
+        (silent skips are exactly the failure mode this exists to fix)."""
+        import fcntl
+
+        from gdoc2netcfg.cli.cron import run_cron_job
+
+        lock_file = tmp_path / "cron-fetch.lock"
+        holder = open(lock_file, "w")
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            marker = tmp_path / "ran"
+            rc = run_cron_job(
+                "fetch",
+                _py(f"open({str(marker)!r}, 'w').close()"),
+                lock_file=lock_file,
+                log_file=tmp_path / "cron.log",
+            )
+        finally:
+            holder.close()
+
+        assert rc != 0
+        assert not marker.exists()
+        out = capsys.readouterr().out
+        assert "gdoc2netcfg fetch SKIPPED" in out
+        assert str(lock_file) in out
+        assert "SKIPPED gdoc2netcfg fetch" in (tmp_path / "cron.log").read_text()
+
+    def test_lock_held_by_another_process(self, tmp_path):
+        """The wrapper takes flock(2) on the lock file, the same lock the old
+        flock -n crontab lines used, so runs from any process exclude each other."""
+        import subprocess
+        import sys
+
+        from gdoc2netcfg.cli.cron import run_cron_job
+
+        lock_file = tmp_path / "cron-fetch.lock"
+        # Hold the lock from a separate process.
+        holder = subprocess.Popen(
+            [sys.executable, "-c",
+             "import fcntl, sys, time; f = open(sys.argv[1], 'w'); "
+             "fcntl.flock(f, fcntl.LOCK_EX); print('held', flush=True); time.sleep(30)",
+             str(lock_file)],
+            stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            assert holder.stdout.readline().strip() == "held"
+            rc = run_cron_job(
+                "fetch", _py("pass"),
+                lock_file=lock_file, log_file=tmp_path / "cron.log",
+            )
+            assert rc != 0
+        finally:
+            holder.kill()
+            holder.wait()

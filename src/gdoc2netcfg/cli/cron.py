@@ -1,16 +1,31 @@
 """Cron job management for gdoc2netcfg.
 
 Provides commands to install, show, and uninstall scheduled cron jobs
-that keep cached data and generated config files up to date.
+that keep cached data and generated config files up to date, plus the
+``cron run`` wrapper every installed line goes through.
+
+Why a wrapper: cron mails the crontab owner whatever a job prints and
+ignores exit codes entirely, so the old ``... >>cron.log 2>&1`` lines
+turned every traceback into silence (the nightly ``sshfp`` scan failed
+for two weeks unnoticed).  ``cron run <name>`` takes the per-job flock,
+streams the job's combined output into ``.cache/cron.log`` between
+timestamped START/END markers, and prints a summary plus the last lines
+of output on stdout ONLY when the job fails or is skipped because the
+lock is held — so root gets mail exactly when something is wrong.
 """
 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import shutil
+import socket
 import subprocess
 import sys
+import time
+from collections import deque
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 
@@ -175,25 +190,164 @@ def _validate_no_whitespace(path: Path, label: str) -> None:
         )
 
 
+def cron_paths(project_root: Path, lock_name: str) -> tuple[Path, Path]:
+    """(lock_file, log_file) for a job — shared by the crontab line and the
+    ``cron run`` wrapper so the two can never disagree."""
+    cache = project_root / ".cache"
+    return cache / f"cron-{lock_name}.lock", cache / "cron.log"
+
+
 def format_cron_line(entry: CronEntry, uv_path: Path, project_root: Path) -> str:
     """Format a single CronEntry as a crontab line.
 
-    Uses flock for locking, uv --directory for working directory,
-    and appends output to .cache/cron.log.
+    The line runs ``gdoc2netcfg cron run <lock_name>`` (see run_cron_job),
+    which does the locking and logging itself.  There is deliberately NO
+    shell redirect: whatever the wrapper prints must reach cron so that it
+    is mailed.  ``uv --quiet`` keeps uv's own chatter (env sync messages)
+    off that channel; real uv failures still surface.
 
     Raises ValueError if either path contains whitespace (would break
     unquoted shell expansion in crontab).
     """
     _validate_no_whitespace(uv_path, "uv")
     _validate_no_whitespace(project_root, "Project root")
-    lock_file = project_root / ".cache" / f"cron-{entry.lock_name}.lock"
-    log_file = project_root / ".cache" / "cron.log"
     return (
         f"{entry.schedule} "
-        f"flock -n {lock_file} "
-        f"{uv_path} --directory {project_root} run {entry.command} "
-        f">>{log_file} 2>&1"
+        f"{uv_path} --quiet --directory {project_root} "
+        f"run gdoc2netcfg cron run {entry.lock_name}"
     )
+
+
+# ---------------------------------------------------------------------------
+# cron run — the per-job wrapper
+# ---------------------------------------------------------------------------
+
+#: Exit status when a run is skipped because the previous one still holds
+#: the lock (sysexits.h EX_TEMPFAIL).
+EXIT_LOCK_HELD = 75
+
+#: How many trailing output lines a failure report carries.  Tracebacks
+#: are at the end; the full output is always in cron.log.
+DEFAULT_TAIL_LINES = 200
+
+
+def resolve_job_argv(lock_name: str, entries: list[CronEntry]) -> list[str]:
+    """argv that runs the job named *lock_name* in THIS interpreter.
+
+    ``entry.command`` is ``"gdoc2netcfg <sub> [args]"``; the words after
+    ``gdoc2netcfg`` are handed to ``python -m gdoc2netcfg.cli.main`` so the
+    wrapper and the job share one venv regardless of how uv was invoked.
+
+    Raises KeyError for an unknown name.
+    """
+    for entry in entries:
+        if entry.lock_name == lock_name:
+            words = entry.command.split()
+            if words[:1] != ["gdoc2netcfg"]:
+                raise ValueError(
+                    f"Cron entry {lock_name!r} command does not start with "
+                    f"'gdoc2netcfg': {entry.command!r}"
+                )
+            return [sys.executable, "-m", "gdoc2netcfg.cli.main", *words[1:]]
+    known = ", ".join(sorted(e.lock_name for e in entries))
+    raise KeyError(f"No cron job named {lock_name!r} (known: {known})")
+
+
+def _timestamp() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def run_cron_job(
+    lock_name: str,
+    argv: list[str],
+    *,
+    lock_file: Path,
+    log_file: Path,
+    tail_lines: int = DEFAULT_TAIL_LINES,
+) -> int:
+    """Run one cron job under its flock, logging everything, loud on failure.
+
+    - Takes ``flock(2)`` LOCK_EX|LOCK_NB on *lock_file* (the same lock the
+      old ``flock -n`` crontab lines used, so old- and new-style runs of the
+      same job still exclude each other).  If it is held, the job is
+      SKIPPED: a one-line report goes to stdout (so cron mails it — a job
+      that never gets to run is a failure, not a non-event) and the return
+      value is EXIT_LOCK_HELD.
+    - Streams the job's stdout+stderr line by line into *log_file* between
+      ``==== <ts> START`` / ``==== <ts> END ... exit=N`` markers, flushing
+      per line so ``tail -f cron.log`` shows progress.
+    - Prints NOTHING on success.  On non-zero exit prints a summary and the
+      last *tail_lines* lines of output to stdout, then returns the job's
+      exit status.
+    """
+    label = f"gdoc2netcfg {lock_name}"
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(lock_file, "w") as lock_fh, open(log_file, "a") as log:
+        try:
+            fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log.write(
+                f"==== {_timestamp()} SKIPPED {label}: lock {lock_file} "
+                f"is held by another run\n"
+            )
+            print(
+                f"{label} SKIPPED on {socket.gethostname()}: lock {lock_file} "
+                f"is still held by a previous run (hung or overrunning?)"
+            )
+            print(f"Full log: {log_file}")
+            return EXIT_LOCK_HELD
+
+        started = time.monotonic()
+        log.write(f"==== {_timestamp()} START {label}: {' '.join(argv)}\n")
+        log.flush()
+
+        tail: deque[str] = deque(maxlen=tail_lines)
+        total = 0
+        try:
+            proc = subprocess.Popen(
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                errors="replace",
+            )
+        except OSError as exc:
+            line = f"failed to start {argv[0]}: {exc}\n"
+            log.write(line)
+            tail.append(line)
+            total = 1
+            rc = 127
+        else:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                log.write(line)
+                log.flush()
+                tail.append(line)
+                total += 1
+            rc = proc.wait()
+
+        elapsed = round(time.monotonic() - started)
+        log.write(f"==== {_timestamp()} END {label} exit={rc} ({elapsed}s)\n")
+
+    if rc == 0:
+        return 0
+
+    print(
+        f"{label} FAILED on {socket.gethostname()}: exit status {rc} "
+        f"after {elapsed}s"
+    )
+    print(f"Command: {' '.join(argv)}")
+    print(f"Full log: {log_file}")
+    if total > len(tail):
+        print(f"Last {len(tail)} of {total} output lines:")
+    else:
+        print(f"Output ({total} lines):")
+    body = "".join(tail)
+    if body and not body.endswith("\n"):
+        body += "\n"
+    print(body, end="")
+    return rc
 
 
 def format_crontab_block(
@@ -354,17 +508,34 @@ def cmd_cron_uninstall() -> int:
     return 0
 
 
+def cmd_cron_run(args: argparse.Namespace) -> int:
+    """Run one scheduled job under the wrapper (what the crontab lines call)."""
+    project_root = detect_project_root()
+    entries = generate_cron_entries(zigbee=zigbee_configured(project_root))
+    try:
+        argv = resolve_job_argv(args.name, entries)
+    except KeyError as exc:
+        print(f"gdoc2netcfg cron run: {exc.args[0]}", file=sys.stderr)
+        return 2
+    lock_file, log_file = cron_paths(project_root, args.name)
+    return run_cron_job(
+        args.name, argv,
+        lock_file=lock_file, log_file=log_file, tail_lines=args.tail_lines,
+    )
+
+
 def cmd_cron(args: argparse.Namespace) -> int:
     """Dispatch to the appropriate cron subcommand."""
     handlers = {
-        "show": cmd_cron_show,
-        "install": cmd_cron_install,
-        "uninstall": cmd_cron_uninstall,
+        "show": lambda: cmd_cron_show(),
+        "install": lambda: cmd_cron_install(),
+        "uninstall": lambda: cmd_cron_uninstall(),
+        "run": lambda: cmd_cron_run(args),
     }
 
     subcommand = getattr(args, "cron_command", None)
     if subcommand is None:
-        print("Usage: gdoc2netcfg cron {show|install|uninstall}")
+        print("Usage: gdoc2netcfg cron {show|install|uninstall|run}")
         return 0
 
     return handlers[subcommand]()

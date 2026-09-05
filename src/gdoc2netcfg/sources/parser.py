@@ -11,6 +11,10 @@ import csv
 import io
 from dataclasses import dataclass, field
 
+#: Literal MAC-cell value meaning "this interface has no MAC on purpose"
+#: (wg / tailscale tunnels, DNS-only entries).  Compared case-insensitively.
+DNS_ONLY_MARKER = "none"
+
 
 @dataclass
 class DeviceRecord:
@@ -27,6 +31,10 @@ class DeviceRecord:
     ip: str = ""
     interface: str = ""
     site: str = ""
+    #: True when the MAC cell held DNS_ONLY_MARKER: a deliberately MAC-less
+    #: (DNS-only) interface.  A row with machine+IP, no MAC and dns_only
+    #: False is a validation ERROR (missing_mac).
+    dns_only: bool = False
     extra: dict[str, str] = field(default_factory=dict)
 
 
@@ -155,8 +163,12 @@ def parse_csv(csv_text: str, sheet_name: str) -> list[DeviceRecord]:
             machine = row[machine_col].strip()
 
         mac = ""
+        dns_only = False
         if mac_col is not None and mac_col < len(row):
             mac = row[mac_col].strip()
+            if mac.lower() == DNS_ONLY_MARKER:
+                mac = ""
+                dns_only = True
 
         ip_addr = ""
         if ip_col is not None and ip_col < len(row):
@@ -195,6 +207,7 @@ def parse_csv(csv_text: str, sheet_name: str) -> list[DeviceRecord]:
                 ip=ip_addr,
                 interface=interface,
                 site=site_value,
+                dns_only=dns_only,
                 extra=extra,
             )
         )

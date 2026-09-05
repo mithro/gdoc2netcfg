@@ -63,6 +63,8 @@ class TestReachability:
 
         hosts = [f"host{i:03d}" for i in range(200)]
         conn = db.connection
+        # test-only: the setup is fsync-bound; the measured load is unaffected
+        conn.execute("PRAGMA synchronous=OFF")
         for scan_no in range(150):
             s = db.begin_scan("reachability")
             conn.executemany(

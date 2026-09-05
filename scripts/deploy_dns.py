@@ -9,7 +9,7 @@ changed:
                    dnsmasq@<net> for changed nets only
   pdns internal    etc/powerdns/bind-internal.conf + zones-internal/*.zone
                    bind conf changed -> systemctl restart pdns@internal
-                   only zones changed -> pdns_control bind-reload-now
+                   only zones changed -> pdns_control bind-reload-now <zones>
   pdns external    etc/powerdns/bind-external.conf + zones-external/*.zone
                    bind conf changed -> systemctl restart pdns@external
                    only zones changed -> pdns_control bind-reload-now <zone>
@@ -114,10 +114,13 @@ def deploy_pdns(out_etc: Path, view: str, dry: bool) -> list[Path]:
         touched.append(conf_dst)
         run(["systemctl", "restart", f"pdns@{view}"], dry)
     elif changed_zones:
-        ctl = ["pdns_control", f"--config-name={view}",
-               f"--socket-dir=/var/run/pdns-{view}", "bind-reload-now"]
-        # internal: reload all; external: per-zone (matches net/CLAUDE.md)
-        run(ctl if view == "internal" else ctl + changed_zones, dry)
+        # Always name the zones: `pdns_control bind-reload-now` with no
+        # domain arguments reloads NOTHING (it is not "reload all"), so the
+        # internal view kept serving stale zones until a pdns restart —
+        # found 2026-09-05 when a redeployed SSHFP never went live.
+        run(["pdns_control", f"--config-name={view}",
+             f"--socket-dir=/var/run/pdns-{view}", "bind-reload-now",
+             *changed_zones], dry)
     return touched
 
 

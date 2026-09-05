@@ -107,6 +107,17 @@ def _is_bmc_interface(interface_name: str | None) -> bool:
     return bool(interface_name and "bmc" in interface_name.lower())
 
 
+def macced_ips(records: list[DeviceRecord]) -> set[str]:
+    """IPs claimed by a row that has machine, IP and a MAC.
+
+    A MAC-less row on such an IP is a cross-reference (e.g. the IoT sheet
+    listing a Network-sheet machine for plug bookkeeping), not a host:
+    build_hosts skips it and validators do not report it as missing_mac.
+    ONE definition, used by both, so they cannot drift.
+    """
+    return {r.ip for r in records if r.machine and r.ip and r.mac_address}
+
+
 def build_hosts(records: list[DeviceRecord], site: Site) -> list[Host]:
     """Build Host objects from raw DeviceRecords.
 
@@ -132,9 +143,7 @@ def build_hosts(records: list[DeviceRecord], site: Site) -> list[Host]:
     # for plug bookkeeping), not a host — skip it. MAC-less rows with
     # unclaimed IPs are genuine DNS-only interfaces (wg, tailscale,
     # planned hosts).
-    macced_ips = {
-        r.ip for r in records if r.machine and r.ip and r.mac_address
-    }
+    macced_ips_set = macced_ips(records)
 
     # Group records by hostname to build hosts.
     # BMC interfaces get their own hostname: {interface}.{machine_hostname}
@@ -147,7 +156,7 @@ def build_hosts(records: list[DeviceRecord], site: Site) -> list[Host]:
         # MAC deliberately optional: MAC-less rows are DNS-only interfaces
         if not record.machine or not record.ip:
             continue
-        if not record.mac_address and record.ip in macced_ips:
+        if not record.mac_address and record.ip in macced_ips_set:
             continue  # cross-reference row for a MAC'd interface
 
         # Determine sheet type

@@ -775,14 +775,22 @@ def _rebuild_hosts(config: PipelineConfig, previous_hosts, cycle: int):
 
     Returns the freshly built hosts on success. The first build must succeed
     (there is no good state to fall back to) and propagates on failure; on a
-    later cycle a failure is logged and the previous host list is kept, so a
-    bad data edit degrades to staleness rather than taking monitoring down.
+    later cycle a genuine pipeline-build failure is logged and the previous
+    host list is kept, so a bad data edit degrades to staleness rather than
+    taking monitoring down.
+
+    Validation ERRORS are different: they are checked OUTSIDE that
+    stale-degrades-gracefully path and always raise, on every cycle, not
+    just the first. This should never happen — fetch already refuses to
+    cache a sheet set with missing_mac errors — so seeing one here is a
+    bug, and the owner has ruled that invalid configuration must fail
+    loud, not degrade to a stderr warning that keeps serving from
+    (possibly different) invalid data cycle after cycle.
     """
     from gdoc2netcfg.cli.main import _build_pipeline
 
     try:
-        _, hosts, _inventory, _result = _build_pipeline(config)
-        return hosts
+        _, hosts, _inventory, result = _build_pipeline(config)
     except Exception as exc:
         if previous_hosts is None:
             raise
@@ -792,6 +800,14 @@ def _rebuild_hosts(config: PipelineConfig, previous_hosts, cycle: int):
             file=sys.stderr,
         )
         return previous_hosts
+
+    if result.has_errors:
+        raise ValueError(
+            "Cached sheets fail validation — refusing to publish from "
+            "invalid data (fetch should have refused to cache this):\n"
+            + result.report()
+        )
+    return hosts
 
 
 def run_daemon(

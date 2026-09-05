@@ -250,3 +250,22 @@ class TestWifiSiteCarryForward:
         )
         records = parse_csv(csv_text, sheet_name)
         assert records[1].site == "welland"
+
+
+class TestDnsOnlyMarker:
+    def test_none_marker_yields_empty_mac_and_dns_only(self):
+        csv_text = (
+            "Machine,MAC Address,IP,Interface\n"
+            "ten64,none,10.98.5.1,wg-desktop\n"
+            "ten64,NONE,10.98.6.1,wg-x1c-work\n"
+            "desk,aa:bb:cc:dd:ee:ff,10.1.10.5,eth0\n"
+            "planned,,10.1.10.6,eth1\n"
+        )
+        recs = parse_csv(csv_text, "network")
+        by_if = {r.interface: r for r in recs}
+        assert by_if["wg-desktop"].mac_address == "" and by_if["wg-desktop"].dns_only is True
+        assert by_if["wg-x1c-work"].mac_address == "" and by_if["wg-x1c-work"].dns_only is True
+        assert by_if["eth0"].dns_only is False           # 'desk' row: real MAC
+        assert by_if["eth0"].mac_address == "aa:bb:cc:dd:ee:ff"
+        planned = [r for r in recs if r.machine == "planned"][0]
+        assert planned.mac_address == "" and planned.dns_only is False

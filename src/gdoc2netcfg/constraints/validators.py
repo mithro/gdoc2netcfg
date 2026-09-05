@@ -32,23 +32,47 @@ def validate_field_constraints(records: list[DeviceRecord]) -> ValidationResult:
     """Validate field-level constraints on raw device records.
 
     Checks:
-    - MAC address must be present
-    - Machine name must be present
-    - IP address must be present
+    - MAC address must be present on every interface row (machine + IP),
+      unless the MAC cell says ``none`` (DNS_ONLY_MARKER: a deliberately
+      DNS-only interface) or the row is a cross-reference of a MAC'd row
+      on the same IP.  ERROR — fetch refuses to cache the sheet set.
+    - Machine name must be present (WARNING)
+    - IP address must be present (WARNING)
     """
+    from gdoc2netcfg.derivations.host_builder import macced_ips
+    from gdoc2netcfg.sources.parser import DNS_ONLY_MARKER
+
     result = ValidationResult()
+    claimed = macced_ips(records)
 
     for record in records:
         record_id = f"{record.sheet_name}:{record.row_number}"
 
-        if not record.mac_address:
-            result.add(ConstraintViolation(
-                severity=Severity.WARNING,
-                code="missing_mac",
-                message=f"No MAC address (machine={record.machine!r})",
-                record_id=record_id,
-                field="mac_address",
-            ))
+        if not record.mac_address and not record.dns_only:
+            is_interface_row = bool(record.machine and record.ip)
+            if is_interface_row and record.ip in claimed:
+                pass  # cross-reference row; host_builder skips it
+            elif is_interface_row:
+                result.add(ConstraintViolation(
+                    severity=Severity.ERROR,
+                    code="missing_mac",
+                    message=(
+                        f"No MAC address (machine={record.machine!r}, "
+                        f"interface={record.interface!r}, ip={record.ip!r}); "
+                        f"record the MAC, or put '{DNS_ONLY_MARKER}' in the "
+                        f"MAC cell for a deliberately DNS-only interface"
+                    ),
+                    record_id=record_id,
+                    field="mac_address",
+                ))
+            else:
+                result.add(ConstraintViolation(
+                    severity=Severity.WARNING,
+                    code="missing_mac",
+                    message=f"No MAC address (machine={record.machine!r})",
+                    record_id=record_id,
+                    field="mac_address",
+                ))
 
         if not record.machine:
             result.add(ConstraintViolation(

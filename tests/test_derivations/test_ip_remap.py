@@ -188,6 +188,21 @@ class TestFilterAndResolveRecords:
         result = filter_and_resolve_records([original], site)
         assert result[0] is original
 
+    def test_dns_only_survives_x_resolution(self):
+        """A none-marked (dns_only) record with an X-placeholder IP must
+        keep dns_only=True after remap builds its replacement record —
+        every field must propagate, not just the ones this function
+        happened to know about when it was written."""
+        site = _site("monarto", site_octet=2)
+        original = DeviceRecord(
+            sheet_name="network", row_number=5, machine="ten64",
+            mac_address="", ip="10.X.98.1", dns_only=True,
+        )
+        result = filter_and_resolve_records([original], site)
+        assert len(result) == 1
+        assert result[0].ip == "10.2.98.1"
+        assert result[0].dns_only is True
+
 
 class TestSiteValidation:
     """Validate that site column values are recognized site names."""

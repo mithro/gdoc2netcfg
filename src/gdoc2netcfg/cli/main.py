@@ -536,6 +536,37 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
     has_credential_columns = any(present for _, _, present in stripped)
 
+    # 2a. Validate the sheet set the cache will hold after this run:
+    #     the sheets just fetched plus the CACHED copy of any sheet that
+    #     failed to fetch.  Invalid data is never cached — the previous
+    #     good CSVs stay and the cron mail says why (fail loud, early).
+    from gdoc2netcfg.constraints.validators import validate_field_constraints
+
+    cache = CSVCache(config.cache.directory)
+    fetched_names = {name for name, _ in raw_csvs}
+    to_validate = list(raw_csvs)
+    for sheet in config.sheets:
+        if sheet.name not in fetched_names and cache.has(sheet.name):
+            to_validate.append((sheet.name, cache.read(sheet.name)))
+    field_result = validate_field_constraints(_parse_device_records(to_validate))
+    if field_result.has_errors:
+        print(
+            "Error: the fetched sheets fail validation; refusing to cache "
+            "or store them (the previous cached copies stay in place):",
+            file=sys.stderr,
+        )
+        # Errors only, once each — not field_result.report() (which also
+        # lists every WARNING; on today's sheets that's ~366 extra lines
+        # mailed to root every 15 minutes until the sheet is fixed).
+        # ValidationResult.__str__ omits the machine-readable `code`
+        # (test_constraints/test_errors.py pins that format), so prefix
+        # it ourselves.
+        for violation in field_result.errors:
+            print(f"  [{violation.code}] {violation}", file=sys.stderr)
+        print("Fix the spreadsheet rows above, then re-run fetch. Nothing was stored.",
+              file=sys.stderr)
+        return 1
+
     # 3. If a credential-bearing sheet was fetched, store credentials FIRST
     #    (before touching the cache) so a failure leaves old state intact.
     #    Skip entirely when no credential columns were seen this run — never
@@ -585,7 +616,6 @@ def cmd_fetch(args: argparse.Namespace) -> int:
                 raise
 
     # 4. Write the credential-free CSVs to the flat cache.
-    cache = CSVCache(config.cache.directory)
     fetched_csvs: list[tuple[str, str]] = []
     for name, clean, _present in stripped:
         cache.write(name, clean)

@@ -878,7 +878,10 @@ class DiscoveryDB(BaseDatabase):
         Delta storage means each entity's latest data may sit in a
         different scan.  This is the ONLY sanctioned shape for that
         question: a GROUP BY over (entity, MAX(scan_id)) joined back to
-        the table — linear in table size.  Never write it as a correlated
+        the table — linear in practice: the CTE is a single indexed pass
+        and the join back touches only each entity's latest-scan rows;
+        never quadratic in rows-per-entity like the correlated form.
+        Never write it as a correlated
         ``WHERE t.scan_id = (SELECT ... ORDER BY s.id DESC LIMIT 1)``:
         that is O(rows-per-entity²), took 331 s on 65k production
         reachability rows, and held a SHARED lock that long so every
@@ -1242,6 +1245,9 @@ class DiscoveryDB(BaseDatabase):
 
         Each entity's latest data may come from a different scan (delta
         storage — an entity only gets rows in the scans that changed it).
+
+        Same GROUP BY (entity, MAX(scan_id)) shape as `_latest_rows_sql`,
+        aggregate-only because callers need the scan-id map, not the rows.
         """
         cur = self._conn.execute(
             f"SELECT t.{entity_col}, MAX(t.scan_id) "  # noqa: S608

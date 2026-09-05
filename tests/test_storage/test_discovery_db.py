@@ -374,6 +374,28 @@ class TestSSLCerts:
         loaded = db.load_latest_ssl_certs()
         assert loaded["h"]["self_signed"] is True
 
+    def test_latest_rows_come_from_different_scans_per_host(self, db: DiscoveryDB):
+        """Delta storage: host-a's latest cert sits in scan 1, host-b's in
+        scan 2 — the reconstruction must mix scans per host, and ignore an
+        unfinished scan even though it changes host-a again."""
+        s1 = db.begin_scan("ssl_certs")
+        db.save_ssl_certs(s1, {
+            "host-a": self._make_cert(issuer="LE-a"),
+            "host-b": self._make_cert(issuer="LE-b"),
+        })
+        db.finish_scan(s1, host_count=2, changed_count=2)
+
+        s2 = db.begin_scan("ssl_certs")
+        db.save_ssl_certs(s2, {"host-b": self._make_cert(issuer="Comodo-b")})
+        db.finish_scan(s2, host_count=1, changed_count=1)
+
+        s3 = db.begin_scan("ssl_certs")                                   # never finished
+        db.save_ssl_certs(s3, {"host-a": self._make_cert(issuer="Rogue-a")})
+
+        loaded = db.load_latest_ssl_certs()
+        assert loaded["host-a"]["issuer"] == "LE-a"      # from s1
+        assert loaded["host-b"]["issuer"] == "Comodo-b"  # from s2, not s3
+
 
 # -- BMC firmware ----------------------------------------------------------
 
@@ -438,6 +460,28 @@ class TestBMCFirmware:
 
         loaded = db.load_latest_bmc_firmware()
         assert loaded["h"]["series"] is None
+
+    def test_latest_rows_come_from_different_scans_per_host(self, db: DiscoveryDB):
+        """Delta storage: host-a's latest firmware sits in scan 1, host-b's
+        in scan 2 — the reconstruction must mix scans per host, and ignore
+        an unfinished scan even though it changes host-a again."""
+        s1 = db.begin_scan("bmc_firmware")
+        db.save_bmc_firmware(s1, {
+            "host-a": self._make_bmc(fw_rev="1.00"),
+            "host-b": self._make_bmc(fw_rev="1.00"),
+        })
+        db.finish_scan(s1, host_count=2, changed_count=2)
+
+        s2 = db.begin_scan("bmc_firmware")
+        db.save_bmc_firmware(s2, {"host-b": self._make_bmc(fw_rev="1.35")})
+        db.finish_scan(s2, host_count=1, changed_count=1)
+
+        s3 = db.begin_scan("bmc_firmware")                                # never finished
+        db.save_bmc_firmware(s3, {"host-a": self._make_bmc(fw_rev="9.99")})
+
+        loaded = db.load_latest_bmc_firmware()
+        assert loaded["host-a"]["firmware_revision"] == "1.00"  # from s1
+        assert loaded["host-b"]["firmware_revision"] == "1.35"  # from s2, not s3
 
 
 # -- JSON-blob supplements ------------------------------------------------

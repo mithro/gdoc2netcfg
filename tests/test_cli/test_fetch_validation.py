@@ -17,7 +17,7 @@ def test_fetch_refuses_sheet_with_unmarked_missing_mac(fetch_config, monkeypatch
     cache_dir.mkdir(parents=True, exist_ok=True)
     (cache_dir / "network.csv").write_text(good_csv)
 
-    def fake_fetch(name, url):
+    def fake_fetch(name, url, timeout=None):
         return SheetData(name=name, csv_text=(
             "Machine,MAC Address,IP,Interface\n"
             "ten64,none,10.98.5.1,wg-desktop\n"          # marked: fine
@@ -41,7 +41,7 @@ def test_fetch_refuses_sheet_with_unmarked_missing_mac(fetch_config, monkeypatch
 def test_fetch_caches_sheet_when_dns_only_rows_are_marked(fetch_config, monkeypatch):  # noqa: F811
     config, cache_dir = fetch_config
 
-    def fake_fetch(name, url):
+    def fake_fetch(name, url, timeout=None):
         return SheetData(name=name, csv_text=(
             "Machine,MAC Address,IP,Interface\n"
             "ten64,none,10.98.5.1,wg-desktop\n"
@@ -70,7 +70,7 @@ def test_fetch_validates_against_cached_copy_of_a_sheet_that_failed_to_fetch(
         "Machine,MAC Address,IP,Interface\nplug-1,aa:bb:cc:dd:ee:01,10.1.90.10,\n"
     )
 
-    def fake_fetch(name, url):
+    def fake_fetch(name, url, timeout=None):
         if name == "network":
             raise RuntimeError("HTTP 503")
         return SheetData(name=name, csv_text=(

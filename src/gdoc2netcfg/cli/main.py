@@ -25,6 +25,7 @@ import argparse
 import re
 import sqlite3
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -53,6 +54,12 @@ def _load_config(args: argparse.Namespace):
         path = config_path or "gdoc2netcfg.toml"
         print(f"Error: config file not found: {path}", file=sys.stderr)
         sys.exit(1)
+
+
+#: Wall-clock budget (seconds) for the whole sheet-fetch step of ``fetch``.
+#: Five sheets at a 60 s socket timeout each is the worst honest case; past
+#: this the remaining sheets are failed loud instead of attempted.
+FETCH_JOB_DEADLINE_SECONDS = 300.0
 
 
 def _fetch_or_load_csvs(config, use_cache: bool = False):
@@ -510,17 +517,38 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         extract_credentials,
         strip_credential_columns,
     )
-    from gdoc2netcfg.sources.sheets import fetch_sheet
+    from gdoc2netcfg.sources.sheets import (
+        SHEET_FETCH_TIMEOUT_SECONDS,
+        fetch_sheet,
+    )
     from gdoc2netcfg.storage.config_db import ConfigDB
     from gdoc2netcfg.storage.credentials_db import CredentialsDB
 
-    # 1. Fetch every sheet into memory (raw, with credentials).
+    # 1. Fetch every sheet into memory (raw, with credentials).  The whole
+    #    step runs under one deadline: each request gets the smaller of the
+    #    per-request socket timeout and the time left, and sheets not reached
+    #    before the deadline are failed loud rather than attempted.  A fetch
+    #    that cannot finish must fail (and mail) — never hang holding the
+    #    cron lock (monarto: 6 days, 2026-09-05).
     raw_csvs: list[tuple[str, str]] = []
     ok = 0
     fail = 0
+    deadline = time.monotonic() + FETCH_JOB_DEADLINE_SECONDS
     for sheet in config.sheets:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            print(
+                f"  {sheet.name}: FAILED (fetch job deadline of "
+                f"{FETCH_JOB_DEADLINE_SECONDS:.0f}s exceeded before this sheet)",
+                file=sys.stderr,
+            )
+            fail += 1
+            continue
         try:
-            data = fetch_sheet(sheet.name, sheet.url)
+            data = fetch_sheet(
+                sheet.name, sheet.url,
+                timeout=min(SHEET_FETCH_TIMEOUT_SECONDS, remaining),
+            )
             raw_csvs.append((sheet.name, data.csv_text))
             print(f"  {sheet.name}: fetched ({len(data.csv_text)} bytes)")
             ok += 1

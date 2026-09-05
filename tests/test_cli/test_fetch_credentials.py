@@ -47,7 +47,7 @@ def test_fetch_strips_password_from_cache_and_stores_it(
 ):
     config, cache_dir = fetch_config
 
-    def fake_fetch(name, url):
+    def fake_fetch(name, url, timeout=None):
         return SheetData(name=name, csv_text=_fake_network_csv())
 
     monkeypatch.setattr(
@@ -75,7 +75,7 @@ def test_fetch_creates_credentials_db_0600(fetch_config, monkeypatch):
 
     config, cache_dir = fetch_config
 
-    def fake_fetch(name, url):
+    def fake_fetch(name, url, timeout=None):
         return SheetData(name=name, csv_text=_fake_network_csv())
 
     monkeypatch.setattr(
@@ -94,7 +94,7 @@ def test_fetch_fails_loud_when_credential_cell_would_be_lost(
     abort the fetch — nothing stored, nothing cached, value never echoed."""
     config, cache_dir = fetch_config
 
-    def fake_fetch(name, url):
+    def fake_fetch(name, url, timeout=None):
         return SheetData(name=name, csv_text=(
             "Machine,MAC Address,IP,Interface,Password,Notes\n"
             "switch1,aa:bb:cc:dd:ee:01,,base,secret1,inventory row\n"
@@ -127,7 +127,7 @@ def test_failed_credential_sheet_fetch_does_not_wipe_store(
     config, cache_dir = fetch_config
 
     # 1. Successful fetch populates the credential store.
-    def good_fetch(name, url):
+    def good_fetch(name, url, timeout=None):
         return SheetData(name=name, csv_text=_fake_network_csv())
 
     monkeypatch.setattr(
@@ -140,7 +140,7 @@ def test_failed_credential_sheet_fetch_does_not_wipe_store(
 
     # 2. The (only, credential-bearing) sheet now fails to fetch. The store
     #    must be left exactly as it was — no tombstones, no wipe.
-    def bad_fetch(name, url):
+    def bad_fetch(name, url, timeout=None):
         raise RuntimeError("network down")
 
     monkeypatch.setattr(

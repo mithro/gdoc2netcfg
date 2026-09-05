@@ -54,6 +54,66 @@ class TestReachability:
     def test_load_returns_none_with_no_scans(self, db: DiscoveryDB):
         assert db.load_latest_reachability() is None
 
+    def test_load_latest_is_linear_in_table_size(self, db: DiscoveryDB):
+        """Regression for the 2026-09 outage: the old correlated-subquery
+        form was O(rows-per-host^2) — 331 s on 65k production rows — and
+        held a SHARED lock that long, starving every writer.  30k rows must
+        reconstruct in well under a few seconds."""
+        import time
+
+        hosts = [f"host{i:03d}" for i in range(200)]
+        conn = db.connection
+        # test-only: the setup is fsync-bound; the measured load is unaffected
+        conn.execute("PRAGMA synchronous=OFF")
+        for scan_no in range(150):
+            s = db.begin_scan("reachability")
+            conn.executemany(
+                "INSERT INTO reachability (scan_id, hostname, interface_idx, "
+                "ip, is_reachable, transmitted, received, rtt_avg_ms) "
+                "VALUES (?, ?, 0, ?, 1, 10, 10, 1.0)",
+                [(s, h, f"10.0.{scan_no % 250}.{i}") for i, h in enumerate(hosts)],
+            )
+            conn.commit()
+            db.finish_scan(s, host_count=len(hosts), changed_count=len(hosts))
+        assert conn.execute("SELECT count(*) FROM reachability").fetchone()[0] == 30_000
+
+        t0 = time.monotonic()
+        loaded = db.load_latest_reachability()
+        elapsed = time.monotonic() - t0
+
+        assert loaded is not None and len(loaded) == 200
+        # every host's rows must come from the LAST scan (ip encodes scan 149)
+        assert loaded["host000"]["interfaces"][0][0]["ip"] == "10.0.149.0"
+        assert elapsed < 3.0, f"load_latest_reachability took {elapsed:.1f}s"
+
+    def test_latest_rows_come_from_different_scans_per_host(self, db: DiscoveryDB):
+        """Delta storage: host-a changed in scan 1 only, host-b in scans 1
+        and 2 — the reconstruction must mix scans per host, ignore an
+        unfinished scan, and drop a host whose latest row is a tombstone."""
+        s1 = db.begin_scan("reachability")
+        db.save_reachability(s1, {
+            **self._make_data("host-a", [("10.1.10.1", 10, 10, 1.0)]),
+            **self._make_data("host-b", [("10.1.10.2", 10, 10, 1.0)]),
+            **self._make_data("host-c", [("10.1.10.3", 10, 10, 1.0)]),
+        })
+        db.finish_scan(s1, host_count=3, changed_count=3)
+
+        s2 = db.begin_scan("reachability")
+        db.save_reachability(s2, {
+            **self._make_data("host-a", [("10.1.10.1", 10, 10, 1.0)]),   # unchanged
+            **self._make_data("host-b", [("10.1.10.2", 10, 0, None)]),   # went down
+        })
+        db.tombstone_missing_reachability(s2, {"host-a", "host-b"})       # host-c removed
+        db.finish_scan(s2, host_count=2, changed_count=2)
+
+        s3 = db.begin_scan("reachability")                                # never finished
+        db.save_reachability(s3, self._make_data("host-b", [("10.1.10.2", 10, 10, 1.0)]))
+
+        loaded = db.load_latest_reachability()
+        assert set(loaded) == {"host-a", "host-b"}
+        assert loaded["host-a"]["interfaces"][0][0]["received"] == 10      # from s1
+        assert loaded["host-b"]["interfaces"][0][0]["received"] == 0       # from s2, not s3
+
     def test_delta_ignores_rtt_change(self, db: DiscoveryDB):
         """Same status, different RTT -> no change."""
         s1 = db.begin_scan("reachability")
@@ -316,6 +376,28 @@ class TestSSLCerts:
         loaded = db.load_latest_ssl_certs()
         assert loaded["h"]["self_signed"] is True
 
+    def test_latest_rows_come_from_different_scans_per_host(self, db: DiscoveryDB):
+        """Delta storage: host-a's latest cert sits in scan 1, host-b's in
+        scan 2 — the reconstruction must mix scans per host, and ignore an
+        unfinished scan even though it changes host-a again."""
+        s1 = db.begin_scan("ssl_certs")
+        db.save_ssl_certs(s1, {
+            "host-a": self._make_cert(issuer="LE-a"),
+            "host-b": self._make_cert(issuer="LE-b"),
+        })
+        db.finish_scan(s1, host_count=2, changed_count=2)
+
+        s2 = db.begin_scan("ssl_certs")
+        db.save_ssl_certs(s2, {"host-b": self._make_cert(issuer="Comodo-b")})
+        db.finish_scan(s2, host_count=1, changed_count=1)
+
+        s3 = db.begin_scan("ssl_certs")                                   # never finished
+        db.save_ssl_certs(s3, {"host-a": self._make_cert(issuer="Rogue-a")})
+
+        loaded = db.load_latest_ssl_certs()
+        assert loaded["host-a"]["issuer"] == "LE-a"      # from s1
+        assert loaded["host-b"]["issuer"] == "Comodo-b"  # from s2, not s3
+
 
 # -- BMC firmware ----------------------------------------------------------
 
@@ -380,6 +462,28 @@ class TestBMCFirmware:
 
         loaded = db.load_latest_bmc_firmware()
         assert loaded["h"]["series"] is None
+
+    def test_latest_rows_come_from_different_scans_per_host(self, db: DiscoveryDB):
+        """Delta storage: host-a's latest firmware sits in scan 1, host-b's
+        in scan 2 — the reconstruction must mix scans per host, and ignore
+        an unfinished scan even though it changes host-a again."""
+        s1 = db.begin_scan("bmc_firmware")
+        db.save_bmc_firmware(s1, {
+            "host-a": self._make_bmc(fw_rev="1.00"),
+            "host-b": self._make_bmc(fw_rev="1.00"),
+        })
+        db.finish_scan(s1, host_count=2, changed_count=2)
+
+        s2 = db.begin_scan("bmc_firmware")
+        db.save_bmc_firmware(s2, {"host-b": self._make_bmc(fw_rev="1.35")})
+        db.finish_scan(s2, host_count=1, changed_count=1)
+
+        s3 = db.begin_scan("bmc_firmware")                                # never finished
+        db.save_bmc_firmware(s3, {"host-a": self._make_bmc(fw_rev="9.99")})
+
+        loaded = db.load_latest_bmc_firmware()
+        assert loaded["host-a"]["firmware_revision"] == "1.00"  # from s1
+        assert loaded["host-b"]["firmware_revision"] == "1.35"  # from s2, not s3
 
 
 # -- JSON-blob supplements ------------------------------------------------
@@ -1607,3 +1711,33 @@ class TestTasmotaTombstoneMigration:
             "PRAGMA table_info(tasmota_devices)")]
         assert "is_tombstone" in cols
         db.close()
+
+
+class TestLatestEntityScans:
+    """_latest_entity_scans must map each entity to the latest FINISHED
+    scan holding its rows, mixing scans across entities.  ssh_host_keys is
+    used as the fixture table because its columns are trivial; the helper
+    is table-agnostic (any table with scan_id + an entity column)."""
+
+    def _row(self, db: DiscoveryDB, scan_id: int, hostname: str, key: str) -> None:
+        db.connection.execute(
+            "INSERT INTO ssh_host_keys (scan_id, hostname, key_type, key_data) "
+            "VALUES (?, ?, 'ssh-ed25519', ?)",
+            (scan_id, hostname, key),
+        )
+        db.connection.commit()
+
+    def test_mixes_scans_and_ignores_unfinished(self, db: DiscoveryDB):
+        s1 = db.begin_scan("ssh_host_keys")
+        self._row(db, s1, "a", "AAAA1")
+        self._row(db, s1, "b", "BBBB1")
+        db.finish_scan(s1, host_count=2, changed_count=2)
+
+        s2 = db.begin_scan("ssh_host_keys")
+        self._row(db, s2, "b", "BBBB2")
+        db.finish_scan(s2, host_count=1, changed_count=1)
+
+        s3 = db.begin_scan("ssh_host_keys")      # never finished — invisible
+        self._row(db, s3, "a", "AAAA3")
+
+        assert db._latest_entity_scans("ssh_host_keys", "hostname") == {"a": s1, "b": s2}

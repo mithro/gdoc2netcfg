@@ -116,10 +116,15 @@ class TestConnection:
         assert cur.fetchone()[0] == "delete"
 
     def test_busy_timeout_set(self, db: ConcreteDB):
-        # A non-zero busy_timeout lets readers/writers wait out the brief lock
-        # contention DELETE mode introduces (it serializes writes vs reads).
+        # DELETE mode serializes writers against readers.  The timeout must
+        # cover the longest legitimate lock hold (a save transaction, <1 s)
+        # with a wide margin: a cron job that just spent ten minutes
+        # scanning must not discard its result over a momentary overlap.
+        from gdoc2netcfg.storage.base import BUSY_TIMEOUT_MS
+
+        assert BUSY_TIMEOUT_MS == 30_000
         cur = db.connection.execute("PRAGMA busy_timeout")
-        assert cur.fetchone()[0] >= 1000
+        assert cur.fetchone()[0] == BUSY_TIMEOUT_MS
 
     def test_reopen_converts_wal_to_delete(self, tmp_path: Path):
         # Existing production DBs are WAL; re-opening them RW with this code must

@@ -18,6 +18,13 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+#: SQLite busy_timeout for every open.  DELETE-journal mode serializes
+#: writers against readers; this must cover the longest legitimate lock
+#: hold (a save transaction, well under a second) with a wide margin.  It
+#: is a safety net, NOT a fix for slow queries — see
+#: DiscoveryDB._latest_rows_sql for the 2026-09 outage that taught us that.
+BUSY_TIMEOUT_MS = 30_000
+
 # SQL for tables shared by both databases.
 _SCANS_SQL = """\
 CREATE TABLE IF NOT EXISTS scans (
@@ -88,10 +95,10 @@ class BaseDatabase:
         # DELETE (rollback) journal, NOT WAL.  WAL forces every reader to write
         # the -shm wal-index, which a non-owner of a root-owned DB cannot do;
         # DELETE has no -shm, so a read-only open (see _connect_read_only) needs
-        # no write access at all.  busy_timeout absorbs the brief writer/reader
+        # no write access at all.  BUSY_TIMEOUT_MS absorbs the brief writer/reader
         # lock contention DELETE introduces (it serializes writes against reads).
         self._conn.execute("PRAGMA journal_mode=DELETE")
-        self._conn.execute("PRAGMA busy_timeout=5000")
+        self._conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
         self._conn.execute("PRAGMA foreign_keys=ON")
 
         if is_new:
@@ -124,7 +131,7 @@ class BaseDatabase:
         self._conn = sqlite3.connect(
             f"file:{db_path}?mode=ro", uri=True, isolation_level=None,
         )
-        self._conn.execute("PRAGMA busy_timeout=5000")
+        self._conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
         self._check_schema_version()
 
     def _verify_writable(self) -> None:

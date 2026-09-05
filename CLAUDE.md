@@ -285,7 +285,9 @@ Both inherit `BaseDatabase` (`storage/base.py`): DELETE journal mode, schema ver
 
 **`discovery.db` is the sole source for supplement data.** Supplement scans take their last-known baseline from the DB and the CLI persists results back to the DB only — the flat supplement `.json` caches are neither read nor written. `_build_pipeline` and the show/publish commands load supplements via `load_latest_*` (a supplement with no completed scan contributes no enrichment). Scan freshness is the age of the latest completed scan per scan_type (`scans` table, 5-minute window) instead of file mtimes. `cmd_fetch` still writes the CSVs to both the flat cache (the parser input) and `config.db`. The DBs are created automatically on first write (daemon, scan commands, fetch); inspect with `db info` / `db history`.
 
-> **Journal mode:** the DBs use `journal_mode=DELETE` (not WAL), so a read-only open (`mode=ro` URI) needs no write access at all — a non-root user can read the root-owned production DBs. Writes serialize against reads; a 5s `busy_timeout` absorbs the contention.
+> **Journal mode:** the DBs use `journal_mode=DELETE` (not WAL), so a read-only open (`mode=ro` URI) needs no write access at all — a non-root user can read the root-owned production DBs. (WAL was re-tested 2026-09-04 and rejected: a non-root reader fails with "attempt to write a readonly database" whenever `-wal`/`-shm` are absent, which they are after every clean close.) Writes serialize against reads; `BUSY_TIMEOUT_MS` (30 s) absorbs the momentary contention.
+>
+> **Query shape rule:** in `discovery_db.py`, "latest rows per entity" is ALWAYS `DiscoveryDB._latest_rows_sql` (a `GROUP BY entity, MAX(scan_id)` CTE joined back) — never a correlated `WHERE t.scan_id = (SELECT … ORDER BY s.id DESC LIMIT 1)`. The correlated form is O(rows-per-entity²); on 65k reachability rows it took 331 s and, because SQLite holds a SHARED lock for the whole SELECT, every concurrent writer (the cron scans) died with `database is locked` for two weeks (2026-08-21 → 09-04, plan `docs/superpowers/plans/2026-09-04-db-contention.md`). Diagnose lock holders with `sudo .venv/bin/python scripts/db_lock_watch.py`. `config_db.py` and `credentials_db.py` still carry the old correlated form on tables that are empty or single-digit in production — tracked as a follow-up; move `_latest_rows_sql` to `storage/base.py` when converting them.
 
 ### Models
 
@@ -411,6 +413,8 @@ cd /opt/gdoc2netcfg && .venv/bin/gdoc2netcfg db info   # sudo-free (read-only)
 ```
 
 **Ownership: root writes, anyone reads.** The reachability daemon runs as root, so `/opt/gdoc2netcfg/.cache` and `.venv` are owned by `root`. Reads are sudo-free — the DBs use DELETE journal and read-only opens (see *Journal mode* under *SQLite Storage*), so commands that only read (`generate`, `validate`, `password`, `db info`, `db history`, the show commands) work as a normal user. Commands that **write** the DBs (the supplement scan commands, `fetch`) must run via `sudo`, using the direct `.venv/bin/gdoc2netcfg` (not `uv run`, which would re-sync the root-owned venv). The reachability daemon writes a new `reachability` scan to `discovery.db` each 5-minute cycle; the other supplements only gain history when their scan commands are run.
+
+**"database is locked":** run `sudo .venv/bin/python scripts/db_lock_watch.py 120` to see which process holds which lock and for how long. A `SHARED` holder lasting more than a second or two is a slow read query (see the *Query shape rule* under *SQLite Storage*); a writer stuck in `PENDING` behind it is the victim. Failed cron jobs mail root (`cron run`, see *Scheduled jobs*), so a locked-DB failure is an email, not a silent log line.
 
 ### Scheduled jobs (cron)
 

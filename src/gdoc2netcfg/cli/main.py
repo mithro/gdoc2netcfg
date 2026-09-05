@@ -654,12 +654,14 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         with ConfigDB(config.cache.config_db_path) as config_db:
             scan_id = config_db.begin_scan("csv_fetch")
             try:
+                changed = 0
                 for sheet_name, csv_text in fetched_csvs:
-                    config_db.save_csv(scan_id, sheet_name, csv_text)
+                    if config_db.save_csv(scan_id, sheet_name, csv_text):
+                        changed += 1
                 config_db.finish_scan(
                     scan_id,
                     host_count=len(fetched_csvs),
-                    changed_count=len(fetched_csvs),
+                    changed_count=changed,
                 )
             except Exception:
                 config_db.connection.execute(

@@ -10,6 +10,13 @@ from tests.test_cli.test_fetch_credentials import fetch_config  # noqa: F401
 def test_fetch_refuses_sheet_with_unmarked_missing_mac(fetch_config, monkeypatch, capsys):  # noqa: F811
     config, cache_dir = fetch_config
 
+    # Seed the cache with a known-good CSV first, so the test proves the
+    # headline property: a refused fetch leaves the previous cached copy
+    # completely untouched (not just "no file was created").
+    good_csv = "Machine,MAC Address,IP,Interface\nswitch1,aa:bb:cc:dd:ee:01,10.1.30.1,\n"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "network.csv").write_text(good_csv)
+
     def fake_fetch(name, url):
         return SheetData(name=name, csv_text=(
             "Machine,MAC Address,IP,Interface\n"
@@ -27,7 +34,8 @@ def test_fetch_refuses_sheet_with_unmarked_missing_mac(fetch_config, monkeypatch
     assert "power9-b" in err
     assert "network:3" in err or "row 3" in err
     assert "Nothing was stored" in err
-    assert not (cache_dir / "network.csv").exists()
+    assert (cache_dir / "network.csv").read_text() == good_csv
+    assert not (cache_dir / "config.db").exists()
 
 
 def test_fetch_caches_sheet_when_dns_only_rows_are_marked(fetch_config, monkeypatch):  # noqa: F811

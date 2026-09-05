@@ -555,10 +555,12 @@ def cmd_fetch(args: argparse.Namespace) -> int:
             "or store them (the previous cached copies stay in place):",
             file=sys.stderr,
         )
+        # Errors only, once each — not field_result.report() (which also
+        # lists every WARNING; on today's sheets that's ~366 extra lines
+        # mailed to root every 15 minutes until the sheet is fixed).
         # ValidationResult.__str__ omits the machine-readable `code`
-        # (test_constraints/test_errors.py pins that format), so list
-        # errors ourselves with their code alongside report()'s summary.
-        print(field_result.report(), file=sys.stderr)
+        # (test_constraints/test_errors.py pins that format), so prefix
+        # it ourselves.
         for violation in field_result.errors:
             print(f"  [{violation.code}] {violation}", file=sys.stderr)
         print("Fix the spreadsheet rows above, then re-run fetch. Nothing was stored.",

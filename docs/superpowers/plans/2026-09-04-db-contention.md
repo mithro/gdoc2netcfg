@@ -10,7 +10,7 @@
 
 **Spec:** This document is its own spec — the *Design* section below is the contract; there is no separate design doc. The investigation evidence lives in the ten64 session notes (`~/local/tmp/lock_watch_2026-09-03.log`, `~/local/tmp/sshfp_manual_2026-09-03.log`) and in the PR #28 description.
 
-**Worktree:** `.worktrees/db-contention` (branch `db-contention`, created from `origin/main` at `1762567`). Each task is one PR-sized commit series; open one PR per task group as noted (Tasks 1–3 = PR "latest-query", Task 4 = PR "daemon-no-macs", Task 5 = PR "db-lock-watch", Task 6 = PR "docs" folded into the first PR).
+**Worktree:** `.worktrees/db-contention` (branch `db-contention`, created from `origin/main` at `1762567`). Each task is one PR-sized commit series; open one PR per task group as noted (Tasks 1–3 = PR "latest-query", Task 4A = PR "mqtt-dns-only", Task 4B = PR "sheet-mac-contract" (merge LAST, after the sheet triage), Task 5 = PR "db-lock-watch", Task 6 = PR "docs" folded into the first PR).
 
 ## Global Constraints
 
@@ -75,8 +75,13 @@ One builder, `DiscoveryDB._latest_rows_sql(table, entity_cols, select_cols, orde
 | `tests/test_storage/test_discovery_db.py` (modify) | Perf regression test + "latest from different scans" coverage for the rewritten paths |
 | `src/gdoc2netcfg/storage/base.py` (modify) | `BUSY_TIMEOUT_MS = 30_000` constant, both open paths |
 | `tests/test_storage/test_base.py` (modify) | Assert the new timeout |
-| `src/gdoc2netcfg/supplements/mqtt_ha.py` (modify) | `build_interface_state` tolerates an interface with no MACs |
-| `tests/test_supplements/test_mqtt_ha.py` (modify) | Test for the no-MAC interface |
+| `src/gdoc2netcfg/supplements/mqtt_ha.py` (modify) | DNS-only interfaces get no MAC entity/state (4A); `_rebuild_hosts` refuses invalid data (4B) |
+| `tests/test_supplements/test_mqtt_ha.py` (modify) | DNS-only interface tests |
+| `src/gdoc2netcfg/sources/parser.py` (modify) | `DNS_ONLY_MARKER`, `DeviceRecord.dns_only` |
+| `src/gdoc2netcfg/derivations/host_builder.py` (modify) | shared `macced_ips()` |
+| `src/gdoc2netcfg/constraints/validators.py` (modify) | `missing_mac` ERROR on interface rows |
+| `src/gdoc2netcfg/cli/main.py` (modify) | `fetch` validation gate |
+| `tests/test_sources/test_parser.py`, `tests/test_constraints/test_validators.py`, `tests/test_cli/test_fetch_validation.py` | 4B tests |
 | `scripts/db_lock_watch.py` (create) | `/proc/locks` sampler for the SQLite DBs (diagnostic) |
 | `CLAUDE.md` (modify) | Query-shape rule, busy timeout, lock-watch tool, contention post-mortem pointer |
 
@@ -463,85 +468,486 @@ Open PR "storage: linear latest-per-entity queries + busy timeout (fixes databas
 
 ---
 
-### Task 4: Daemon survives an interface with no MACs
+### Task 4A: The MQTT publisher models DNS-only interfaces faithfully (no MAC entity, no crash)
 
 **Files:**
-- Modify: `src/gdoc2netcfg/supplements/mqtt_ha.py` — `build_interface_state` (≈ lines 480–525, the `if not vi.macs: raise ValueError(...)` block)
+- Modify: `src/gdoc2netcfg/supplements/mqtt_ha.py` — `_iface_entities` (≈ line 169), the interface-discovery loop in `_publish_hosts_to_client` (≈ lines 620–632), `build_interface_state` (≈ lines 513–520, the `if not vi.macs: raise ValueError` block)
 - Test: `tests/test_supplements/test_mqtt_ha.py`
 
-Context: `power9-b` in the Network sheet has three interface rows with IPs but empty MAC cells, so the host builder yields a `VirtualInterface` with `macs == []`. `build_interface_state` raises, the daemon's `run_daemon` loop does not catch it, `MQTT daemon stopped` is printed, systemd restarts it 30 s later — 714 restarts. The IPv6 branch two lines above already publishes `""` when absent; MAC should behave the same and shout on stderr, once per cycle, so the sheet bug is visible in `journalctl` without taking the whole publisher down. The data fix (fill in the MACs) is a rollout item below; the validator improvement is a follow-up.
+**Design decision (2026-09-05, with the owner):** a `VirtualInterface` with `macs == ()` is a *designed* state, not a bug: `derivations/host_builder.py` documents "Records without a MAC (wg tunnels, tailscale) become DNS-only interfaces" and there are 68 of them in production today (ten64's `wg-*`/`tailscale0`, phones on the IoT sheet, planned hardware). The publisher's `raise ValueError(... has no MACs — bug in host-builder pipeline)` asserts an invariant the model does not have, so the daemon has crash-looped on the first MAC-less host in sort order since at least July (au-plug-49, then bmc.power9-b; 714 restarts). The faithful representation is: **no MAC entity at all** for such an interface — not an empty string, not a stderr warning. Whether a MAC *should* have been recorded is decided at the sheet boundary by Task 4B, not guessed here. Everything else in `build_interface_state` (IPv4 must exist, interface counts must match) stays a hard assertion.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
-Add to `tests/test_supplements/test_mqtt_ha.py` inside `class TestBuildInterfaceState` (the file already imports `IPv4Address`, `IPv6Address`, `MACAddress`, `Host`, `NetworkInterface`, `build_interface_state`, `STATE_PREFIX`, `InterfaceReachability`, `PingResult`, `node_id`; add `VirtualInterface` to the `gdoc2netcfg.models.host` import). `VirtualInterface` is a plain dataclass `(name, ip_addresses, macs, dhcp_names=(), vlan_id=None)`, so the MAC-less case is built directly rather than through the host builder:
+In `tests/test_supplements/test_mqtt_ha.py`, add `VirtualInterface` to the `gdoc2netcfg.models.host` import line, then add inside `class TestEntityDefs` (next to `test_iface_entities_count`):
 
 ```python
-    def test_interface_without_macs_publishes_empty_mac_and_warns(self, capsys):
-        """A sheet row with an IP but no MAC yields a VirtualInterface with
-        macs == ().  That is a data bug to report, not a reason to kill the
-        daemon (714 restarts on 'power9-b', 2026-08/09): publish mac='' and
-        warn on stderr."""
-        from gdoc2netcfg.models.host import VirtualInterface
+    def test_iface_entities_omit_mac_for_dns_only_interface(self):
+        """A DNS-only interface (no MAC in the sheet) has no MAC entity —
+        the model has no MAC, so HA gets none, rather than a fake ''."""
+        entities = _iface_entities("wg0", "wg0", has_mac=False)
+        assert len(entities) == 5
+        assert not [e for e in entities if e.suffix == "wg0_mac"]
 
-        host = _make_host(machine_name="power9-b", hostname="power9-b", iface_name="eth0")
+    def test_iface_entities_include_mac_by_default(self):
+        entities = _iface_entities("eth0", "eth0")
+        assert [e for e in entities if e.suffix == "eth0_mac"]
+```
+
+and inside `class TestBuildInterfaceState`:
+
+```python
+    def test_dns_only_interface_has_no_mac_state_and_does_not_raise(self):
+        """macs == () is a designed state (wg/tailscale/DNS-only rows); the
+        publisher must not crash the daemon on it (714 restarts, 2026-07..09)
+        and must not fabricate a MAC state either."""
+        host = _make_host(machine_name="ten64", hostname="ten64", iface_name="wg-desktop")
         vi = VirtualInterface(
-            name="eth0",
-            ip_addresses=(IPv4Address("10.1.5.10"),),
+            name="wg-desktop",
+            ip_addresses=(IPv4Address("10.98.5.1"),),
             macs=(),
         )
-        ir = InterfaceReachability(pings=(("10.1.5.10", PingResult(10, 10, 1.5)),))
+        ir = InterfaceReachability(pings=(("10.98.5.1", PingResult(10, 10, 1.5)),))
 
         states = build_interface_state(host, vi, ir)
 
         nid = node_id(host.hostname)
-        assert states[f"{STATE_PREFIX}/{nid}/eth0/mac/state"] == ""
-        assert states[f"{STATE_PREFIX}/{nid}/eth0/ipv4/state"] == "10.1.5.10"
-        err = capsys.readouterr().err
-        assert "has no MACs" in err
-        assert "power9-b" in err
+        assert states[f"{STATE_PREFIX}/{nid}/wg-desktop/ipv4/state"] == "10.98.5.1"
+        assert f"{STATE_PREFIX}/{nid}/wg-desktop/mac/state" not in states
 ```
 
-- [ ] **Step 2: Run it** — `uv run pytest tests/test_supplements/test_mqtt_ha.py -k without_macs -v` → FAIL with `ValueError: VirtualInterface ... has no MACs`.
+- [ ] **Step 2: Run them** — `uv run pytest tests/test_supplements/test_mqtt_ha.py -k "dns_only or include_mac_by_default" -v` → the first two FAIL (`TypeError: unexpected keyword argument 'has_mac'`), the third FAILS with `ValueError: ... has no MACs`.
 
 - [ ] **Step 3: Implement**
 
-Replace the raise block in `build_interface_state` with:
+`_iface_entities` gains a keyword-only flag and drops the MAC `EntityDef` when it is false:
 
 ```python
-    # MAC — a VirtualInterface groups physical NICs and normally has one.
-    # A sheet row with an IP but an empty MAC cell yields macs == []; that
-    # is a data bug to surface, not a reason to take the publisher down
-    # (the daemon crash-looped 714 times on one such host).  Publish an
-    # empty MAC, like the IPv6 branch above, and say so loudly.
-    if vi.macs:
-        states[f"{prefix}/mac/state"] = str(vi.macs[0]).lower()
-    else:
-        print(
-            f"Warning: VirtualInterface {vi.name!r} for "
-            f"{host.machine_name!r} has no MACs — fix the spreadsheet row "
-            f"(IP without MAC); publishing an empty MAC.",
-            file=sys.stderr,
-        )
-        states[f"{prefix}/mac/state"] = ""
+def _iface_entities(
+    iface_slug: str, iface_name: str | None, *, has_mac: bool = True,
+) -> list[EntityDef]:
+    """Build entity definitions for a single interface.
+
+    *has_mac* False = a DNS-only interface (no MAC in the sheet: wg /
+    tailscale tunnels, rows marked ``none``).  Such an interface has no
+    MAC entity at all — the model has no MAC, so HA is told nothing,
+    rather than a fabricated empty value.
+    """
+    display = iface_name or "default"
+    entities = [
+        ...existing connectivity, stack_mode, ipv4, ipv6 EntityDefs unchanged...
+    ]
+    if has_mac:
+        entities.append(EntityDef(
+            component="sensor",
+            suffix=f"{iface_slug}_mac",
+            name=f"{display} MAC",
+            entity_category="diagnostic",
+            icon="mdi:ethernet",
+            expire_after=600,
+        ))
+    entities.append(EntityDef(
+        ...existing rtt EntityDef unchanged...
+    ))
+    return entities
 ```
 
-(`sys` is already imported at the top of `mqtt_ha.py`.)
+(Keep the entity order connectivity, stack_mode, ipv4, ipv6, [mac], rtt — `test_iface_entities_count` still expects 6 with a MAC.)
+
+In `_publish_hosts_to_client`'s interface-discovery loop, pass the flag and clear any discovery HA still retains for a MAC entity this interface no longer has (retained empty payload = HA deletes the entity; otherwise the old `_mac` sensor lingers as "unavailable"):
+
+```python
+        for vi in host.virtual_interfaces:
+            slug = _iface_slug(vi)
+            has_mac = bool(vi.macs)
+            for entity in _iface_entities(slug, vi.name, has_mac=has_mac):
+                ...existing publish unchanged...
+            if not has_mac:
+                # Remove a MAC entity HA may retain from before DNS-only
+                # interfaces were modelled (empty retained config = delete).
+                stale = EntityDef(component="sensor", suffix=f"{slug}_mac", name="")
+                client.publish(discovery_topic(stale, nid), "", retain=True)
+```
+
+(Check `EntityDef`'s required fields with `grep -n "class EntityDef" -A20 src/gdoc2netcfg/supplements/mqtt_ha.py` and fill only what `discovery_topic` needs — it uses `component` and `suffix`.)
+
+In `build_interface_state` replace the `if not vi.macs: raise ValueError(...)` / `states[...mac/state] = ...` block with:
+
+```python
+    # MAC — absent for DNS-only interfaces (no MAC in the sheet: wg /
+    # tailscale, rows marked `none`).  Such an interface has no MAC
+    # entity (see _iface_entities), so publish no MAC state either.
+    # Whether a MAC *should* have been recorded is enforced at the sheet
+    # boundary (constraints/validators.py missing_mac ERROR + fetch gate),
+    # not guessed here.
+    if vi.macs:
+        states[f"{prefix}/mac/state"] = str(vi.macs[0]).lower()
+```
 
 - [ ] **Step 4: Run** `uv run pytest tests/test_supplements/test_mqtt_ha.py -q` → all PASS.
 
-- [ ] **Step 5: Commit and open PR "mqtt: daemon tolerates an interface with no MACs"**
+- [ ] **Step 5: Commit** and open PR "mqtt: model DNS-only interfaces (no MAC entity) instead of crashing the daemon"
 
 ```bash
 uv run ruff check src/ tests/
 git add src/gdoc2netcfg/supplements/mqtt_ha.py tests/test_supplements/test_mqtt_ha.py
-git commit -m "mqtt: publish an empty MAC and warn instead of crashing the daemon
+git commit -m "mqtt: DNS-only interfaces get no MAC entity instead of crashing the daemon
 
-A sheet row with an IP but no MAC (power9-b, earlier au-plug-49) made
-build_interface_state raise; run_daemon has no per-host guard, so the
-whole publisher died and systemd restarted it every ~13 min (714
-restarts), re-running the full first cycle each time.  Treat it like
-the IPv6 branch: empty state + loud stderr warning."
+VirtualInterface.macs == () is a designed state (host_builder: rows
+without a MAC are DNS-only interfaces — wg, tailscale, planned hosts;
+68 in production).  build_interface_state asserted the opposite and
+raised, so the publisher died on the first MAC-less host in sort order
+every cycle (au-plug-49, then bmc.power9-b; 714 systemd restarts).
+
+Model it instead: no MAC EntityDef and no MAC state for such an
+interface, plus a retained-empty publish to delete any MAC entity HA
+still holds from before.  Nothing is fabricated and nothing is warned
+to stderr — whether the MAC *should* exist is enforced at the sheet
+boundary (validators missing_mac ERROR + fetch gate)."
 ```
+
+---
+
+### Task 4B: A missing MAC is an ERROR unless the sheet says `none`; `fetch` refuses to cache invalid sheets
+
+**Files:**
+- Modify: `src/gdoc2netcfg/sources/parser.py` — `DeviceRecord` (≈ line 16) and the MAC extraction in `parse_csv` (≈ lines 157–159)
+- Modify: `src/gdoc2netcfg/derivations/host_builder.py` — factor the inline `macced_ips` set (≈ lines 135–137) into a function
+- Modify: `src/gdoc2netcfg/constraints/validators.py` — `validate_field_constraints` (≈ lines 31–50)
+- Modify: `src/gdoc2netcfg/cli/main.py` — `cmd_fetch` (≈ lines 500–612)
+- Test: `tests/test_sources/test_parser.py`, `tests/test_constraints/test_validators.py`, `tests/test_cli/test_fetch_credentials.py` (add a sibling file `tests/test_cli/test_fetch_validation.py`)
+
+**Design decision (2026-09-05, with the owner):** the sheet contract becomes *"an interface row (Machine + IP present) must carry a MAC, or the literal `none` in the MAC cell meaning DNS-only on purpose"*. Anything else is `missing_mac` at **ERROR** severity. Two existing exemptions stay: rows with no Machine or no IP (headings, blanks — those keep their existing WARNINGs) and *cross-reference rows* (a MAC-less row whose IP is claimed by a MAC'd row on another sheet, e.g. the IoT sheet listing a Network-sheet machine for plug bookkeeping — `host_builder` already skips those; 53 exist). The gate is `fetch`: like the existing lost-credential-cell check, a sheet set with validation errors is **not cached and not stored** — the previous good CSVs stay in place and, via PR #28, root gets a mail every 15 minutes until the sheet is fixed. `generate` already exits 1 on errors; the daemon's `_rebuild_hosts` gets the same check so it can never publish from invalid data (it should never see any — `fetch` blocks it — so a failure there is a bug and is allowed to be a hard failure).
+
+Production impact at rollout: 71 rows are missing a MAC today and are neither blank nor cross-references (list in Phase 2 step 5). They must be triaged — `none` for the deliberate ones, a MAC for the placeholders — **before** this ships, or `fetch` will refuse every run.
+
+- [ ] **Step 1: Failing tests — parser marker**
+
+Add to `tests/test_sources/test_parser.py` (copy the file's CSV-fixture idiom; the header row must contain `Machine` and `MAC`):
+
+```python
+class TestDnsOnlyMarker:
+    def test_none_marker_yields_empty_mac_and_dns_only(self):
+        csv_text = (
+            "Machine,MAC Address,IP,Interface\n"
+            "ten64,none,10.98.5.1,wg-desktop\n"
+            "ten64,NONE,10.98.6.1,wg-x1c-work\n"
+            "desk,aa:bb:cc:dd:ee:ff,10.1.10.5,eth0\n"
+            "planned,,10.1.10.6,eth0\n"
+        )
+        recs = parse_csv(csv_text, "network")
+        by_if = {r.interface: r for r in recs}
+        assert by_if["wg-desktop"].mac_address == "" and by_if["wg-desktop"].dns_only is True
+        assert by_if["wg-x1c-work"].mac_address == "" and by_if["wg-x1c-work"].dns_only is True
+        assert by_if["eth0"].dns_only is False           # 'desk' row: real MAC
+        assert by_if["eth0"].mac_address == "aa:bb:cc:dd:ee:ff"
+        planned = [r for r in recs if r.machine == "planned"][0]
+        assert planned.mac_address == "" and planned.dns_only is False
+```
+
+- [ ] **Step 2: Failing tests — validator**
+
+In `tests/test_constraints/test_validators.py`, extend `_record` with `dns_only=False` and `interface=""` parameters (pass them through to `DeviceRecord`), replace `test_missing_mac`, and add:
+
+```python
+    def test_missing_mac_on_interface_row_is_an_error(self):
+        result = validate_field_constraints([_record(mac="")])
+        assert not result.is_valid
+        assert result.errors[0].code == "missing_mac"
+        assert "none" in result.errors[0].message   # tells the user how to mark DNS-only
+
+    def test_none_marker_is_not_an_error(self):
+        result = validate_field_constraints([_record(mac="", dns_only=True)])
+        assert result.is_valid
+        assert not [v for v in result.violations if v.code == "missing_mac"]
+
+    def test_missing_mac_on_row_without_ip_stays_a_warning(self):
+        result = validate_field_constraints([_record(mac="", ip="")])
+        assert result.is_valid
+        assert {v.code for v in result.warnings} == {"missing_mac", "missing_ip"}
+
+    def test_cross_reference_row_is_exempt(self):
+        """A MAC-less row whose IP is claimed by a MAC'd row is bookkeeping
+        (host_builder skips it), not a missing MAC."""
+        owner = _record(machine="plug-1", mac="aa:bb:cc:dd:ee:01", ip="10.1.90.10")
+        xref = DeviceRecord(sheet_name="iot", row_number=9, machine="plug-1",
+                            mac_address="", ip="10.1.90.10")
+        result = validate_field_constraints([owner, xref])
+        assert result.is_valid
+```
+
+- [ ] **Step 3: Failing test — fetch gate**
+
+Create `tests/test_cli/test_fetch_validation.py` (reuse the `fetch_config` fixture by importing it: `from tests.test_cli.test_fetch_credentials import fetch_config  # noqa: F401`, or copy it):
+
+```python
+"""fetch must refuse to cache a sheet set that fails validation."""
+
+from __future__ import annotations
+
+import gdoc2netcfg.cli.main as cli
+from gdoc2netcfg.sources.sheets import SheetData
+
+from tests.test_cli.test_fetch_credentials import fetch_config  # noqa: F401
+
+
+def test_fetch_refuses_sheet_with_unmarked_missing_mac(fetch_config, monkeypatch, capsys):
+    config, cache_dir = fetch_config
+
+    def fake_fetch(name, url):
+        return SheetData(name=name, csv_text=(
+            "Machine,MAC Address,IP,Interface\n"
+            "ten64,none,10.98.5.1,wg-desktop\n"          # marked: fine
+            "power9-b,,10.1.11.184,enP5p1s0f0\n"         # unmarked: ERROR
+        ))
+
+    monkeypatch.setattr("gdoc2netcfg.sources.sheets.fetch_sheet", fake_fetch, raising=True)
+
+    rc = cli.main(["-c", str(config), "fetch"])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "missing_mac" in err
+    assert "power9-b" in err
+    assert "network:3" in err or "row 3" in err
+    assert "Nothing was stored" in err
+    assert not (cache_dir / "network.csv").exists()
+
+
+def test_fetch_caches_sheet_when_dns_only_rows_are_marked(fetch_config, monkeypatch):
+    config, cache_dir = fetch_config
+
+    def fake_fetch(name, url):
+        return SheetData(name=name, csv_text=(
+            "Machine,MAC Address,IP,Interface\n"
+            "ten64,none,10.98.5.1,wg-desktop\n"
+            "desk,aa:bb:cc:dd:ee:ff,10.1.10.5,eth0\n"
+        ))
+
+    monkeypatch.setattr("gdoc2netcfg.sources.sheets.fetch_sheet", fake_fetch, raising=True)
+
+    assert cli.main(["-c", str(config), "fetch"]) == 0
+    assert (cache_dir / "network.csv").exists()
+
+
+def test_fetch_validates_against_cached_copy_of_a_sheet_that_failed_to_fetch(
+    fetch_config, monkeypatch, tmp_path,
+):
+    """Partial fetch: the post-write cache = fetched sheets + the cached copy
+    of the failed ones.  Validate exactly that set, so a cross-reference
+    row whose owner lives in the failed sheet is still recognised."""
+    config, cache_dir = fetch_config
+    config.write_text(config.read_text().replace(
+        'network = "https://example.com/network"',
+        'network = "https://example.com/network"\niot = "https://example.com/iot"',
+    ))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "network.csv").write_text(
+        "Machine,MAC Address,IP,Interface\nplug-1,aa:bb:cc:dd:ee:01,10.1.90.10,\n"
+    )
+
+    def fake_fetch(name, url):
+        if name == "network":
+            raise RuntimeError("HTTP 503")
+        return SheetData(name=name, csv_text=(
+            "Machine,MAC Address,IP,Interface\nplug-1,,10.1.90.10,\n"   # xref of cached owner
+        ))
+
+    monkeypatch.setattr("gdoc2netcfg.sources.sheets.fetch_sheet", fake_fetch, raising=True)
+
+    assert cli.main(["-c", str(config), "fetch"]) == 0
+    assert (cache_dir / "iot.csv").exists()
+```
+
+- [ ] **Step 4: Run all three groups to verify they fail**
+
+`uv run pytest tests/test_sources/test_parser.py::TestDnsOnlyMarker tests/test_constraints/test_validators.py::TestFieldConstraints tests/test_cli/test_fetch_validation.py -v` → parser: `AttributeError: dns_only`; validator: the new tests FAIL (warning vs error); fetch: the refuse test FAILS (rc 0).
+
+- [ ] **Step 5: Implement — parser**
+
+In `src/gdoc2netcfg/sources/parser.py`:
+
+```python
+#: Literal MAC-cell value meaning "this interface has no MAC on purpose"
+#: (wg / tailscale tunnels, DNS-only entries).  Compared case-insensitively.
+DNS_ONLY_MARKER = "none"
+```
+
+Add to `DeviceRecord` after `site: str = ""`:
+
+```python
+    #: True when the MAC cell held DNS_ONLY_MARKER: a deliberately MAC-less
+    #: (DNS-only) interface.  A row with machine+IP, no MAC and dns_only
+    #: False is a validation ERROR (missing_mac).
+    dns_only: bool = False
+```
+
+In `parse_csv`, replace the MAC extraction with:
+
+```python
+        mac = ""
+        dns_only = False
+        if mac_col is not None and mac_col < len(row):
+            mac = row[mac_col].strip()
+            if mac.lower() == DNS_ONLY_MARKER:
+                mac = ""
+                dns_only = True
+```
+
+and pass `dns_only=dns_only` into the `DeviceRecord(...)` constructor.
+
+- [ ] **Step 6: Implement — shared cross-reference helper**
+
+In `src/gdoc2netcfg/derivations/host_builder.py`, add a module-level function and use it where the inline set is built (≈ line 135):
+
+```python
+def macced_ips(records: list[DeviceRecord]) -> set[str]:
+    """IPs claimed by a row that has machine, IP and a MAC.
+
+    A MAC-less row on such an IP is a cross-reference (e.g. the IoT sheet
+    listing a Network-sheet machine for plug bookkeeping), not a host:
+    build_hosts skips it and validators do not report it as missing_mac.
+    ONE definition, used by both, so they cannot drift.
+    """
+    return {r.ip for r in records if r.machine and r.ip and r.mac_address}
+```
+
+```python
+    macced_ips_set = macced_ips(records)
+    ...
+        if not record.mac_address and record.ip in macced_ips_set:
+            continue  # cross-reference row for a MAC'd interface
+```
+
+- [ ] **Step 7: Implement — validator**
+
+In `src/gdoc2netcfg/constraints/validators.py`, `validate_field_constraints` becomes:
+
+```python
+def validate_field_constraints(records: list[DeviceRecord]) -> ValidationResult:
+    """Validate field-level constraints on raw device records.
+
+    Checks:
+    - MAC address must be present on every interface row (machine + IP),
+      unless the MAC cell says ``none`` (DNS_ONLY_MARKER: a deliberately
+      DNS-only interface) or the row is a cross-reference of a MAC'd row
+      on the same IP.  ERROR — fetch refuses to cache the sheet set.
+    - Machine name must be present (WARNING)
+    - IP address must be present (WARNING)
+    """
+    from gdoc2netcfg.derivations.host_builder import macced_ips
+    from gdoc2netcfg.sources.parser import DNS_ONLY_MARKER
+
+    result = ValidationResult()
+    claimed = macced_ips(records)
+
+    for record in records:
+        record_id = f"{record.sheet_name}:{record.row_number}"
+
+        if not record.mac_address and not record.dns_only:
+            is_interface_row = bool(record.machine and record.ip)
+            if is_interface_row and record.ip in claimed:
+                pass  # cross-reference row; host_builder skips it
+            elif is_interface_row:
+                result.add(ConstraintViolation(
+                    severity=Severity.ERROR,
+                    code="missing_mac",
+                    message=(
+                        f"No MAC address (machine={record.machine!r}, "
+                        f"interface={record.interface!r}, ip={record.ip!r}); "
+                        f"record the MAC, or put '{DNS_ONLY_MARKER}' in the "
+                        f"MAC cell for a deliberately DNS-only interface"
+                    ),
+                    record_id=record_id,
+                    field="mac_address",
+                ))
+            else:
+                result.add(ConstraintViolation(
+                    severity=Severity.WARNING,
+                    code="missing_mac",
+                    message=f"No MAC address (machine={record.machine!r})",
+                    record_id=record_id,
+                    field="mac_address",
+                ))
+
+        ...missing_machine / missing_ip blocks unchanged...
+```
+
+(If `validators.py` importing from `derivations.host_builder` creates an import cycle — check with `uv run python -c "import gdoc2netcfg.constraints.validators"` — move `macced_ips` to `gdoc2netcfg/sources/parser.py` next to `DeviceRecord` and import it from there in both places.)
+
+- [ ] **Step 8: Implement — fetch gate**
+
+In `cmd_fetch`, after step 1 (all sheets attempted) and **before** step 3 (credentials) insert:
+
+```python
+    # 2a. Validate the sheet set the cache will hold after this run:
+    #     the sheets just fetched plus the CACHED copy of any sheet that
+    #     failed to fetch.  Invalid data is never cached — the previous
+    #     good CSVs stay and the cron mail says why (fail loud, early).
+    from gdoc2netcfg.constraints.validators import validate_field_constraints
+    from gdoc2netcfg.sources.cache import CSVCache
+
+    cache = CSVCache(config.cache.directory)
+    fetched_names = {name for name, _ in raw_csvs}
+    to_validate = list(raw_csvs)
+    for sheet in config.sheets:
+        if sheet.name not in fetched_names and cache.has(sheet.name):
+            to_validate.append((sheet.name, cache.read(sheet.name)))
+    field_result = validate_field_constraints(_parse_device_records(to_validate))
+    if field_result.has_errors:
+        print(
+            "Error: the fetched sheets fail validation; refusing to cache "
+            "or store them (the previous cached copies stay in place):",
+            file=sys.stderr,
+        )
+        print(field_result.report(), file=sys.stderr)
+        print("Fix the spreadsheet rows above, then re-run fetch. Nothing was stored.",
+              file=sys.stderr)
+        return 1
+```
+
+(`_parse_device_records` already skips non-device sheets. Remove the later duplicate `cache = CSVCache(...)` line in step 4 or reuse the variable. Confirm `ValidationResult.report()` prints `code`, `record_id` and message — that is what `cmd_generate` prints; the fetch-gate test asserts `missing_mac`, `power9-b` and the row reference appear.)
+
+- [ ] **Step 9: Implement — daemon rebuild never publishes from invalid data**
+
+In `src/gdoc2netcfg/supplements/mqtt_ha.py::_rebuild_hosts`, act on the validation result `_build_pipeline` already returns:
+
+```python
+    _, hosts, _inventory, result = _build_pipeline(config)
+    if result.has_errors:
+        raise ValueError(
+            "Cached sheets fail validation — refusing to publish from "
+            "invalid data (fetch should have refused to cache this):\n"
+            + result.report()
+        )
+    return hosts
+```
+
+Keep the existing `previous_hosts` fallback for *other* exceptions untouched.
+
+- [ ] **Step 10: Run** `uv run pytest -q` (full suite) and `uv run ruff check src/ tests/` → all PASS, clean. Then run the validator against today's production sheets from the worktree to produce the triage list for Phase 2: `uv run gdoc2netcfg -c /opt/gdoc2netcfg/gdoc2netcfg.toml validate | grep "ERROR"` — expect the 71 rows listed under Phase 2 step 5 and no others.
+
+- [ ] **Step 11: Docs + commit** — in `CLAUDE.md` *Fail Loud, Never Fabricate* section add one bullet: "*Sheet contract:* every interface row (Machine + IP) carries a MAC or the literal `none` (deliberately DNS-only). Anything else is `missing_mac` at ERROR: `fetch` refuses to cache the sheet set (previous CSVs stay; cron mails root), `generate` exits 1, the daemon refuses to publish." Then:
+
+```bash
+git add src/gdoc2netcfg/sources/parser.py src/gdoc2netcfg/derivations/host_builder.py \
+        src/gdoc2netcfg/constraints/validators.py src/gdoc2netcfg/cli/main.py \
+        src/gdoc2netcfg/supplements/mqtt_ha.py CLAUDE.md tests/
+git commit -m "sheets: a missing MAC is an ERROR unless the cell says 'none'; fetch refuses invalid sheets
+
+Contract: every interface row (Machine + IP) carries a MAC, or the
+literal 'none' meaning deliberately DNS-only (wg, tailscale).  Blank
+and heading rows keep their WARNINGs; a MAC-less row whose IP is
+claimed by a MAC'd row (cross-reference bookkeeping) stays exempt via
+the shared macced_ips() helper host_builder already used.
+
+fetch validates the sheet set the cache will hold (fetched sheets +
+cached copies of any that failed) and, like the lost-credential check,
+stores nothing on ERROR — the previous good CSVs stay and the cron
+mail says which rows to fix.  The daemon's rebuild refuses to publish
+from invalid cached data too."
+```
+
+Open PR "sheets: missing MAC is an ERROR unless marked none; fetch refuses invalid sheets". **Do not merge before the Phase 2 sheet triage is done.**
 
 ---
 
@@ -675,7 +1081,7 @@ if __name__ == "__main__":
 2. **Prove the hold time is gone:** `sudo .venv/bin/python scripts/db_lock_watch.py 420` across one full daemon cycle. Expect the daemon's `SHARED` lines to last ≤ 2 s; no `PENDING` line older than a second.
 3. **Prove a scan now lands:** `sudo /usr/local/bin/uv --quiet --directory /opt/gdoc2netcfg run gdoc2netcfg cron run sshfp` → exit 0, and `sudo sqlite3 .cache/discovery.db "SELECT id, finished_at, host_count FROM scans WHERE scan_type='ssh_host_keys' ORDER BY id DESC LIMIT 1"` shows today.
 4. **Refresh the stale artefacts that started all this:** `sudo make deploy-known-hosts` and `sudo make deploy-dns` in `/opt/gdoc2netcfg`; then `dig +short SSHFP tweed.welland.mithis.com @10.1.0.1` must list `4 2 F0931A45…` (tweed's post-2026-08-26 ed25519 key) and `ssh -o BatchMode=yes root@eth-uplink.tweed.welland.mithis.com hostname` must no longer warn.
-5. **Data fix:** fill in the MAC addresses for `power9-b`'s three interface rows in the Network sheet (they have IPs but empty MAC cells); after the next `fetch`, `journalctl -u gdoc2netcfg-reachability` must stop printing the no-MACs warning and `systemctl show -p NRestarts gdoc2netcfg-reachability` must stop increasing.
+5. **Sheet triage (before merging Task 4B):** 71 interface rows have no MAC and are neither blank nor cross-references (`validate` will list them as `missing_mac` ERRORs once 4B is on a branch — run it from the worktree against `/opt/gdoc2netcfg/gdoc2netcfg.toml`). For each, the owner decides: put `none` in the MAC cell (deliberately DNS-only) or record the MAC. As of 2026-09-05 they are: ten64 `tailscale0`/`wg-*` (network:88–89, 105, 122–126) and x1c-work `tailscale` (network:9) — tunnels, expect `none`; `ports.sw-bb-100g swp10s1` (network:216); power9-b bmc/enP5p1s0f0/enP5p1s0f1 (network:354–356); the eight `x10/x11-*.sm` machines' bmc/rpi/esp32 rows (network:375–398) and sm-pcie-1 rpi/esp32 (network:400–401); `piN.fpgas eth-uplink` for N ∈ {3,5,8,15,18,19,20,22,24,28,30,32,34,35,36,37,38,39,40} (network:413–450); rpi-sdr-rtlsdr-v4 eth0/wlan0 (network:456–457); kindle-monarto-dash / kindle-welland-dash wlan0 (network:479–480); opi1pc-d/e/f eth0 (network:577–579); IoT sheet ha, sdr-mqtt, pixel6, pixel-7-pro, x1c-work, pixel-3a-xl (iot:3–9). Then merge 4B, deploy, and confirm `fetch` succeeds and `journalctl -u gdoc2netcfg-reachability` shows no restarts (`systemctl show -p NRestarts`).
 6. **Next morning:** no cron failure mail from either site; `grep -c "database is locked" .cache/cron.log` unchanged from the pre-deploy count.
 
 ## Follow-ups (separate issues, not this plan)

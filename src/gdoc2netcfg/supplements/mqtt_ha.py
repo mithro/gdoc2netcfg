@@ -765,7 +765,13 @@ def _rebuild_hosts(config: PipelineConfig, previous_hosts, cycle: int):
     from gdoc2netcfg.cli.main import _build_pipeline
 
     try:
-        _, hosts, _inventory, _result = _build_pipeline(config)
+        _, hosts, _inventory, result = _build_pipeline(config)
+        if result.has_errors:
+            raise ValueError(
+                "Cached sheets fail validation — refusing to publish from "
+                "invalid data (fetch should have refused to cache this):\n"
+                + result.report()
+            )
         return hosts
     except Exception as exc:
         if previous_hosts is None:

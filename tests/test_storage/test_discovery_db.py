@@ -1665,3 +1665,33 @@ class TestTasmotaTombstoneMigration:
             "PRAGMA table_info(tasmota_devices)")]
         assert "is_tombstone" in cols
         db.close()
+
+
+class TestLatestEntityScans:
+    """_latest_entity_scans must map each entity to the latest FINISHED
+    scan holding its rows, mixing scans across entities.  ssh_host_keys is
+    used as the fixture table because its columns are trivial; the helper
+    is table-agnostic (any table with scan_id + an entity column)."""
+
+    def _row(self, db: DiscoveryDB, scan_id: int, hostname: str, key: str) -> None:
+        db.connection.execute(
+            "INSERT INTO ssh_host_keys (scan_id, hostname, key_type, key_data) "
+            "VALUES (?, ?, 'ssh-ed25519', ?)",
+            (scan_id, hostname, key),
+        )
+        db.connection.commit()
+
+    def test_mixes_scans_and_ignores_unfinished(self, db: DiscoveryDB):
+        s1 = db.begin_scan("ssh_host_keys")
+        self._row(db, s1, "a", "AAAA1")
+        self._row(db, s1, "b", "BBBB1")
+        db.finish_scan(s1, host_count=2, changed_count=2)
+
+        s2 = db.begin_scan("ssh_host_keys")
+        self._row(db, s2, "b", "BBBB2")
+        db.finish_scan(s2, host_count=1, changed_count=1)
+
+        s3 = db.begin_scan("ssh_host_keys")      # never finished — invisible
+        self._row(db, s3, "a", "AAAA3")
+
+        assert db._latest_entity_scans("ssh_host_keys", "hostname") == {"a": s1, "b": s2}

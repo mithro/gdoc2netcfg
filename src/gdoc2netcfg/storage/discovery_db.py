@@ -1047,16 +1047,11 @@ class DiscoveryDB(BaseDatabase):
             return None
 
         cur = self._conn.execute(
-            "SELECT k.hostname, k.key_type, k.key_data "
-            "FROM ssh_host_keys k "
-            "WHERE k.scan_id = ("
-            "  SELECT k2.scan_id FROM ssh_host_keys k2 "
-            "  JOIN scans s ON k2.scan_id = s.id "
-            "  WHERE s.finished_at IS NOT NULL "
-            "  AND k2.hostname = k.hostname "
-            "  ORDER BY s.id DESC LIMIT 1"
-            ") "
-            "ORDER BY k.hostname, k.key_type"
+            self._latest_rows_sql(
+                "ssh_host_keys", ("hostname",),
+                "t.hostname, t.key_type, t.key_data",
+                order_by="ORDER BY t.hostname, t.key_type",
+            )
         )
         result: dict[str, list[str]] = {}
         for hostname, key_type, key_data in cur.fetchall():
@@ -1067,15 +1062,10 @@ class DiscoveryDB(BaseDatabase):
     def _latest_ssh_keys_by_host(self) -> dict[str, frozenset]:
         """Build hostname -> frozenset((key_type, key_data)) for comparison."""
         cur = self._conn.execute(
-            "SELECT k.hostname, k.key_type, k.key_data "
-            "FROM ssh_host_keys k "
-            "WHERE k.scan_id = ("
-            "  SELECT k2.scan_id FROM ssh_host_keys k2 "
-            "  JOIN scans s ON k2.scan_id = s.id "
-            "  WHERE s.finished_at IS NOT NULL "
-            "  AND k2.hostname = k.hostname "
-            "  ORDER BY s.id DESC LIMIT 1"
-            ")"
+            self._latest_rows_sql(
+                "ssh_host_keys", ("hostname",),
+                "t.hostname, t.key_type, t.key_data",
+            )
         )
         entries: dict[str, list[tuple[str, str]]] = {}
         for hostname, key_type, key_data in cur.fetchall():
@@ -1134,16 +1124,11 @@ class DiscoveryDB(BaseDatabase):
         if self.latest_scan_id("ssl_certs") is None:
             return None
         cur = self._conn.execute(
-            "SELECT c.hostname, c.issuer, c.self_signed, c.valid, "
-            "c.expiry, c.sans_json "
-            "FROM ssl_certs c "
-            "WHERE c.id = ("
-            "  SELECT c2.id FROM ssl_certs c2 "
-            "  JOIN scans s ON c2.scan_id = s.id "
-            "  WHERE s.finished_at IS NOT NULL "
-            "  AND c2.hostname = c.hostname "
-            "  ORDER BY s.id DESC LIMIT 1"
-            ") ORDER BY c.hostname"
+            self._latest_rows_sql(
+                "ssl_certs", ("hostname",),
+                "t.hostname, t.issuer, t.self_signed, t.valid, t.expiry, t.sans_json",
+                order_by="ORDER BY t.hostname",
+            )
         )
         result: dict[str, dict] = {}
         for hostname, issuer, self_signed, valid, expiry, sans_json in cur.fetchall():
@@ -1158,16 +1143,10 @@ class DiscoveryDB(BaseDatabase):
 
     def _latest_ssl_certs_by_host(self) -> dict[str, tuple]:
         cur = self._conn.execute(
-            "SELECT c.hostname, c.issuer, c.self_signed, c.valid, "
-            "c.expiry, c.sans_json "
-            "FROM ssl_certs c "
-            "WHERE c.id = ("
-            "  SELECT c2.id FROM ssl_certs c2 "
-            "  JOIN scans s ON c2.scan_id = s.id "
-            "  WHERE s.finished_at IS NOT NULL "
-            "  AND c2.hostname = c.hostname "
-            "  ORDER BY s.id DESC LIMIT 1"
-            ")"
+            self._latest_rows_sql(
+                "ssl_certs", ("hostname",),
+                "t.hostname, t.issuer, t.self_signed, t.valid, t.expiry, t.sans_json",
+            )
         )
         return {
             row[0]: (row[1], bool(row[2]), bool(row[3]), row[4], row[5])
@@ -1221,16 +1200,12 @@ class DiscoveryDB(BaseDatabase):
         if self.latest_scan_id("bmc_firmware") is None:
             return None
         cur = self._conn.execute(
-            "SELECT b.hostname, b.product_name, b.firmware_revision, "
-            "b.ipmi_version, b.series, b.snmp_capable "
-            "FROM bmc_firmware b "
-            "WHERE b.id = ("
-            "  SELECT b2.id FROM bmc_firmware b2 "
-            "  JOIN scans s ON b2.scan_id = s.id "
-            "  WHERE s.finished_at IS NOT NULL "
-            "  AND b2.hostname = b.hostname "
-            "  ORDER BY s.id DESC LIMIT 1"
-            ") ORDER BY b.hostname"
+            self._latest_rows_sql(
+                "bmc_firmware", ("hostname",),
+                "t.hostname, t.product_name, t.firmware_revision, "
+                "t.ipmi_version, t.series, t.snmp_capable",
+                order_by="ORDER BY t.hostname",
+            )
         )
         result: dict[str, dict] = {}
         for hostname, product, fw_rev, ipmi_ver, series, snmp in cur.fetchall():
@@ -1245,16 +1220,11 @@ class DiscoveryDB(BaseDatabase):
 
     def _latest_bmc_by_host(self) -> dict[str, tuple]:
         cur = self._conn.execute(
-            "SELECT b.hostname, b.product_name, b.firmware_revision, "
-            "b.ipmi_version, b.series, b.snmp_capable "
-            "FROM bmc_firmware b "
-            "WHERE b.id = ("
-            "  SELECT b2.id FROM bmc_firmware b2 "
-            "  JOIN scans s ON b2.scan_id = s.id "
-            "  WHERE s.finished_at IS NOT NULL "
-            "  AND b2.hostname = b.hostname "
-            "  ORDER BY s.id DESC LIMIT 1"
-            ")"
+            self._latest_rows_sql(
+                "bmc_firmware", ("hostname",),
+                "t.hostname, t.product_name, t.firmware_revision, "
+                "t.ipmi_version, t.series, t.snmp_capable",
+            )
         )
         return {
             row[0]: (row[1], row[2], row[3], row[4], bool(row[5]))
@@ -1274,15 +1244,9 @@ class DiscoveryDB(BaseDatabase):
         storage — an entity only gets rows in the scans that changed it).
         """
         cur = self._conn.execute(
-            f"SELECT DISTINCT t.{entity_col}, t.scan_id "  # noqa: S608
-            f"FROM {table} t "
-            f"WHERE t.scan_id = ("
-            f"  SELECT t2.scan_id FROM {table} t2 "
-            f"  JOIN scans s ON t2.scan_id = s.id "
-            f"  WHERE s.finished_at IS NOT NULL "
-            f"  AND t2.{entity_col} = t.{entity_col} "
-            f"  ORDER BY s.id DESC LIMIT 1"
-            f")",
+            f"SELECT t.{entity_col}, MAX(t.scan_id) "  # noqa: S608
+            f"FROM {table} t JOIN scans s ON s.id = t.scan_id "
+            f"WHERE s.finished_at IS NOT NULL GROUP BY t.{entity_col}",
         )
         return dict(cur.fetchall())
 
@@ -1629,7 +1593,6 @@ class DiscoveryDB(BaseDatabase):
         site's document.
         """
         bridge_cols = ", ".join(key for key, _t in _ZIGBEE_BRIDGE_FIELDS)
-        device_cols = ", ".join(key for key, _t in _ZIGBEE_DEVICE_FIELDS)
         result: dict[str, dict] = {}
         for site, scan_id in sorted(
             self._latest_entity_scans("zigbee_sites", "site").items()
@@ -1650,16 +1613,13 @@ class DiscoveryDB(BaseDatabase):
             result[site] = {"bridge": bridge, "devices": {}}
 
         # Each device's latest row independently (per-device deltas).
+        device_select = ", ".join(f"t.{key}" for key, _t in _ZIGBEE_DEVICE_FIELDS)
         cur = self._conn.execute(
-            f"SELECT d.site, d.is_tombstone, {device_cols} "  # noqa: S608
-            "FROM zigbee_devices d "
-            "WHERE d.scan_id = ("
-            "  SELECT d2.scan_id FROM zigbee_devices d2 "
-            "  JOIN scans s ON d2.scan_id = s.id "
-            "  WHERE s.finished_at IS NOT NULL "
-            "  AND d2.site = d.site AND d2.ieee_address = d.ieee_address "
-            "  ORDER BY s.id DESC LIMIT 1"
-            ") ORDER BY d.site, d.ieee_address",
+            self._latest_rows_sql(
+                "zigbee_devices", ("site", "ieee_address"),
+                f"t.site, t.is_tombstone, {device_select}",
+                order_by="ORDER BY t.site, t.ieee_address",
+            )
         )
         for site, tomb, *values in cur.fetchall():
             if tomb or site not in result:

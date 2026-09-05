@@ -865,6 +865,46 @@ class DiscoveryDB(BaseDatabase):
             result[hostname] = {"interfaces": ifaces}
         return result
 
+    @staticmethod
+    def _latest_rows_sql(
+        table: str,
+        entity_cols: tuple[str, ...],
+        select_cols: str,
+        order_by: str = "",
+    ) -> str:
+        """SQL selecting, for every entity, its rows from the latest
+        FINISHED scan that holds rows for that entity.
+
+        Delta storage means each entity's latest data may sit in a
+        different scan.  This is the ONLY sanctioned shape for that
+        question: a GROUP BY over (entity, MAX(scan_id)) joined back to
+        the table — linear in table size.  Never write it as a correlated
+        ``WHERE t.scan_id = (SELECT ... ORDER BY s.id DESC LIMIT 1)``:
+        that is O(rows-per-entity²), took 331 s on 65k production
+        reachability rows, and held a SHARED lock that long so every
+        concurrent writer died with "database is locked" (2026-09).
+
+        *entity_cols* / *select_cols* / *table* are code-literal
+        identifiers, never user input.  ``MAX(scan_id)`` equals the old
+        ``ORDER BY s.id DESC LIMIT 1`` because scans.id is the
+        autoincrement key and t.scan_id = s.id.
+        """
+        group = ", ".join(f"t.{c}" for c in entity_cols)
+        join = " AND ".join(f"l.{c} = t.{c}" for c in entity_cols)
+        tail = f" {order_by}" if order_by else ""
+        return (
+            f"WITH latest AS ("
+            f"  SELECT {group}, MAX(t.scan_id) AS scan_id"
+            f"  FROM {table} t"
+            f"  JOIN scans s ON s.id = t.scan_id"
+            f"  WHERE s.finished_at IS NOT NULL"
+            f"  GROUP BY {group}"
+            f") "
+            f"SELECT {select_cols} FROM {table} t "
+            f"JOIN latest l ON l.scan_id = t.scan_id AND {join}"
+            f"{tail}"
+        )
+
     def _latest_reachability_rows(self) -> dict[str, list[tuple]]:
         """Rows from each host's most recent finished scan, tombstones excluded.
 
@@ -875,17 +915,12 @@ class DiscoveryDB(BaseDatabase):
         whose latest record is a tombstone is omitted entirely.
         """
         cur = self._conn.execute(
-            "SELECT r.hostname, r.interface_idx, r.ip, r.is_reachable, "
-            "r.transmitted, r.received, r.rtt_avg_ms, r.is_tombstone "
-            "FROM reachability r "
-            "WHERE r.scan_id = ("
-            "  SELECT r2.scan_id FROM reachability r2 "
-            "  JOIN scans s ON r2.scan_id = s.id "
-            "  WHERE s.finished_at IS NOT NULL "
-            "  AND r2.hostname = r.hostname "
-            "  ORDER BY s.id DESC LIMIT 1"
-            ") "
-            "ORDER BY r.hostname, r.interface_idx, r.ip"
+            self._latest_rows_sql(
+                "reachability", ("hostname",),
+                "t.hostname, t.interface_idx, t.ip, t.is_reachable, "
+                "t.transmitted, t.received, t.rtt_avg_ms, t.is_tombstone",
+                order_by="ORDER BY t.hostname, t.interface_idx, t.ip",
+            )
         )
         hosts: dict[str, list[tuple]] = {}
         tombstoned: set[str] = set()

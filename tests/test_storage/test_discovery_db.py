@@ -54,6 +54,64 @@ class TestReachability:
     def test_load_returns_none_with_no_scans(self, db: DiscoveryDB):
         assert db.load_latest_reachability() is None
 
+    def test_load_latest_is_linear_in_table_size(self, db: DiscoveryDB):
+        """Regression for the 2026-09 outage: the old correlated-subquery
+        form was O(rows-per-host^2) — 331 s on 65k production rows — and
+        held a SHARED lock that long, starving every writer.  30k rows must
+        reconstruct in well under a few seconds."""
+        import time
+
+        hosts = [f"host{i:03d}" for i in range(200)]
+        conn = db.connection
+        for scan_no in range(150):
+            s = db.begin_scan("reachability")
+            conn.executemany(
+                "INSERT INTO reachability (scan_id, hostname, interface_idx, "
+                "ip, is_reachable, transmitted, received, rtt_avg_ms) "
+                "VALUES (?, ?, 0, ?, 1, 10, 10, 1.0)",
+                [(s, h, f"10.0.{scan_no % 250}.{i}") for i, h in enumerate(hosts)],
+            )
+            conn.commit()
+            db.finish_scan(s, host_count=len(hosts), changed_count=len(hosts))
+        assert conn.execute("SELECT count(*) FROM reachability").fetchone()[0] == 30_000
+
+        t0 = time.monotonic()
+        loaded = db.load_latest_reachability()
+        elapsed = time.monotonic() - t0
+
+        assert loaded is not None and len(loaded) == 200
+        # every host's rows must come from the LAST scan (ip encodes scan 149)
+        assert loaded["host000"]["interfaces"][0][0]["ip"] == "10.0.149.0"
+        assert elapsed < 3.0, f"load_latest_reachability took {elapsed:.1f}s"
+
+    def test_latest_rows_come_from_different_scans_per_host(self, db: DiscoveryDB):
+        """Delta storage: host-a changed in scan 1 only, host-b in scans 1
+        and 2 — the reconstruction must mix scans per host, ignore an
+        unfinished scan, and drop a host whose latest row is a tombstone."""
+        s1 = db.begin_scan("reachability")
+        db.save_reachability(s1, {
+            **self._make_data("host-a", [("10.1.10.1", 10, 10, 1.0)]),
+            **self._make_data("host-b", [("10.1.10.2", 10, 10, 1.0)]),
+            **self._make_data("host-c", [("10.1.10.3", 10, 10, 1.0)]),
+        })
+        db.finish_scan(s1, host_count=3, changed_count=3)
+
+        s2 = db.begin_scan("reachability")
+        db.save_reachability(s2, {
+            **self._make_data("host-a", [("10.1.10.1", 10, 10, 1.0)]),   # unchanged
+            **self._make_data("host-b", [("10.1.10.2", 10, 0, None)]),   # went down
+        })
+        db.tombstone_missing_reachability(s2, {"host-a", "host-b"})       # host-c removed
+        db.finish_scan(s2, host_count=2, changed_count=2)
+
+        s3 = db.begin_scan("reachability")                                # never finished
+        db.save_reachability(s3, self._make_data("host-b", [("10.1.10.2", 10, 10, 1.0)]))
+
+        loaded = db.load_latest_reachability()
+        assert set(loaded) == {"host-a", "host-b"}
+        assert loaded["host-a"]["interfaces"][0][0]["received"] == 10      # from s1
+        assert loaded["host-b"]["interfaces"][0][0]["received"] == 0       # from s2, not s3
+
     def test_delta_ignores_rtt_change(self, db: DiscoveryDB):
         """Same status, different RTT -> no change."""
         s1 = db.begin_scan("reachability")

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gdoc2netcfg.models.addressing import IPv4Address, IPv6Address, MACAddress
-from gdoc2netcfg.models.host import Host, NetworkInterface
+from gdoc2netcfg.models.host import Host, NetworkInterface, VirtualInterface
 from gdoc2netcfg.supplements.mqtt_ha import (
     BRIDGE_AVAIL_TOPIC,
     DISCOVERY_PREFIX,
@@ -155,6 +155,17 @@ class TestEntityDefs:
     def test_iface_entities_count(self):
         entities = _iface_entities("eth0", "eth0")
         assert len(entities) == 6  # connectivity, stack_mode, ipv4, ipv6, mac, rtt
+
+    def test_iface_entities_omit_mac_for_dns_only_interface(self):
+        """A DNS-only interface (no MAC in the sheet) has no MAC entity —
+        the model has no MAC, so HA gets none, rather than a fake ''."""
+        entities = _iface_entities("wg0", "wg0", has_mac=False)
+        assert len(entities) == 5
+        assert not [e for e in entities if e.suffix == "wg0_mac"]
+
+    def test_iface_entities_include_mac_by_default(self):
+        entities = _iface_entities("eth0", "eth0")
+        assert [e for e in entities if e.suffix == "eth0_mac"]
 
     def test_iface_rtt_has_measurement(self):
         entities = _iface_entities("eth0", "eth0")
@@ -507,6 +518,25 @@ class TestBuildInterfaceState:
         assert attrs["10.1.5.10"]["received"] == 10
         assert attrs["10.1.5.10"]["rtt_avg_ms"] == 1.5
 
+    def test_dns_only_interface_has_no_mac_state_and_does_not_raise(self):
+        """macs == () is a designed state (wg/tailscale/DNS-only rows); the
+        publisher must not crash the daemon on it (714 restarts, 2026-07..09)
+        and must not fabricate a MAC state either."""
+        host = _make_host(machine_name="ten64", hostname="ten64", iface_name="wg-desktop")
+        vi = VirtualInterface(
+            name="wg-desktop",
+            ip_addresses=(IPv4Address("10.98.5.1"),),
+            macs=(),
+        )
+        ir = InterfaceReachability(pings=(("10.98.5.1", PingResult(10, 10, 1.5)),))
+
+        states = build_interface_state(host, vi, ir)
+
+        nid = node_id(host.hostname)
+        # _iface_slug replaces non-alphanumerics with "_": "wg-desktop" -> "wg_desktop"
+        assert states[f"{STATE_PREFIX}/{nid}/wg_desktop/ipv4/state"] == "10.98.5.1"
+        assert f"{STATE_PREFIX}/{nid}/wg_desktop/mac/state" not in states
+
 
 # ---------------------------------------------------------------------------
 # Publisher (mock paho client)
@@ -813,6 +843,59 @@ class TestPublishAllHosts:
 
         with pytest.raises(ValueError, match="data consistency bug"):
             publish_all_hosts([host], {"dual-nic": hr}, mqtt_config)
+
+    @patch("gdoc2netcfg.supplements.mqtt_ha.mqtt.Client")
+    def test_dns_only_interface_clears_stale_mac_discovery(self, mock_client_cls):
+        """A DNS-only interface (macs == ()) must publish a retained-empty
+        payload to its MAC discovery topic, so HA drops any MAC entity it
+        still retains from before such interfaces were modelled."""
+        client = MagicMock()
+        mock_client_cls.return_value = client
+
+        host = Host(
+            machine_name="ten64",
+            hostname="ten64",
+            interfaces=[
+                NetworkInterface(
+                    name="wg-desktop",
+                    mac=None,
+                    ip_addresses=(IPv4Address("10.98.5.1"),),
+                ),
+            ],
+        )
+        ir = InterfaceReachability(pings=(
+            ("10.98.5.1", PingResult(10, 10, 1.5)),
+        ))
+        hr = HostReachability(
+            hostname="ten64",
+            active_ips=("10.98.5.1",),
+            interfaces=(ir,),
+        )
+
+        from gdoc2netcfg.config import MqttBrokerConfig
+
+        mqtt_config = MqttBrokerConfig(
+            host="broker", port=1883,
+            user="user", password="pass",
+        )
+
+        publish_all_hosts([host], {"ten64": hr}, mqtt_config)
+
+        nid = node_id(host.hostname)
+        slug = _iface_slug(host.virtual_interfaces[0])
+        expected_topic = discovery_topic(
+            EntityDef(component="sensor", suffix=f"{slug}_mac"), nid,
+        )
+
+        mac_delete_calls = [
+            c for c in client.publish.call_args_list
+            if c.args[0] == expected_topic
+        ]
+        assert len(mac_delete_calls) == 1
+        call = mac_delete_calls[0]
+        assert call.args[1] == ""
+        retain = call.kwargs.get("retain", call.args[2] if len(call.args) > 2 else None)
+        assert retain is True
 
 
 # ---------------------------------------------------------------------------

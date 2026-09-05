@@ -28,25 +28,22 @@ def test_rebuild_returns_fresh_hosts():
     assert hosts == ["host-a", "host-b"]
 
 
-def test_rebuild_refuses_to_publish_from_invalid_cached_data(capsys):
+def test_rebuild_refuses_to_publish_from_invalid_cached_data():
     # Should never happen (fetch already refuses to cache invalid sheets),
-    # but if it does, the daemon must not publish from it — same
-    # keep-previous-and-warn fallback as any other rebuild failure.
+    # but if it does, the daemon must fail loud on EVERY cycle — not
+    # degrade to a stderr warning that keeps serving from invalid data.
+    # This must raise even when a previous_hosts fallback is available:
+    # the owner explicitly rejected stderr-only degradation here.
     bad_result = ValidationResult()
     bad_result.add(ConstraintViolation(
         severity=Severity.ERROR, code="missing_mac", message="No MAC address",
         record_id="network:3",
     ))
-    prev = ["host-a"]
     with patch(
         "gdoc2netcfg.cli.main._build_pipeline",
         return_value=([], ["host-a", "host-b"], None, bad_result),
-    ):
-        hosts = _rebuild_hosts(_config(), previous_hosts=prev, cycle=5)
-    assert hosts is prev
-    err = capsys.readouterr().err
-    assert "keeping previous host list" in err
-    assert "refusing to publish from invalid data" in err
+    ), pytest.raises(ValueError, match="No MAC address"):
+        _rebuild_hosts(_config(), previous_hosts=["host-a"], cycle=5)
 
 
 def test_rebuild_first_build_failure_propagates():

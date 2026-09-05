@@ -166,10 +166,18 @@ HOST_STACK_MODE = EntityDef(
 )
 
 
-def _iface_entities(iface_slug: str, iface_name: str | None) -> list[EntityDef]:
-    """Build entity definitions for a single interface."""
+def _iface_entities(
+    iface_slug: str, iface_name: str | None, *, has_mac: bool = True,
+) -> list[EntityDef]:
+    """Build entity definitions for a single interface.
+
+    *has_mac* False = a DNS-only interface (no MAC in the sheet: wg /
+    tailscale tunnels, rows marked ``none``).  Such an interface has no
+    MAC entity at all — the model has no MAC, so HA is told nothing,
+    rather than a fabricated empty value.
+    """
     display = iface_name or "default"
-    return [
+    entities = [
         EntityDef(
             component="binary_sensor",
             suffix=f"{iface_slug}_connectivity",
@@ -203,26 +211,28 @@ def _iface_entities(iface_slug: str, iface_name: str | None) -> list[EntityDef]:
             icon="mdi:ip-network",
             expire_after=600,
         ),
-        EntityDef(
+    ]
+    if has_mac:
+        entities.append(EntityDef(
             component="sensor",
             suffix=f"{iface_slug}_mac",
             name=f"{display} MAC",
             entity_category="diagnostic",
             icon="mdi:ethernet",
             expire_after=600,
-        ),
-        EntityDef(
-            component="sensor",
-            suffix=f"{iface_slug}_rtt",
-            name=f"{display} RTT",
-            device_class="duration",
-            state_class="measurement",
-            unit="ms",
-            entity_category="diagnostic",
-            suggested_display_precision=1,
-            expire_after=600,
-        ),
-    ]
+        ))
+    entities.append(EntityDef(
+        component="sensor",
+        suffix=f"{iface_slug}_rtt",
+        name=f"{display} RTT",
+        device_class="duration",
+        state_class="measurement",
+        unit="ms",
+        entity_category="diagnostic",
+        suggested_display_precision=1,
+        expire_after=600,
+    ))
+    return entities
 
 
 # ---------------------------------------------------------------------------
@@ -510,14 +520,14 @@ def build_interface_state(
     ipv6_addrs = vi.ipv6_addresses
     states[f"{prefix}/ipv6/state"] = str(ipv6_addrs[0]) if ipv6_addrs else ""
 
-    # MAC — every VirtualInterface groups physical NICs, so macs must
-    # be non-empty.
-    if not vi.macs:
-        raise ValueError(
-            f"VirtualInterface {vi.name!r} for {host.machine_name!r} "
-            f"has no MACs — bug in host-builder pipeline."
-        )
-    states[f"{prefix}/mac/state"] = str(vi.macs[0]).lower()
+    # MAC — absent for DNS-only interfaces (no MAC in the sheet: wg /
+    # tailscale, rows marked `none`).  Such an interface has no MAC
+    # entity (see _iface_entities), so publish no MAC state either.
+    # Whether a MAC *should* have been recorded is enforced at the sheet
+    # boundary (constraints/validators.py missing_mac ERROR + fetch gate),
+    # not guessed here.
+    if vi.macs:
+        states[f"{prefix}/mac/state"] = str(vi.macs[0]).lower()
 
     # RTT — build JSON with per-IP ping data
     rtt_data: dict = {}
@@ -620,7 +630,8 @@ def _publish_hosts_to_client(
         # Interface-level discovery
         for vi in host.virtual_interfaces:
             slug = _iface_slug(vi)
-            for entity in _iface_entities(slug, vi.name):
+            has_mac = bool(vi.macs)
+            for entity in _iface_entities(slug, vi.name, has_mac=has_mac):
                 st, ja = _iface_entity_state_topic(entity, nid, slug)
                 payload = discovery_payload(
                     entity, nid, dev_dict, avail_list, avail_mode,
@@ -629,6 +640,11 @@ def _publish_hosts_to_client(
                 topic = discovery_topic(entity, nid)
                 client.publish(topic, json.dumps(payload), retain=True)
                 discovery_count += 1
+            if not has_mac:
+                # Remove a MAC entity HA may retain from before DNS-only
+                # interfaces were modelled (empty retained config = delete).
+                stale = EntityDef(component="sensor", suffix=f"{slug}_mac", name="")
+                client.publish(discovery_topic(stale, nid), "", retain=True)
 
     # Host directory discovery (bridge-level, no device)
     bridge_avail = [

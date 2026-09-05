@@ -17,11 +17,12 @@ from gdoc2netcfg.models.network import VLAN, IPv6Prefix, Site
 from gdoc2netcfg.sources.parser import DeviceRecord
 
 
-def _record(machine="desktop", mac="aa:bb:cc:dd:ee:ff", ip="10.1.10.1", extra=None):
+def _record(machine="desktop", mac="aa:bb:cc:dd:ee:ff", ip="10.1.10.1",
+            extra=None, dns_only=False, interface=""):
     return DeviceRecord(
         sheet_name="Network", row_number=2,
         machine=machine, mac_address=mac, ip=ip,
-        extra=extra or {},
+        extra=extra or {}, dns_only=dns_only, interface=interface,
     )
 
 
@@ -63,10 +64,30 @@ class TestFieldConstraints:
         assert result.is_valid
         assert len(result.violations) == 0
 
-    def test_missing_mac(self):
+    def test_missing_mac_on_interface_row_is_an_error(self):
         result = validate_field_constraints([_record(mac="")])
-        assert len(result.warnings) == 1
-        assert result.warnings[0].code == "missing_mac"
+        assert not result.is_valid
+        assert result.errors[0].code == "missing_mac"
+        assert "none" in result.errors[0].message   # tells the user how to mark DNS-only
+
+    def test_none_marker_is_not_an_error(self):
+        result = validate_field_constraints([_record(mac="", dns_only=True)])
+        assert result.is_valid
+        assert not [v for v in result.violations if v.code == "missing_mac"]
+
+    def test_missing_mac_on_row_without_ip_stays_a_warning(self):
+        result = validate_field_constraints([_record(mac="", ip="")])
+        assert result.is_valid
+        assert {v.code for v in result.warnings} == {"missing_mac", "missing_ip"}
+
+    def test_cross_reference_row_is_exempt(self):
+        """A MAC-less row whose IP is claimed by a MAC'd row is bookkeeping
+        (host_builder skips it), not a missing MAC."""
+        owner = _record(machine="plug-1", mac="aa:bb:cc:dd:ee:01", ip="10.1.90.10")
+        xref = DeviceRecord(sheet_name="iot", row_number=9, machine="plug-1",
+                            mac_address="", ip="10.1.90.10")
+        result = validate_field_constraints([owner, xref])
+        assert result.is_valid
 
     def test_missing_machine(self):
         result = validate_field_constraints([_record(machine="")])
@@ -83,7 +104,7 @@ class TestFieldConstraints:
         assert len(result.warnings) == 3
 
     def test_record_id_format(self):
-        result = validate_field_constraints([_record(mac="")])
+        result = validate_field_constraints([_record(machine="")])
         assert result.warnings[0].record_id == "Network:2"
 
 

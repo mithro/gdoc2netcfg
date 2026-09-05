@@ -11,6 +11,8 @@ the current site name; records for other sites are filtered out.
 
 from __future__ import annotations
 
+import dataclasses
+
 from gdoc2netcfg.models.network import Site
 from gdoc2netcfg.sources.parser import DeviceRecord
 
@@ -97,15 +99,9 @@ def filter_and_resolve_records(
             continue
         resolved_ip = resolve_site_ip(record.ip, site.site_octet)
         if resolved_ip != record.ip:
-            record = DeviceRecord(
-                sheet_name=record.sheet_name,
-                row_number=record.row_number,
-                machine=record.machine,
-                mac_address=record.mac_address,
-                ip=resolved_ip,
-                interface=record.interface,
-                site=record.site,
-                extra=record.extra,
-            )
+            # dataclasses.replace() propagates every field (including ones
+            # added after this call site was written, e.g. dns_only) —
+            # listing fields by hand here previously dropped dns_only.
+            record = dataclasses.replace(record, ip=resolved_ip)
         result.append(record)
     return result

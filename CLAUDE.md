@@ -74,6 +74,8 @@ Make small, discrete commits as you work. Each logical unit of change (adding a 
 
 **Fail early and loud** so problems surface immediately and get fixed at the root cause. Silent fallbacks and graceful degradation turn small bugs into hard-to-diagnose data quality issues.
 
+*Sheet contract:* every interface row (Machine + IP) carries a MAC or the literal `none` (deliberately DNS-only). Anything else is `missing_mac` at ERROR: `fetch` refuses to cache the sheet set (previous CSVs stay; cron mails root), `generate` exits 1, the daemon refuses to publish.
+
 ## Architecture
 
 `gdoc2netcfg` reads network device data from a Google Spreadsheet and generates configuration files for network infrastructure services (dnsmasq, Nagios, nginx).

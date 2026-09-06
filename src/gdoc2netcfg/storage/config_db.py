@@ -72,14 +72,26 @@ class ConfigDB(BaseDatabase):
     # CSV snapshots (always stored, NOT delta-based)
     # ------------------------------------------------------------------
 
-    def save_csv(self, scan_id: int, sheet_name: str, csv_text: str) -> None:
-        """Store a CSV text snapshot for a sheet."""
+    def save_csv(self, scan_id: int, sheet_name: str, csv_text: str) -> bool:
+        """Store a CSV text snapshot for a sheet — delta-based.
+
+        The text is stored only when it differs from the sheet's latest
+        snapshot in a *finished* scan; an identical fetch stores nothing
+        (returns False).  Until 2026-09 every 15-minute fetch stored a
+        full copy: 8 608 snapshots per sheet of which 1–94 were distinct,
+        733 MB where ~10 MB of real history existed.
+
+        Returns True when a row was inserted.
+        """
+        if self.load_latest_csv(sheet_name) == csv_text:
+            return False
         self._conn.execute(
             "INSERT INTO csv_snapshots (scan_id, sheet_name, csv_text) "
             "VALUES (?, ?, ?)",
             (scan_id, sheet_name, csv_text),
         )
         self._conn.commit()
+        return True
 
     def load_latest_csv(self, sheet_name: str) -> str | None:
         """Load the most recent CSV text for a sheet, or None."""

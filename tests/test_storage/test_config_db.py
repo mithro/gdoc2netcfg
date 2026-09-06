@@ -101,19 +101,39 @@ class TestCSVSnapshots:
 
         assert db.load_latest_csv("network") == "finished"
 
-    def test_csv_always_stored(self, db: ConfigDB):
-        """CSV snapshots are NOT delta-based — every fetch stores the text."""
+    def test_identical_csv_is_not_stored_again(self, db: ConfigDB):
+        """Delta storage: a fetch whose text matches the latest finished
+        snapshot stores nothing and reports no change."""
         csv_text = "Machine,MAC\ndesktop,aa:bb"
         s1 = db.begin_scan("csv_fetch")
-        db.save_csv(s1, "network", csv_text)
+        assert db.save_csv(s1, "network", csv_text) is True
         db.finish_scan(s1, host_count=1, changed_count=1)
 
         s2 = db.begin_scan("csv_fetch")
-        db.save_csv(s2, "network", csv_text)  # identical text
+        assert db.save_csv(s2, "network", csv_text) is False  # identical text
         db.finish_scan(s2, host_count=1, changed_count=0)
 
-        history = db.csv_history("network")
-        assert len(history) == 2  # both stored
+        assert len(db.csv_history("network")) == 1
+        assert db.load_latest_csv("network") == csv_text
+
+    def test_change_and_revert_are_both_history(self, db: ConfigDB):
+        """A -> B -> A keeps three snapshots: only consecutive duplicates
+        collapse, the return to A is a real change."""
+        for text in ("A", "B", "A"):
+            s = db.begin_scan("csv_fetch")
+            assert db.save_csv(s, "network", text) is True
+            db.finish_scan(s, host_count=1, changed_count=1)
+        assert [c for _, c in db.csv_history("network")] == ["A", "B", "A"]
+
+    def test_unfinished_snapshot_does_not_suppress_storage(self, db: ConfigDB):
+        """Only FINISHED scans count as 'stored': a crashed fetch's row must
+        not make the next identical fetch skip storing."""
+        s1 = db.begin_scan("csv_fetch")
+        db.save_csv(s1, "network", "v1")   # s1 never finished
+        s2 = db.begin_scan("csv_fetch")
+        assert db.save_csv(s2, "network", "v1") is True
+        db.finish_scan(s2, host_count=1, changed_count=1)
+        assert db.load_latest_csv("network") == "v1"
 
     def test_csv_history(self, db: ConfigDB):
         s1 = db.begin_scan("csv_fetch")

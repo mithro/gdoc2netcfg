@@ -2767,6 +2767,117 @@ def cmd_zigbee_update_sheet(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: rpi-hardware
+# ---------------------------------------------------------------------------
+
+def cmd_rpi_hardware_scan(args: argparse.Namespace) -> int:
+    """Probe every reachable Raspberry Pi in the sheet and persist to the DB."""
+    config = _load_config(args)
+    if not config.rpi_hardware.enabled:
+        print("Error: No [rpi_hardware] section configured in gdoc2netcfg.toml",
+              file=sys.stderr)
+        return 1
+
+    from gdoc2netcfg.supplements.rpi_hardware import (
+        is_rpi_host,
+        raise_for_rpi_hardware_errors,
+        scan_rpi_hardware,
+    )
+
+    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    _enrich_site_from_sheets(config, csv_data)
+    hosts = _build_hosts_from_csvs(config, csv_data)
+    reachability = _load_or_run_reachability(config, hosts, force=args.force)
+
+    age = None if args.force else _fresh_scan_age(config, "rpi_hardware")
+    if age is not None:
+        print(f"Using cached rpi-hardware scan ({age:.0f}s old).", file=sys.stderr)
+        data = _load_latest_from_db(config, "load_latest_rpi_hardware") or {}
+        errors: list[str] = []
+    else:
+        pis = [h for h in hosts if is_rpi_host(h)]
+        print(f"Probing {len(pis)} Raspberry Pi(s)...")
+        data, errors = scan_rpi_hardware(
+            hosts, reachability=reachability, users=config.rpi_hardware.users,
+            jtag_hosts=config.rpi_hardware.jtag_hosts, verbose=True,
+        )
+        # Persist what scanned before failing loud for the rest; a host
+        # that vanished from the sheet is tombstoned by the same scan.
+        if data:
+            from gdoc2netcfg.storage.discovery_db import DiscoveryDB
+
+            with DiscoveryDB(config.cache.discovery_db_path) as db:
+                scan_id = db.begin_scan("rpi_hardware")
+                try:
+                    changed = db.save_rpi_hardware(scan_id, data)
+                    present = {h.hostname for h in pis}
+                    changed += db.tombstone_missing_rpi_hardware(scan_id, present)
+                    db.finish_scan(scan_id, host_count=len(data), changed_count=changed)
+                except Exception:
+                    db.delete_scan(scan_id)
+                    raise
+
+    print(f"\nHardware identity for {len(data)} Raspberry Pi(s).")
+    raise_for_rpi_hardware_errors(errors)
+    return 0
+
+
+def cmd_rpi_hardware_show(args: argparse.Namespace) -> int:
+    """Show the cached hardware identity of every probed Pi."""
+    config = _load_config(args)
+    data = _load_latest_from_db(config, "load_latest_rpi_hardware")
+    if not data:
+        print("No rpi-hardware data cached. Run 'gdoc2netcfg rpi-hardware scan' first.")
+        return 1
+    for hostname, doc in sorted(data.items()):
+        boards = ", ".join(
+            "%s %s" % (b["kind"], b.get("dna") or b.get("serial") or "") for b in doc["fpga"]
+        ) or "no fpga"
+        pi5 = "" if doc["rtc_battery"] is None else (
+            f"  rtc-cell={'yes' if doc['rtc_battery'] else 'no'} "
+            f"fan={'yes' if doc['fan'] else 'no'} usb-c={doc['max_current_ma']}mA"
+        )
+        print(f"{hostname:24s} {doc['model']:36s} {doc['serial']}")
+        print(f"{'':24s} header: {'; '.join(doc['header']) or 'bare'}   "
+              f"power: {doc['power_class']}   {boards}{pi5}")
+    return 0
+
+
+def cmd_rpi_hardware_update_sheet(args: argparse.Namespace) -> int:
+    """Write the cached hardware identity to the RPi Hardware sheet."""
+    config = _load_config(args)
+    if not config.rpi_hardware.enabled:
+        print("Error: No [rpi_hardware] section configured in gdoc2netcfg.toml",
+              file=sys.stderr)
+        return 1
+    if not config.spreadsheet_url:
+        print("Error: spreadsheet_url must be configured in the [sheets] section",
+              file=sys.stderr)
+        return 1
+    if (not config.sheets_config.credentials_file
+            and not config.sheets_config.service_account_file):
+        print("Error: [sheets] credentials_file or service_account_file must be "
+              "configured in gdoc2netcfg.toml", file=sys.stderr)
+        return 1
+
+    from gdoc2netcfg.supplements.rpi_hardware_sheet import update_rpi_hardware_sheet
+
+    data = _load_latest_from_db(config, "load_latest_rpi_hardware") or {}
+    if not data:
+        print("No rpi-hardware data to write. Run 'gdoc2netcfg rpi-hardware scan' first.")
+        return 1
+    dry_run = getattr(args, "dry_run", False)
+    try:
+        written = update_rpi_hardware_sheet(config, data, dry_run=dry_run, verbose=True)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    action = "Would write" if dry_run else "Wrote"
+    print(f"\n{action} {written} row(s) to '{config.rpi_hardware.sheet_name}'.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: password
 # ---------------------------------------------------------------------------
 
@@ -3361,6 +3472,28 @@ def main(argv: list[str] | None = None) -> int:
         help="Show what would be written without updating the sheet",
     )
 
+    # rpi-hardware (Raspberry Pi hardware identity: HAT, power, FPGA)
+    rpihw_parser = subparsers.add_parser(
+        "rpi-hardware",
+        help="Raspberry Pi hardware identity (HAT/bonnet, PoE source, FPGA board) "
+             "and sheet updates",
+    )
+    rpihw_subparsers = rpihw_parser.add_subparsers(dest="rpihw_command")
+    rpihw_scan_parser = rpihw_subparsers.add_parser(
+        "scan", help="Probe every reachable Raspberry Pi over SSH",
+    )
+    rpihw_scan_parser.add_argument(
+        "--force", action="store_true", help="Re-scan even if cached data exists",
+    )
+    rpihw_subparsers.add_parser("show", help="Show cached hardware identity data")
+    rpihw_update_parser = rpihw_subparsers.add_parser(
+        "update-sheet", help="Write cached hardware identity to the Google Sheet",
+    )
+    rpihw_update_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would be written without updating the sheet",
+    )
+
     # db (database management and history)
     db_parser = subparsers.add_parser(
         "db", help="Database management and history queries",
@@ -3470,6 +3603,18 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_zigbee_update_sheet(args)
         else:
             zigbee_parser.print_help()
+            return 0
+
+    # Handle rpi-hardware subcommands
+    if args.command == "rpi-hardware":
+        if args.rpihw_command == "scan":
+            return cmd_rpi_hardware_scan(args)
+        elif args.rpihw_command == "show":
+            return cmd_rpi_hardware_show(args)
+        elif args.rpihw_command == "update-sheet":
+            return cmd_rpi_hardware_update_sheet(args)
+        else:
+            rpihw_parser.print_help()
             return 0
 
     # Handle tasmota subcommands

@@ -483,14 +483,30 @@ def _tasmota_doc(name: str = "plug1", module: object = 43) -> dict:
     }
 
 
+def _rpi_hardware_doc(name: str = "rpi5-netv2") -> dict:
+    return {
+        "model": "Raspberry Pi 5 Model B Rev 1.0",
+        "serial": "d88100008543dc30",
+        "revision": "c04170",
+        "power_class": "usbc-supply",
+        "rtc_battery": False,
+        "fan": False,
+        "max_current_ma": 900,
+        "probe_user": "tim",
+        "header": [],
+        "fpga": [{"kind": "netv2", "dna": "0x00742c4e63b9085c", "idcode": "0x3631093"}],
+    }
+
+
 class TestStructuredSupplements:
-    """Shared per-entity delta behaviour across snmp/bridge/nsdp/tasmota."""
+    """Shared per-entity delta behaviour across snmp/bridge/nsdp/tasmota/rpi_hardware."""
 
     CASES = [
         ("save_snmp", "load_latest_snmp", "snmp", _snmp_doc),
         ("save_bridge", "load_latest_bridge", "bridge", _bridge_doc),
         ("save_nsdp", "load_latest_nsdp", "nsdp", _nsdp_doc_full),
         ("save_tasmota", "load_latest_tasmota", "tasmota", _tasmota_doc),
+        ("save_rpi_hardware", "load_latest_rpi_hardware", "rpi_hardware", _rpi_hardware_doc),
     ]
 
     @pytest.mark.parametrize("save_fn,load_fn,scan_type,make_doc", CASES)
@@ -534,6 +550,8 @@ class TestStructuredSupplements:
          lambda d: d.__setitem__("firmware_version", "2.0.0")),
         ("save_tasmota", "tasmota", _tasmota_doc,
          lambda d: d.__setitem__("firmware_version", "14.0.0")),
+        ("save_rpi_hardware", "rpi_hardware", _rpi_hardware_doc,
+         lambda d: d["header"].append("Waveshare PoE M.2 HAT+ (B)")),
     ])
     def test_delta_detects_value_change(
         self, db: DiscoveryDB, save_fn, scan_type, make_doc, mutate,
@@ -560,6 +578,25 @@ class TestStructuredSupplements:
         s = db.begin_scan(scan_type)
         with pytest.raises(ValueError, match="unexpected keys"):
             getattr(db, save_fn)(s, {"host1": doc})
+
+    def test_rpi_hardware_nulls_and_tombstone(self, db: DiscoveryDB):
+        """A 3B+ has no RTC/fan/current fields (None), and a host gone
+        from the sheet is tombstoned out of the latest view."""
+        doc = _rpi_hardware_doc()
+        doc.update(model="Raspberry Pi 3 Model B Plus Rev 1.3", rtc_battery=None,
+                   fan=None, max_current_ma=None, fpga=[],
+                   header=["Waveshare PoE-ETH-USB-HUB-HAT"])
+        s1 = db.begin_scan("rpi_hardware")
+        db.save_rpi_hardware(s1, {"rpiz-serial": doc, "gone": _rpi_hardware_doc()})
+        db.finish_scan(s1, host_count=2, changed_count=2)
+        assert db.load_latest_rpi_hardware()["rpiz-serial"] == doc
+
+        s2 = db.begin_scan("rpi_hardware")
+        assert db.tombstone_missing_rpi_hardware(s2, {"rpiz-serial"}) == 1
+        db.finish_scan(s2, host_count=1, changed_count=1)
+        assert set(db.load_latest_rpi_hardware()) == {"rpiz-serial"}
+        with pytest.raises(ValueError, match="refusing"):
+            db.tombstone_missing_rpi_hardware(s2, set())
 
     def test_only_changed_hosts_get_rows(self, db: DiscoveryDB):
         s1 = db.begin_scan("snmp")

@@ -24,6 +24,11 @@ ETC = Path("/etc")
 #: generated — comparing it would report drift forever.
 NGINX_DEPLOY_ARTIFACTS = frozenset({"status.txt"})
 
+#: The subtrees `make deploy-nginx` wipes before copying.  Only these can hold
+#: an "extra" file: anything else under the deploy root is never removed, so a
+#: leftover there is not something a deploy would clean up.
+NGINX_WIPED_SUBTREES = ("sites-available", "scripts", "conf.d", "stream.d")
+
 
 @dataclass(frozen=True)
 class Drift:
@@ -50,6 +55,34 @@ def known_hosts_pair(out: Path, etc: Path = ETC) -> tuple[Path, Path]:
     return out / "known_hosts", etc / "ssh" / "ssh_known_hosts"
 
 
+def syslog_pairs(out: Path, etc: Path = ETC) -> list[tuple[Path, Path]]:
+    """The two files `make deploy-syslog` installs."""
+    return [
+        (out / "etc" / "rsyslog.d" / "remote-logs.conf",
+         etc / "rsyslog.d" / "remote-logs.conf"),
+        (out / "etc" / "logrotate.d" / "remote-logs",
+         etc / "logrotate.d" / "remote-logs"),
+    ]
+
+
+def nginx_root(etc: Path = ETC) -> Path:
+    """Where `make deploy-nginx` copies the generated tree."""
+    return etc / "nginx" / "gdoc2netcfg"
+
+
+def nginx_pairs(out: Path, etc: Path = ETC) -> list[tuple[Path, Path]]:
+    """Every generated nginx file and where the deploy's ``cp -r`` puts it."""
+    src_root = out / "nginx"
+    if not src_root.is_dir():
+        return []
+    dst_root = nginx_root(etc)
+    return [
+        (src, dst_root / src.relative_to(src_root))
+        for src in sorted(src_root.rglob("*"))
+        if src.is_file()
+    ]
+
+
 def _compare(component: str, src: Path, dst: Path) -> list[Drift]:
     """Drift for a single generated file, or [] when it is in sync."""
     if not src.exists():
@@ -61,6 +94,32 @@ def _compare(component: str, src: Path, dst: Path) -> list[Drift]:
     return []
 
 
+def _nginx_extras(out: Path, etc: Path) -> list[Drift]:
+    """Installed nginx files in a wiped subtree that are no longer generated."""
+    src_root = out / "nginx"
+    dst_root = nginx_root(etc)
+    if not src_root.is_dir() or not dst_root.is_dir():
+        return []
+    extras: list[Drift] = []
+    for subtree in NGINX_WIPED_SUBTREES:
+        installed_root = dst_root / subtree
+        if not installed_root.is_dir():
+            continue
+        for installed in sorted(installed_root.rglob("*")):
+            if not installed.is_file() or installed.name in NGINX_DEPLOY_ARTIFACTS:
+                continue
+            if not (src_root / installed.relative_to(dst_root)).exists():
+                extras.append(Drift("nginx", "extra", installed))
+    return extras
+
+
 def find_drift(out: Path, *, etc: Path = ETC) -> list[Drift]:
     """Every difference between the generated tree *out* and installed *etc*."""
-    return _compare("known_hosts", *known_hosts_pair(out, etc))
+    drift: list[Drift] = []
+    for src, dst in nginx_pairs(out, etc):
+        drift += _compare("nginx", src, dst)
+    drift += _nginx_extras(out, etc)
+    drift += _compare("known_hosts", *known_hosts_pair(out, etc))
+    for src, dst in syslog_pairs(out, etc):
+        drift += _compare("syslog", src, dst)
+    return drift

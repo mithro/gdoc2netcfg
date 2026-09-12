@@ -234,8 +234,8 @@ def validate_dnsmasq_output(files: dict[str, str]) -> ValidationResult:
     code that would break forward-confirmed reverse DNS (FCrDNS).
 
     Args:
-        files: Dict mapping filename to config file content (as returned
-            by generate_dnsmasq_internal / generate_dnsmasq_external).
+        files: Dict mapping filename to config file content, as returned by
+            generate_dnsmasq_leaf ("{net}/generated/{host}.conf" keys).
 
     Returns:
         ValidationResult with ERROR-severity violations for any PTR name

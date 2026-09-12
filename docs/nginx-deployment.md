@@ -89,7 +89,7 @@ In `gdoc2netcfg.toml`, add `"nginx"` to the enabled generators list:
 
 ```toml
 [generators]
-enabled = ["dnsmasq_internal", "nginx"]
+enabled = ["dnsmasq_leaf", "nginx"]
 ```
 
 The `[generators.nginx]` section should already exist with defaults:

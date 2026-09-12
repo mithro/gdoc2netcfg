@@ -13,8 +13,6 @@ uv run ruff check src/ tests/           # Lint
 uv run gdoc2netcfg fetch                # Download CSVs from Google Sheets
 uv run gdoc2netcfg generate dnsmasq_leaf pdns_internal pdns_external recursor_forward --output-dir out
                                         # Welland DNS stack (out/ mirrors /etc)
-uv run gdoc2netcfg generate dnsmasq_internal  # Legacy generator (RETIRED from use; removal pending)
-uv run gdoc2netcfg generate dnsmasq_external  # Legacy generator (RETIRED from use; removal pending)
 uv run gdoc2netcfg generate letsencrypt       # Generate certbot cert scripts
 uv run gdoc2netcfg generate nagios            # Generate Nagios monitoring config
 uv run gdoc2netcfg generate nginx             # Generate nginx reverse proxy configs
@@ -103,7 +101,6 @@ Constraints (constraints/)  Validation: field presence, BMC placement, MAC uniqu
     │
 Generators (generators/)    Output: dnsmasq_leaf, pdns_internal, pdns_external,
     │                        recursor_forward (the DNS stack, both sites);
-    │                        dnsmasq_internal, dnsmasq_external (legacy, unused);
     │                        nagios, nginx, letsencrypt, topology (Graphviz DOT)
     │
 Config files               Per-host .conf files in output directories
@@ -246,10 +243,14 @@ data-changing SSHFP scan) + the code's git-describe number — zone files only
 change when their inputs do. Deploys must run WITHOUT `--force` (validators
 gate).
 
-The legacy `dnsmasq_internal`/`dnsmasq_external` generators produced the
-old single-instance split-horizon config; they are no longer used at
-either site (removal is a pending cleanup) and share record generation
-with the leaf generator via `dnsmasq_common.py`.
+The `dnsmasq_internal`/`dnsmasq_external` generators that produced the old
+single-instance split-horizon config were DELETED 2026-09-12, along with the
+`shared_dns_sections` helper cluster only they used. `dnsmasq_common.py`
+remains as the shared record-building layer for `dnsmasq_leaf` and
+`pdns_zones`, and its post-generation FCrDNS check (every `ptr-record` name
+must also appear as a `host-record` name) now runs on `dnsmasq_leaf` —
+the output a deploy installs — rather than on the retired pair, which meant
+it had never checked what reaches /etc. See `FCRDNS_VALIDATED_GENERATORS`.
 
 ### Let's Encrypt Certificates
 

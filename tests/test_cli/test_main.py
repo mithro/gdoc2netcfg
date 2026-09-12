@@ -218,52 +218,6 @@ class TestMultiFileOutput:
         assert "path traversal" in captured.err
 
 
-class TestDnsmasqExternalGenerator:
-    def test_generate_dnsmasq_external_with_no_public_ip(self, tmp_path, capsys):
-        """External generator with no public IP produces no-op output."""
-        cache_dir = tmp_path / ".cache"
-        cache_dir.mkdir()
-        (cache_dir / "network.csv").write_text(
-            "Machine,MAC Address,IP,Interface\n"
-            "desktop,aa:bb:cc:dd:ee:ff,10.1.10.1,\n"
-        )
-
-        config = tmp_path / "gdoc2netcfg.toml"
-        config.write_text(textwrap.dedent(f"""\
-            [site]
-            name = "test"
-            domain = "test.example.com"
-
-            [sheets]
-            network = "https://example.com/not-used"
-
-            [cache]
-            directory = "{cache_dir}"
-
-            [ipv6]
-            prefixes = []
-
-            [vlans]
-            10 = {{ name = "int", subdomain = "int" }}
-
-            [network_subdomains]
-            10 = "int"
-
-            [generators]
-            enabled = ["dnsmasq_external"]
-
-            [generators.dnsmasq_external]
-            output = ""
-        """))
-
-        result = main(["-c", str(config), "generate", "--stdout", "dnsmasq_external"])
-        assert result == 0
-        captured = capsys.readouterr()
-        # With no public_ipv4, the external generator returns an empty dict,
-        # so the CLI writes 0 files and produces no stdout output
-        assert "No public_ipv4 configured" not in captured.out
-
-
 def _make_config_with_csv(tmp_path):
     """Create a minimal config + cached CSV for reachability tests."""
     cache_dir = tmp_path / ".cache"

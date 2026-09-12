@@ -207,11 +207,12 @@ Uses `identity_ipv4` — addresses are emitted as-is. Includes all record types:
 4. **CAA** (`dns-rr` type 257) — Let's Encrypt issuance authorization
 5. **SSHFP** (`dns-rr` type 44) — SSH fingerprints
 
-### External (dnsmasq_external.py)
+### External (pdns_external.py)
 
-Uses `ipv4_transform = lambda ip: public_ip if is_rfc1918(ip) else ip`.
-No DHCP section (external DNS doesn't do DHCP). Otherwise the same sections
-as internal.
+The `dnsmasq_external.py` generator was deleted 2026-09-12 along with the
+retired dnsmasq@external instance. The public view is now a flat pdns zone
+from `pdns_external.py`, which keeps the same address transform
+(`public_ip if is_rfc1918(addr) else addr`) and likewise emits no DHCP.
 
 Key external behaviours:
 
@@ -226,12 +227,11 @@ Key external behaviours:
 - **SSHFP PTR uses public IP**: The PTR-based SSHFP records use the
   transformed (public) IP for the `in-addr.arpa` name
 
-### When external is disabled
+### The site's public address
 
-`generate_dnsmasq_external()` returns an empty dict if no `public_ipv4` is
-configured. Both current production sites (welland and monarto) set
-`public_ipv4`, so both generate external configs; a site that leaves
-`public_ipv4` unset runs internal only.
+`generate_pdns_external()` takes `public_ipv4`, falling back to
+`site.public_ipv4`. Both production sites (welland and monarto) set it —
+welland to its public IPv4, monarto being v6-primary with no public IPv4.
 
 
 ## Other record types
@@ -415,7 +415,7 @@ duplicate).
 | `derivations/dns_names.py` | Five-pass DNS name derivation |
 | `generators/dnsmasq_common.py` | Shared host-record, ptr-record, CAA, SSHFP generation + FCrDNS validation |
 | `generators/dnsmasq.py` | Internal generator (DHCP + shared sections) |
-| `generators/dnsmasq_external.py` | External generator (RFC 1918 → public IP transform) |
+| `generators/pdns_external.py` | External public zone generator |
 | `models/host.py` | `DNSName`, `Host`, `NetworkInterface`, `NetworkInventory` |
 | `derivations/host_builder.py` | `build_hosts()`, `build_inventory()` |
 | `derivations/vlan.py` | `ip_to_subdomain()` — third-octet → subdomain mapping |

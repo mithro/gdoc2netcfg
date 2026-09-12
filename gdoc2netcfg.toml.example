@@ -69,14 +69,8 @@ disabled_prefixes = [
 # ── both sites once its host runs the capture stack. ─────
 [generators]
 # Which generators to enable
-enabled = ["dnsmasq_internal", "dnsmasq_external", "nagios", "nginx",
-           "wifi"]
-
-[generators.dnsmasq_internal]
-output_dir = "internal"
-
-[generators.dnsmasq_external]
-output_dir = "external"
+enabled = ["dnsmasq_leaf", "pdns_internal", "pdns_external",
+           "recursor_forward", "nginx", "known_hosts", "rsyslog"]
 
 [generators.nginx]
 acme_webroot = "/var/www/acme"

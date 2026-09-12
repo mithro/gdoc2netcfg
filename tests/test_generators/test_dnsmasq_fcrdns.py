@@ -1,9 +1,8 @@
 """Tests for post-generation FCrDNS validation of dnsmasq output."""
 
 from gdoc2netcfg.derivations.dns_names import derive_all_dns_names
-from gdoc2netcfg.generators.dnsmasq import generate_dnsmasq_internal
 from gdoc2netcfg.generators.dnsmasq_common import validate_dnsmasq_output
-from gdoc2netcfg.generators.dnsmasq_external import generate_dnsmasq_external
+from gdoc2netcfg.generators.dnsmasq_leaf import generate_dnsmasq_leaf
 from gdoc2netcfg.models.addressing import IPv4Address, IPv6Address, MACAddress
 from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
 from gdoc2netcfg.models.network import IPv6Prefix, Site
@@ -56,9 +55,9 @@ def _host_with_iface(hostname, mac, ip, interface_name=None, dhcp_name="test"):
 
 
 class TestValidOutputPasses:
-    """Generated output from the real pipeline should always pass validation."""
+    """Real per-net leaf output — what a deploy installs — must always pass."""
 
-    def test_single_host_internal(self):
+    def test_single_host(self):
         host = _host_with_iface(
             "desktop", "aa:bb:cc:dd:ee:ff", "10.1.10.1", dhcp_name="desktop",
         )
@@ -69,16 +68,16 @@ class TestValidOutputPasses:
                 "10.1.10.1": [(MACAddress.parse("aa:bb:cc:dd:ee:ff"), "desktop")],
             },
         )
-        files = generate_dnsmasq_internal(inv)
+        files = generate_dnsmasq_leaf(inv)
         result = validate_dnsmasq_output(files)
         assert result.is_valid, result.report()
 
-    def test_single_host_external(self):
+    def test_single_host_without_dhcp_name(self):
         host = _host_with_iface(
             "server", "aa:bb:cc:dd:ee:ff", "10.1.10.1",
         )
         inv = _make_inventory(hosts=[host])
-        files = generate_dnsmasq_external(inv)
+        files = generate_dnsmasq_leaf(inv)
         result = validate_dnsmasq_output(files)
         assert result.is_valid, result.report()
 
@@ -97,7 +96,7 @@ class TestValidOutputPasses:
                 "10.1.10.2": [(MACAddress.parse("aa:bb:cc:dd:ee:02"), "bravo")],
             },
         )
-        files = generate_dnsmasq_internal(inv)
+        files = generate_dnsmasq_leaf(inv)
         result = validate_dnsmasq_output(files)
         assert result.is_valid, result.report()
 
@@ -114,7 +113,7 @@ class TestValidOutputPasses:
                 "10.1.10.1": [(MACAddress.parse("aa:bb:cc:dd:ee:ff"), "server")],
             },
         )
-        files = generate_dnsmasq_internal(inv)
+        files = generate_dnsmasq_leaf(inv)
         result = validate_dnsmasq_output(files)
         assert result.is_valid, result.report()
 
@@ -151,7 +150,7 @@ class TestValidOutputPasses:
                 "10.1.10.2": [(MACAddress.parse("aa:bb:cc:dd:ee:02"), "eth0-server")],
             },
         )
-        files = generate_dnsmasq_internal(inv)
+        files = generate_dnsmasq_leaf(inv)
         result = validate_dnsmasq_output(files)
         assert result.is_valid, result.report()
 

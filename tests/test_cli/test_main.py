@@ -87,6 +87,10 @@ class TestGenerateCommand:
             "Machine,MAC Address,IP,Interface\n"
             "desktop,aa:bb:cc:dd:ee:ff,10.1.10.1,\n"
         )
+        (cache_dir / "vlan_allocations.csv").write_text(
+            "VLAN,Name,IP Range,Netmask,CIDR,,,Color,For\n"
+            "10,int,10.X.10.X,255.255.255.0,/24,,,,Internal\n"
+        )
 
         # Create config pointing to cache
         config = tmp_path / "gdoc2netcfg.toml"
@@ -94,9 +98,11 @@ class TestGenerateCommand:
             [site]
             name = "test"
             domain = "test.example.com"
+            site_octet = 1
 
             [sheets]
             network = "https://example.com/not-used"
+            vlan_allocations = "https://example.com/not-used-either"
 
             [cache]
             directory = "{cache_dir}"
@@ -111,13 +117,10 @@ class TestGenerateCommand:
             10 = "int"
 
             [generators]
-            enabled = ["dnsmasq_internal"]
-
-            [generators.dnsmasq_internal]
-            output = ""
+            enabled = ["dnsmasq_leaf"]
         """))
 
-        result = main(["-c", str(config), "generate", "--stdout", "dnsmasq_internal"])
+        result = main(["-c", str(config), "generate", "--stdout", "dnsmasq_leaf"])
         assert result == 0
         captured = capsys.readouterr()
         assert "dhcp-host=" in captured.out

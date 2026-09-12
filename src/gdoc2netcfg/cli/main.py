@@ -770,11 +770,6 @@ def _dns_data_serial(config, config_path) -> int | None:
 def _get_generator(name: str):
     """Get a generator function by name."""
     generators = {
-        "dnsmasq_internal": ("gdoc2netcfg.generators.dnsmasq", "generate_dnsmasq_internal"),
-        "dnsmasq_external": (
-            "gdoc2netcfg.generators.dnsmasq_external",
-            "generate_dnsmasq_external",
-        ),
         "dnsmasq_leaf": ("gdoc2netcfg.generators.dnsmasq_leaf", "generate_dnsmasq_leaf"),
         "pdns_internal": ("gdoc2netcfg.generators.pdns_zones", "generate_pdns_internal"),
         "pdns_external": ("gdoc2netcfg.generators.pdns_external", "generate_pdns_external"),
@@ -881,11 +876,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
 
         # Build kwargs for generators that accept extra parameters
         kwargs = {}
-        if name == "dnsmasq_external" and gen_config and gen_config.params.get("public_ipv4"):
-            kwargs["public_ipv4"] = gen_config.params["public_ipv4"]
-        elif name == "dnsmasq_external":
-            kwargs["public_ipv4"] = config.site.public_ipv4
-        elif name == "letsencrypt" and gen_config:
+        if name == "letsencrypt" and gen_config:
             for key in ("auth_hook", "dnsmasq_conf_dir", "dnsmasq_conf", "dnsmasq_service"):
                 if gen_config.params.get(key):
                     kwargs[key] = gen_config.params[key]

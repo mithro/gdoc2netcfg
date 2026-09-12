@@ -46,7 +46,7 @@ def test_zone_only_change_reloads_exactly_the_changed_zones(layout, view):
     out_etc, etc, calls, make = layout
     make(view)
 
-    touched = deploy_dns.deploy_pdns(out_etc, view, dry=False)
+    touched = deploy_dns.deploy_pdns(out_etc.parent, view, dry=False)
 
     assert touched == [etc / "powerdns" / f"zones-{view}" / "welland.mithis.com.zone"]
     assert calls == [[
@@ -63,7 +63,7 @@ def test_bind_conf_change_restarts_instead_of_reloading(layout):
     make("internal")
     (out_etc / "powerdns" / "bind-internal.conf").write_text("changed conf\n")
 
-    deploy_dns.deploy_pdns(out_etc, "internal", dry=False)
+    deploy_dns.deploy_pdns(out_etc.parent, "internal", dry=False)
 
     assert calls == [["systemctl", "restart", "pdns@internal"]]
 
@@ -101,7 +101,7 @@ def test_changed_leaf_conf_is_installed_and_only_that_net_restarts(leaves):
     (generated("int") / "desk.conf").write_text("same\n")
     (installed("int") / "desk.conf").write_text("same\n")
 
-    touched = deploy_dns.deploy_leaves(out_etc, dry=False)
+    touched = deploy_dns.deploy_leaves(out_etc.parent, dry=False)
 
     assert touched == [etc / "dnsmasq.d" / "iot" / "generated"]
     assert calls == [["systemctl", "restart", "dnsmasq@iot"]]
@@ -114,7 +114,7 @@ def test_generated_conf_that_disappeared_is_removed(leaves):
     generated("iot")
     (installed("iot") / "retired.conf").write_text("old\n")
 
-    deploy_dns.deploy_leaves(out_etc, dry=False)
+    deploy_dns.deploy_leaves(out_etc.parent, dry=False)
 
     assert not (etc / "dnsmasq.d" / "iot" / "generated" / "retired.conf").exists()
     assert calls == [["systemctl", "restart", "dnsmasq@iot"]]
@@ -125,7 +125,7 @@ def test_net_without_an_etc_directory_is_skipped(leaves, capsys):
     (generated("guest") / "host.conf").write_text("x\n")
     (etc / "dnsmasq.d").mkdir(parents=True)
 
-    touched = deploy_dns.deploy_leaves(out_etc, dry=False)
+    touched = deploy_dns.deploy_leaves(out_etc.parent, dry=False)
 
     assert touched == []
     assert calls == []
@@ -138,7 +138,7 @@ def test_dry_run_installs_nothing_but_previews_the_restart(leaves):
     (generated("iot") / "esp32.iot.conf").write_text("new\n")
     installed("iot")
 
-    deploy_dns.deploy_leaves(out_etc, dry=True)
+    deploy_dns.deploy_leaves(out_etc.parent, dry=True)
 
     assert not (etc / "dnsmasq.d" / "iot" / "generated" / "esp32.iot.conf").exists()
     assert calls == [["systemctl", "restart", "dnsmasq@iot"]]

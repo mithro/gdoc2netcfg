@@ -29,11 +29,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-ETC = Path("/etc")
+from gdoc2netcfg import deploy_map
+from gdoc2netcfg.deploy_map import changed
 
-
-def changed(src: Path, dst: Path) -> bool:
-    return not dst.exists() or src.read_bytes() != dst.read_bytes()
+ETC = deploy_map.ETC
 
 
 def run(argv: list[str], dry: bool) -> None:
@@ -52,50 +51,41 @@ def copy(src: Path, dst: Path, dry: bool) -> None:
         tmp.rename(dst)
 
 
-def deploy_leaves(out_etc: Path, dry: bool) -> list[Path]:
+def deploy_leaves(out: Path, dry: bool) -> list[Path]:
     touched: list[Path] = []
-    leaves_root = out_etc / "dnsmasq.d"
-    if not leaves_root.is_dir():
-        return touched
-    for net_dir in sorted(leaves_root.iterdir()):
-        gen = net_dir / "generated"
-        if not gen.is_dir():
-            continue
-        net = net_dir.name
-        target = ETC / "dnsmasq.d" / net / "generated"
-        if not target.parent.is_dir():
-            print(f"  SKIP {net}: no /etc/dnsmasq.d/{net}/ on this host")
-            continue
-        src_files = {p.name: p for p in sorted(gen.glob("*.conf"))}
+    for net in deploy_map.skipped_nets(out, etc=ETC):
+        print(f"  SKIP {net}: no {ETC}/dnsmasq.d/{net}/ on this host")
+    for leaf in deploy_map.dnsmasq_leaf_dirs(out, ETC):
+        src_files = {p.name: p for p in sorted(leaf.src_dir.glob("*.conf"))}
         dirty = False
         for name, src in src_files.items():
-            if changed(src, target / name):
-                copy(src, target / name, dry)
+            if changed(src, leaf.dst_dir / name):
+                copy(src, leaf.dst_dir / name, dry)
                 dirty = True
-        for stale in sorted(target.glob("*.conf")):
+        for stale in sorted(leaf.dst_dir.glob("*.conf")):
             if stale.name not in src_files:
                 print(f"  remove stale {stale}")
                 if not dry:
                     stale.unlink()
                 dirty = True
         if dirty:
-            run(["systemctl", "restart", f"dnsmasq@{net}"], dry)
-            touched.append(target)
+            run(["systemctl", "restart", f"dnsmasq@{leaf.net}"], dry)
+            touched.append(leaf.dst_dir)
     return touched
 
 
-def deploy_pdns(out_etc: Path, view: str, dry: bool) -> list[Path]:
+def deploy_pdns(out: Path, view: str, dry: bool) -> list[Path]:
     """view: 'internal' or 'external'."""
     touched: list[Path] = []
-    out_pdns = out_etc / "powerdns"
+    plan = deploy_map.pdns_plan(out, view, ETC)
+    out_pdns = out / "etc" / "powerdns"
     bind_conf = out_pdns / f"bind-{view}.conf"
     zones_dir = out_pdns / f"zones-{view}"
-    if not zones_dir.is_dir() and not bind_conf.exists():
+    if not plan.zone_pairs and plan.bind_pair is None:
         return touched
 
     changed_zones: list[str] = []
-    for src in sorted(zones_dir.glob("*.zone")) if zones_dir.is_dir() else []:
-        dst = ETC / "powerdns" / f"zones-{view}" / src.name
+    for src, dst in plan.zone_pairs:
         if changed(src, dst):
             copy(src, dst, dry)
             touched.append(dst)
@@ -124,9 +114,8 @@ def deploy_pdns(out_etc: Path, view: str, dry: bool) -> list[Path]:
     return touched
 
 
-def deploy_recursor(out_etc: Path, dry: bool) -> list[Path]:
-    src = out_etc / "powerdns" / "forward-zones.yml"
-    dst = ETC / "powerdns" / "forward-zones.yml"
+def deploy_recursor(out: Path, dry: bool) -> list[Path]:
+    src, dst = deploy_map.recursor_pair(out, ETC)
     if not src.exists() or not changed(src, dst):
         return []
     copy(src, dst, dry)
@@ -142,20 +131,21 @@ def main(argv=None) -> int:
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
-    out_etc = Path(args.out) / "etc"
+    out = Path(args.out)
+    out_etc = out / "etc"
     if not out_etc.is_dir():
         print(f"deploy_dns: {out_etc} missing — run generate first", file=sys.stderr)
         return 2
 
     touched: list[Path] = []
     print("== dnsmasq leaves ==")
-    touched += deploy_leaves(out_etc, args.dry_run)
+    touched += deploy_leaves(out, args.dry_run)
     print("== pdns internal ==")
-    touched += deploy_pdns(out_etc, "internal", args.dry_run)
+    touched += deploy_pdns(out, "internal", args.dry_run)
     print("== pdns external ==")
-    touched += deploy_pdns(out_etc, "external", args.dry_run)
+    touched += deploy_pdns(out, "external", args.dry_run)
     print("== recursor forward-zones ==")
-    touched += deploy_recursor(out_etc, args.dry_run)
+    touched += deploy_recursor(out, args.dry_run)
 
     if not touched:
         print("Nothing changed — no services restarted.")

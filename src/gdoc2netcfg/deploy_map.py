@@ -55,6 +55,82 @@ def known_hosts_pair(out: Path, etc: Path = ETC) -> tuple[Path, Path]:
     return out / "known_hosts", etc / "ssh" / "ssh_known_hosts"
 
 
+@dataclass(frozen=True)
+class LeafDir:
+    """One per-net dnsmasq leaf: generated confs and their installed directory."""
+
+    net: str
+    src_dir: Path
+    dst_dir: Path
+
+
+@dataclass(frozen=True)
+class PdnsPlan:
+    """A pdns view's generated files, split the way the deploy treats them.
+
+    The split is load-bearing: a changed bind conf needs ``systemctl restart
+    pdns@<view>``, while changed zones only need ``bind-reload-now`` naming
+    each zone.
+    """
+
+    view: str
+    zone_pairs: list[tuple[Path, Path]]
+    bind_pair: tuple[Path, Path] | None
+
+
+def dnsmasq_leaf_dirs(out: Path, etc: Path = ETC) -> list[LeafDir]:
+    """Generated per-net leaves that this host installs.
+
+    A net with no ``/etc/dnsmasq.d/<net>/`` is omitted — that leaf does not run
+    here, which is a site difference rather than a stale deploy.  See
+    ``skipped_nets``.
+    """
+    leaves_root = out / "etc" / "dnsmasq.d"
+    if not leaves_root.is_dir():
+        return []
+    leaves = []
+    for net_dir in sorted(leaves_root.iterdir()):
+        gen = net_dir / "generated"
+        target = etc / "dnsmasq.d" / net_dir.name / "generated"
+        if gen.is_dir() and target.parent.is_dir():
+            leaves.append(LeafDir(net_dir.name, gen, target))
+    return leaves
+
+
+def skipped_nets(out: Path, *, etc: Path = ETC) -> list[str]:
+    """Generated nets this host has no ``/etc/dnsmasq.d/<net>/`` for."""
+    leaves_root = out / "etc" / "dnsmasq.d"
+    if not leaves_root.is_dir():
+        return []
+    return [
+        net_dir.name
+        for net_dir in sorted(leaves_root.iterdir())
+        if (net_dir / "generated").is_dir()
+        and not (etc / "dnsmasq.d" / net_dir.name).is_dir()
+    ]
+
+
+def pdns_plan(out: Path, view: str, etc: Path = ETC) -> PdnsPlan:
+    """Generated zones and bind conf for *view* ('internal' or 'external')."""
+    out_pdns = out / "etc" / "powerdns"
+    zones_dir = out_pdns / f"zones-{view}"
+    bind_conf = out_pdns / f"bind-{view}.conf"
+    zone_pairs = [
+        (src, etc / "powerdns" / f"zones-{view}" / src.name)
+        for src in (sorted(zones_dir.glob("*.zone")) if zones_dir.is_dir() else [])
+    ]
+    bind_pair = (
+        (bind_conf, etc / "powerdns" / bind_conf.name) if bind_conf.exists() else None
+    )
+    return PdnsPlan(view, zone_pairs, bind_pair)
+
+
+def recursor_pair(out: Path, etc: Path = ETC) -> tuple[Path, Path]:
+    """The generated recursor forward-zones file and its installed path."""
+    return (out / "etc" / "powerdns" / "forward-zones.yml",
+            etc / "powerdns" / "forward-zones.yml")
+
+
 def syslog_pairs(out: Path, etc: Path = ETC) -> list[tuple[Path, Path]]:
     """The two files `make deploy-syslog` installs."""
     return [
@@ -113,9 +189,32 @@ def _nginx_extras(out: Path, etc: Path) -> list[Drift]:
     return extras
 
 
+def _dns_drift(out: Path, etc: Path) -> list[Drift]:
+    """Drift for the dnsmasq leaves, both pdns views and the recursor."""
+    drift: list[Drift] = []
+    for leaf in dnsmasq_leaf_dirs(out, etc):
+        generated = {p.name for p in leaf.src_dir.glob("*.conf")}
+        for src in sorted(leaf.src_dir.glob("*.conf")):
+            drift += _compare("dns", src, leaf.dst_dir / src.name)
+        # deploy_leaves deletes generated confs that disappear from OUT.
+        for installed in sorted(leaf.dst_dir.glob("*.conf")):
+            if installed.name not in generated:
+                drift.append(Drift("dns", "extra", installed))
+    for view in ("internal", "external"):
+        plan = pdns_plan(out, view, etc)
+        # Zone files that are not generated are left in place on purpose (hand
+        # extra_zones such as birds), so they are never drift.
+        for src, dst in plan.zone_pairs:
+            drift += _compare("dns", src, dst)
+        if plan.bind_pair:
+            drift += _compare("dns", *plan.bind_pair)
+    drift += _compare("dns", *recursor_pair(out, etc))
+    return drift
+
+
 def find_drift(out: Path, *, etc: Path = ETC) -> list[Drift]:
     """Every difference between the generated tree *out* and installed *etc*."""
-    drift: list[Drift] = []
+    drift: list[Drift] = _dns_drift(out, etc)
     for src, dst in nginx_pairs(out, etc):
         drift += _compare("nginx", src, dst)
     drift += _nginx_extras(out, etc)

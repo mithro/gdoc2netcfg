@@ -108,3 +108,90 @@ def test_nginx_installed_file_no_longer_generated_is_extra(tmp_path):
         ("nginx", "extra",
          etc / "nginx" / "gdoc2netcfg" / "sites-available" / "retired" / "http.conf"),
     ]
+
+
+def test_dnsmasq_leaf_conf_change_is_drift(tmp_path):
+    """The 2026-09-12 case: a generated host reservation never installed."""
+    out = tmp_path / "out"
+    etc = tmp_path / "etc"
+    write(out / "etc" / "dnsmasq.d" / "iot" / "generated" / "esp32.iot.conf",
+          "dhcp-host=e8:3d:c1:8c:4f:d8,10.1.90.72\n")
+    (etc / "dnsmasq.d" / "iot" / "generated").mkdir(parents=True)
+
+    drift = deploy_map.find_drift(out, etc=etc)
+
+    assert [(d.component, d.kind, d.path) for d in drift] == [
+        ("dns", "missing",
+         etc / "dnsmasq.d" / "iot" / "generated" / "esp32.iot.conf"),
+    ]
+
+
+def test_net_absent_from_etc_is_skipped_not_drift(tmp_path):
+    """deploy_leaves skips a net with no /etc/dnsmasq.d/<net>/ — a site that does
+    not run that leaf is correctly configured, not stale."""
+    out = tmp_path / "out"
+    etc = tmp_path / "etc"
+    write(out / "etc" / "dnsmasq.d" / "guest" / "generated" / "host.conf", "x\n")
+    (etc / "dnsmasq.d").mkdir(parents=True)
+
+    assert deploy_map.find_drift(out, etc=etc) == []
+    assert deploy_map.skipped_nets(out, etc=etc) == ["guest"]
+
+
+def test_stale_leaf_conf_no_longer_generated_is_extra(tmp_path):
+    """deploy_leaves removes generated confs that disappear, so they are drift."""
+    out = tmp_path / "out"
+    etc = tmp_path / "etc"
+    write(out / "etc" / "dnsmasq.d" / "iot" / "generated" / "kept.conf", "same\n")
+    write(etc / "dnsmasq.d" / "iot" / "generated" / "kept.conf", "same\n")
+    write(etc / "dnsmasq.d" / "iot" / "generated" / "retired.conf", "old\n")
+
+    drift = deploy_map.find_drift(out, etc=etc)
+
+    assert [(d.component, d.kind, d.path) for d in drift] == [
+        ("dns", "extra", etc / "dnsmasq.d" / "iot" / "generated" / "retired.conf"),
+    ]
+
+
+def test_pdns_zone_and_bind_conf_drift(tmp_path):
+    out = tmp_path / "out"
+    etc = tmp_path / "etc"
+    write(out / "etc" / "powerdns" / "bind-internal.conf", "new conf\n")
+    write(out / "etc" / "powerdns" / "zones-internal" / "welland.mithis.com.zone",
+          "new SSHFP\n")
+    write(etc / "powerdns" / "bind-internal.conf", "old conf\n")
+    write(etc / "powerdns" / "zones-internal" / "welland.mithis.com.zone",
+          "old SSHFP\n")
+
+    drift = deploy_map.find_drift(out, etc=etc)
+
+    assert {(d.kind, d.path) for d in drift} == {
+        ("changed", etc / "powerdns" / "bind-internal.conf"),
+        ("changed", etc / "powerdns" / "zones-internal" / "welland.mithis.com.zone"),
+    }
+    assert {d.component for d in drift} == {"dns"}
+
+
+def test_orphaned_pdns_zone_file_is_not_drift(tmp_path):
+    """deploy_pdns deliberately leaves non-generated zone files in place (hand
+    extra_zones such as birds), so they must not be reported as drift."""
+    out = tmp_path / "out"
+    etc = tmp_path / "etc"
+    write(out / "etc" / "powerdns" / "zones-internal" / "welland.mithis.com.zone", "z\n")
+    write(etc / "powerdns" / "zones-internal" / "welland.mithis.com.zone", "z\n")
+    write(etc / "powerdns" / "zones-internal" / "birds.welland.mithis.com.zone", "hand\n")
+
+    assert deploy_map.find_drift(out, etc=etc) == []
+
+
+def test_recursor_forward_zones_drift(tmp_path):
+    out = tmp_path / "out"
+    etc = tmp_path / "etc"
+    write(out / "etc" / "powerdns" / "forward-zones.yml", "new\n")
+    write(etc / "powerdns" / "forward-zones.yml", "old\n")
+
+    drift = deploy_map.find_drift(out, etc=etc)
+
+    assert [(d.component, d.kind, d.path) for d in drift] == [
+        ("dns", "changed", etc / "powerdns" / "forward-zones.yml"),
+    ]

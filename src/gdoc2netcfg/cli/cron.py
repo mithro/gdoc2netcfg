@@ -158,6 +158,17 @@ def generate_cron_entries(*, zigbee: bool = False) -> list[CronEntry]:
             lock_name="bmc-firmware",
             comment="Scan BMC firmware information",
         ),
+        # Daily 05:00: is /etc still what the generators produce?  Installing
+        # generated config is a privileged step that no cron job performs, so
+        # /etc can fall arbitrarily far behind the sheet and nothing notices —
+        # until a scan blames a device for an address whose reservation was
+        # never installed.  05:00 keeps it clear of the 02:00-04:00 scan block.
+        CronEntry(
+            schedule="0 5 * * *",
+            command="gdoc2netcfg deploy-check",
+            lock_name="deploy-check",
+            comment="Report generated config that has not been deployed to /etc",
+        ),
     ]
     if zigbee:
         entries.append(CronEntry(

@@ -95,6 +95,13 @@ generate-deploy: $(VENV)/.stamp fetch validate ## Fetch + validate + generate ev
 deploy-dns: generate-deploy ## Deploy dnsmasq leaves + pdns zones + recursor (diff-aware; run with sudo)
 	$(VENV_BIN)/python scripts/deploy_dns.py --out $(OUTPUT_DIR) --version-label "$(GDOC2NETCFG_VERSION)"
 
+# Read-only. Generates into a scratch tree of its own, never $(OUTPUT_DIR) —
+# that tree is written BY a deploy, so diffing against it would report a stale
+# /etc as clean. Exit 1 means a deploy is pending; cron runs this daily at 05:00.
+.PHONY: deploy-check
+deploy-check: $(VENV)/.stamp ## Report generated config not yet deployed to /etc (exit 1 if pending)
+	$(VENV_BIN)/gdoc2netcfg deploy-check
+
 NGINX_CONF_DIR := /etc/nginx
 NGINX_GEN_DIR := $(NGINX_CONF_DIR)/gdoc2netcfg
 

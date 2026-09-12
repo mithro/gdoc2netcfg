@@ -423,8 +423,9 @@ cd /opt/gdoc2netcfg && .venv/bin/gdoc2netcfg db info   # sudo-free (read-only)
 `sudo gdoc2netcfg cron install` (from `/opt/gdoc2netcfg`) writes a managed block
 into root's crontab: fetch + generate every 15 min, the supplement scans nightly
 (sshfp 02:00, ssl-certs 02:05, tasmota 02:10, snmp-host 03:00, bridge 03:05),
-bmc-firmware weekly, zigbee hourly when configured. **Re-run `cron install`
-after deploying a change to `cli/cron.py`** — the crontab is a snapshot.
+deploy-check 05:00, bmc-firmware weekly, zigbee hourly when configured.
+**Re-run `cron install` after deploying a change to `cli/cron.py`** — the
+crontab is a snapshot.
 
 Every line is `uv --quiet --directory /opt/gdoc2netcfg run gdoc2netcfg cron run <job>`
 with **no shell redirect**. The `cron run` wrapper:
@@ -442,6 +443,41 @@ with **no shell redirect**. The `cron run` wrapper:
 Why: cron ignores exit codes and only mails output. The previous lines ended in
 `>>cron.log 2>&1`, so a job could traceback nightly for weeks with no signal
 (the sshfp scan did, 2026-08-21 → 2026-09-03, while a host was re-keyed).
+
+### Is /etc actually up to date? (`deploy-check`)
+
+`generate` writes into the project directory; **nothing in cron installs
+anything into `/etc`**. Installing is a separate privileged step (`sudo make
+deploy`), so `/etc` can fall arbitrarily far behind the sheet with no signal —
+on welland the last deploy was 2026-09-05 and the drift surfaced a week later
+only as the nightly Tasmota scan blaming two IoT boards for addresses whose
+`dhcp-host` reservations had never been installed.
+
+`gdoc2netcfg deploy-check` (or `make deploy-check`) compares `/etc` against
+what the generators produce **now** and exits 1 when a deploy is pending, so
+the `cron run` wrapper mails it. Exit 2 means the comparison could not be made
+(generate or validation failed) — never read as a pass. It runs daily at 05:00
+and keeps mailing until someone deploys.
+
+It generates into a scratch tree of its own. It must never compare against
+`out/`: that tree is written *by* a deploy, so a week-stale `/etc` matches it
+exactly and the check would pass while being maximally wrong.
+
+An **empty** generated file where `/etc` has content is reported as `[empty]`
+and exits 2, never as drift: it means the generate run was broken rather than
+`/etc` being stale, and calling it drift would invite a deploy that installs
+the emptiness (for known_hosts, wiping every host key). The usual cause is the
+working directory — `cache.directory` is the *relative* path `.cache`, resolved
+against the CWD, not against the config file, so always run from
+`/opt/gdoc2netcfg` (which is what the cron line's `uv --directory` does).
+
+`gdoc2netcfg/deploy_map.py` holds the generated-to-installed path mapping for
+all four components (dns, nginx, known_hosts, syslog) and is imported by both
+`scripts/deploy_dns.py` and the check, so a deploy and the check cannot
+disagree about where a file belongs. Three asymmetries it encodes: a net with
+no `/etc/dnsmasq.d/<net>/` is *skipped*, not stale; nginx's `status.txt` is
+created by the deploy and never generated; a pdns zone file that was never
+generated is left in place on purpose (hand `extra_zones`) and is not drift.
 
 ### DNS deployment
 

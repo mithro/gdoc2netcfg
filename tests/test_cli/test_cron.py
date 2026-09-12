@@ -155,11 +155,38 @@ class TestGenerateCronEntries:
     """Tests for generate_cron_entries()."""
 
     def test_returns_correct_count(self):
-        """Should return 8 CronEntry objects (per the agreed schedule)."""
+        """Should return 9 CronEntry objects (per the agreed schedule)."""
         from gdoc2netcfg.cli.cron import generate_cron_entries
 
         entries = generate_cron_entries()
-        assert len(entries) == 8
+        assert len(entries) == 9
+
+    def test_deploy_check_schedule(self):
+        """Deploy drift check runs daily at 05:00 — clear of the 02:00-04:00
+        scan block, and every generator's output is hours old by then."""
+        from gdoc2netcfg.cli.cron import generate_cron_entries
+
+        entries = generate_cron_entries()
+        check = [e for e in entries if e.lock_name == "deploy-check"]
+        assert len(check) == 1
+        assert check[0].schedule == "0 5 * * *"
+        assert check[0].command == "gdoc2netcfg deploy-check"
+
+    def test_every_entry_names_a_real_cli_subcommand(self, capsys):
+        """A cron entry whose command is not a subcommand fails nightly with an
+        argparse error instead of doing its job, so parse every one of them.
+        argparse exits 2 for an unknown subcommand and 0 for --help."""
+        import pytest
+
+        import gdoc2netcfg.cli.main as cli
+        from gdoc2netcfg.cli.cron import generate_cron_entries
+
+        for entry in generate_cron_entries(zigbee=True):
+            words = entry.command.split()[1:]
+            with pytest.raises(SystemExit) as exc:
+                cli.main([*words, "--help"])
+            assert exc.value.code == 0, entry.command
+            capsys.readouterr()
 
     def test_fetch_schedule(self):
         """Fetch should run every 15 minutes."""
@@ -397,7 +424,7 @@ class TestFormatCrontabBlock:
         assert "# Project: /opt/gdoc2netcfg" in block
 
     def test_contains_all_entries(self):
-        """Block should contain all 8 cron lines."""
+        """Block should contain all 9 cron lines."""
         from gdoc2netcfg.cli.cron import format_crontab_block, generate_cron_entries
 
         entries = generate_cron_entries()
@@ -407,7 +434,7 @@ class TestFormatCrontabBlock:
             line for line in block.splitlines()
             if line and not line.startswith("#")
         ]
-        assert len(cron_lines) == 8
+        assert len(cron_lines) == 9
 
     def test_ends_with_newline(self):
         """Block should end with a trailing newline."""

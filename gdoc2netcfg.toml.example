@@ -79,10 +79,8 @@ acme_webroot = "/var/www/acme"
 # lua_healthcheck_path = "/usr/share/lua/5.1/"       # Path to lua-resty-upstream-healthcheck
 
 [generators.letsencrypt]
-auth_hook = "/opt/certbot/bin/certbot-hook-dnsmasq"
-dnsmasq_conf_dir = "/etc/dnsmasq.d/external"
-dnsmasq_conf = "/etc/dnsmasq.d/dnsmasq.external.conf"
-dnsmasq_service = "dnsmasq@external"
+# DNS-01 hook for pdns@external; takes no flags and no environment.
+auth_hook = "/opt/certbot/bin/certbot-hook-pdns"
 
 [generators.nagios]
 output = "nagios-switches.cfg"

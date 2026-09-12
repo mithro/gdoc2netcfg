@@ -5,10 +5,16 @@ renew-enabled.sh orchestrator. Only public FQDNs (is_fqdn=True) are
 included as -d domains — short names can't be validated by Let's Encrypt.
 
 Uses DNS-01 challenge validation via an external auth hook script
-(certbot-hook-dnsmasq) that manages TXT records in dnsmasq, verifies
-local DNS resolution, notifies secondaries, and polls until synced.
-This avoids HTTP-01 failures when AAAA records point directly to
-devices instead of the reverse proxy.
+(certbot-hook-pdns) that edits the pdns@external bind-backend zone file,
+bumps the SOA serial, reloads, NOTIFYs the Rollernet secondaries and waits
+until the TXT is visible on the public NS. This avoids HTTP-01 failures when
+AAAA records point directly to devices instead of the reverse proxy.
+
+The hook takes no flags and no environment: `<hook> auth-hook` and
+`<hook> cleanup-hook`, matching what the live renewal configs run. It
+replaced certbot-hook-dnsmasq when dnsmasq@external was retired — the
+dnsmasq hook's --conf-dir/--conf/--service pointed at a directory and a
+systemd instance that no longer exist.
 
 Deploy hooks are added based on hardware_type:
   - supermicro-bmc → certbot-hook-bmc-ipmi-supermicro
@@ -22,7 +28,7 @@ from gdoc2netcfg.derivations.hardware import (
     HARDWARE_SUPERMICRO_BMC,
 )
 from gdoc2netcfg.models.host import NetworkInventory
-from gdoc2netcfg.utils.dns import is_safe_dns_name, is_safe_path, is_safe_systemd_unit
+from gdoc2netcfg.utils.dns import is_safe_dns_name, is_safe_path
 
 # Deploy hook scripts, looked up by hardware type
 _DEPLOY_HOOKS: dict[str, str] = {
@@ -30,18 +36,12 @@ _DEPLOY_HOOKS: dict[str, str] = {
     HARDWARE_NETGEAR_SWITCH: "/usr/local/bin/certbot-hook-netgear-switches",
 }
 
-_DEFAULT_AUTH_HOOK = "/opt/certbot/bin/certbot-hook-dnsmasq"
-_DEFAULT_DNSMASQ_CONF_DIR = "/etc/dnsmasq.d/external"
-_DEFAULT_DNSMASQ_CONF = "/etc/dnsmasq.d/dnsmasq.external.conf"
-_DEFAULT_DNSMASQ_SERVICE = "dnsmasq@external"
+_DEFAULT_AUTH_HOOK = "/opt/certbot/bin/certbot-hook-pdns"
 
 
 def generate_letsencrypt(
     inventory: NetworkInventory,
     auth_hook: str = _DEFAULT_AUTH_HOOK,
-    dnsmasq_conf_dir: str = _DEFAULT_DNSMASQ_CONF_DIR,
-    dnsmasq_conf: str = _DEFAULT_DNSMASQ_CONF,
-    dnsmasq_service: str = _DEFAULT_DNSMASQ_SERVICE,
 ) -> dict[str, str]:
     """Generate certbot provisioning scripts for each host.
 
@@ -52,15 +52,8 @@ def generate_letsencrypt(
     Raises:
         ValueError: If any path parameter contains unsafe characters.
     """
-    for name, value in [
-        ("auth_hook", auth_hook),
-        ("dnsmasq_conf_dir", dnsmasq_conf_dir),
-        ("dnsmasq_conf", dnsmasq_conf),
-    ]:
-        if not is_safe_path(value):
-            raise ValueError(f"Unsafe {name}: {value!r}")
-    if not is_safe_systemd_unit(dnsmasq_service):
-        raise ValueError(f"Unsafe dnsmasq_service: {dnsmasq_service!r}")
+    if not is_safe_path(auth_hook):
+        raise ValueError(f"Unsafe auth_hook: {auth_hook!r}")
 
     files: dict[str, str] = {}
 
@@ -78,13 +71,8 @@ def generate_letsencrypt(
         cert_name = fqdns[0]
 
         # Build certbot command
-        dnsmasq_flags = (
-            f" --conf-dir {dnsmasq_conf_dir}"
-            f" --conf {dnsmasq_conf}"
-            f" --service {dnsmasq_service}"
-        )
-        auth_hook_cmd = f"'{auth_hook} auth-hook{dnsmasq_flags}'"
-        cleanup_hook_cmd = f"'{auth_hook} cleanup-hook{dnsmasq_flags}'"
+        auth_hook_cmd = f"'{auth_hook} auth-hook'"
+        cleanup_hook_cmd = f"'{auth_hook} cleanup-hook'"
         lines = [
             "#!/bin/sh",
         ]

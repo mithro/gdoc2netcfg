@@ -877,7 +877,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
         # Build kwargs for generators that accept extra parameters
         kwargs = {}
         if name == "letsencrypt" and gen_config:
-            for key in ("auth_hook", "dnsmasq_conf_dir", "dnsmasq_conf", "dnsmasq_service"):
+            for key in ("auth_hook",):
                 if gen_config.params.get(key):
                     kwargs[key] = gen_config.params[key]
         elif name == "nginx" and gen_config:

@@ -20,6 +20,20 @@ from pathlib import Path
 
 ETC = Path("/etc")
 
+#: The generators whose output a deploy installs — the Makefile's
+#: DEPLOY_GENERATORS plus rsyslog (``make deploy-syslog`` generates that one
+#: itself).  Keep the two in step: a generator missing here is a component
+#: whose drift goes unnoticed.
+DEPLOY_GENERATORS = (
+    "dnsmasq_leaf",
+    "pdns_internal",
+    "pdns_external",
+    "recursor_forward",
+    "nginx",
+    "known_hosts",
+    "rsyslog",
+)
+
 #: Installed by the nginx deploy itself (and chowned to www-data), never
 #: generated — comparing it would report drift forever.
 NGINX_DEPLOY_ARTIFACTS = frozenset({"status.txt"})

@@ -24,10 +24,14 @@ from __future__ import annotations
 import argparse
 import re
 import sqlite3
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from gdoc2netcfg import deploy_map
 
 if TYPE_CHECKING:
     from gdoc2netcfg.config import PipelineConfig
@@ -962,6 +966,73 @@ def cmd_validate(args: argparse.Namespace) -> int:
     print(result.report())
 
     return 1 if result.has_errors else 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: deploy-check
+# ---------------------------------------------------------------------------
+
+#: Paths listed per component before the "and N more" cut-off.  The failure
+#: mail tails the log, so an uncapped list (nginx alone generates ~940 files)
+#: would push the summary out of view.
+DEPLOY_CHECK_LIMIT = 20
+
+
+def _report_drift(out: Path, etc: Path, limit: int) -> int:
+    """Print the generated-vs-installed comparison; 0 in sync, 1 drifted."""
+    drift = deploy_map.find_drift(out, etc=etc)
+    for net in deploy_map.skipped_nets(out, etc=etc):
+        print(f"  skipped {net}: no {etc}/dnsmasq.d/{net}/ on this host")
+
+    if not drift:
+        print(f"{etc} is in sync with the generated config.")
+        return 0
+
+    by_component: dict[str, list[deploy_map.Drift]] = {}
+    for item in drift:
+        by_component.setdefault(item.component, []).append(item)
+
+    print(f"{etc} does NOT match the generated config — a deploy is pending:")
+    for component, items in sorted(by_component.items()):
+        print(f"  {component}: {len(items)} path(s) differ")
+        for item in items[:limit]:
+            print(f"    [{item.kind}] {item.path}")
+        if len(items) > limit:
+            print(f"    ... and {len(items) - limit} more")
+    print(f"\nTotal {len(drift)} path(s) pending. Deploy with: sudo make deploy")
+    return 1
+
+
+def cmd_deploy_check(args: argparse.Namespace) -> int:
+    """Report whether /etc still matches what the generators produce.
+
+    Exit 1 on drift so the cron wrapper mails it; exit 2 when the comparison
+    could not be made at all, which must never be mistaken for a pass.
+    """
+    etc = Path(args.etc)
+
+    if args.out:
+        out = Path(args.out)
+        if not out.is_dir():
+            print(f"deploy-check: {out} is not a directory — omit --out to "
+                  "generate a fresh tree", file=sys.stderr)
+            return 2
+        return _report_drift(out, etc, args.limit)
+
+    # No --out: generate the deploy set into a scratch tree. The project's out/
+    # tree is written BY a deploy, so comparing against it would call a stale
+    # /etc clean — the exact false negative this command exists to catch.
+    with tempfile.TemporaryDirectory(prefix="gdoc2netcfg-deploy-check-") as tmp:
+        argv = [sys.executable, "-m", "gdoc2netcfg.cli.main"]
+        if args.config:
+            argv += ["-c", args.config]
+        argv += ["generate", *deploy_map.DEPLOY_GENERATORS, "--output-dir", tmp]
+        completed = subprocess.run(argv)
+        if completed.returncode != 0:
+            print(f"deploy-check: generate exited {completed.returncode} — cannot "
+                  "compare, so NOT reporting /etc as in sync", file=sys.stderr)
+            return 2
+        return _report_drift(Path(tmp), etc, args.limit)
 
 
 # ---------------------------------------------------------------------------
@@ -3167,6 +3238,27 @@ def main(argv: list[str] | None = None) -> int:
     # validate
     subparsers.add_parser("validate", help="Run constraint validation")
 
+    # deploy-check
+    deploy_check_parser = subparsers.add_parser(
+        "deploy-check",
+        help="Report whether /etc matches the generated config (exit 1 if a "
+             "deploy is pending)",
+    )
+    deploy_check_parser.add_argument(
+        "--out",
+        help="Compare an existing generated tree instead of generating one. "
+             "Do NOT point this at the project's out/ — that tree is written by "
+             "a deploy, so a stale /etc would compare clean.",
+    )
+    deploy_check_parser.add_argument(
+        "--etc", default=str(deploy_map.ETC),
+        help=f"Installed config root (default: {deploy_map.ETC})",
+    )
+    deploy_check_parser.add_argument(
+        "--limit", type=int, default=DEPLOY_CHECK_LIMIT,
+        help=f"Paths listed per component (default: {DEPLOY_CHECK_LIMIT})",
+    )
+
     # info
     subparsers.add_parser("info", help="Show pipeline configuration")
 
@@ -3596,6 +3688,7 @@ def main(argv: list[str] | None = None) -> int:
         "fetch": cmd_fetch,
         "generate": cmd_generate,
         "validate": cmd_validate,
+        "deploy-check": cmd_deploy_check,
         "info": cmd_info,
         "sshfp": cmd_sshfp,
         "known-hosts": cmd_known_hosts,

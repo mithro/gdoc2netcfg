@@ -18,7 +18,6 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from gdoc2netcfg.models.host import Host, NetworkInventory
-from gdoc2netcfg.utils.ip import ip_sort_key
 
 if TYPE_CHECKING:
     from gdoc2netcfg.constraints.errors import ValidationResult
@@ -139,54 +138,6 @@ def host_record_config(
     return output
 
 
-def host_caa_config(host: Host, inventory: NetworkInventory) -> list[str]:
-    """Generate CAA record for Let's Encrypt on the primary FQDN."""
-    domain = inventory.site.domain
-    return [
-        f"dns-rr={host.hostname}.{domain},"
-        f"257,000569737375656C657473656E63727970742E6F7267"
-    ]
-
-
-def host_sshfp_records(
-    host: Host, inventory: NetworkInventory, ipv4_transform: Ipv4Transform,
-) -> list[str]:
-    """Generate SSHFP DNS records (RR type 44) for a single host.
-
-    Emits SSHFP for the hostname FQDN, each named interface FQDN,
-    and each interface's IPv4 PTR name. The ipv4_transform is applied
-    to the PTR addresses.
-    """
-    if not host.sshfp_records:
-        return []
-
-    domain = inventory.site.domain
-    output: list[str] = []
-
-    def _records(dnsname: str) -> None:
-        output.append(f"# sshfp for {dnsname}")
-        for line in host.sshfp_records:
-            if line.startswith(";"):
-                continue
-            parts = line.split()
-            if len(parts) >= 6:
-                _, a, b, c, d, e = parts[:6]
-                output.append(f"dns-rr={dnsname},44,{c}:{d}:{e}")
-
-    _records(f"{host.hostname}.{domain}")
-
-    for iface in host.interfaces:
-        if iface.name:
-            _records(f"{iface.name}.{host.hostname}.{domain}")
-
-    for vi in host.virtual_interfaces:
-        ip_str = ipv4_transform(str(vi.ipv4))
-        ptr = ".".join(ip_str.split(".")[::-1]) + ".in-addr.arpa"
-        _records(ptr)
-
-    return output
-
-
 def _most_specific_fqdn(
     host: Host, ip: str, domain: str, *, is_ipv6: bool = False,
 ) -> str | None:
@@ -234,39 +185,6 @@ def _most_specific_fqdn(
     return best
 
 
-def host_ptr_config(host: Host, inventory: NetworkInventory) -> list[str]:
-    """Generate ptr-record entries (IPv4 and IPv6) for a single host.
-
-    Uses the most-specific FQDN from host.dns_names for each IP address.
-    IPv4 and IPv6 PTRs may get different names (e.g., ipv4.X vs ipv6.X).
-
-    Uses original (non-transformed) IPs for both internal and external:
-    IPv4 PTR records use RFC 1918 addresses (the in-addr.arpa name is
-    derived from the actual IP), and IPv6 addresses are already public.
-    """
-    domain = inventory.site.domain
-    output: list[str] = []
-
-    for vi in sorted(host.virtual_interfaces, key=lambda v: ip_sort_key(str(v.ipv4))):
-        ip = str(vi.ipv4)
-
-        # IPv4 PTR — most-specific FQDN for this IPv4
-        fqdn = _most_specific_fqdn(host, ip, domain, is_ipv6=False)
-        if fqdn:
-            arpa = _ipv4_to_ptr(ip)
-            output.append(f"ptr-record={arpa},{fqdn}")
-
-        # IPv6 PTRs — most-specific FQDN for each IPv6
-        for ipv6_addr in vi.ipv6_addresses:
-            ipv6_str = str(ipv6_addr)
-            ipv6_fqdn = _most_specific_fqdn(host, ipv6_str, domain, is_ipv6=True)
-            if ipv6_fqdn:
-                ptr = _ipv6_to_ptr(ipv6_str)
-                output.append(f"ptr-record={ptr},{ipv6_fqdn}")
-
-    return output
-
-
 def _ipv6_for_ip(ip: str, inventory: NetworkInventory) -> list[str]:
     """Get IPv6 address strings for an IPv4 address."""
     from gdoc2netcfg.derivations.ipv6 import ipv4_to_ipv6_list
@@ -296,27 +214,6 @@ def _ipv6_to_ptr(ipv6_str: str) -> str:
     return ".".join(reversed(full_hex)) + ".ip6.arpa"
 
 
-def shared_dns_sections(
-    host: Host, inventory: NetworkInventory, ipv4_transform: Ipv4Transform,
-) -> list[list[str]]:
-    """Return the DNS record sections common to all dnsmasq generators.
-
-    Returns [host_records, ptr, caa, sshfp] — a list of sections where each
-    section is a list of config lines.
-
-    host-record lines are sorted by name specificity (most dots first).
-    dnsmasq auto-generates PTR records from host-record lines — the first
-    host-record for each IP determines its auto-PTR name. Explicit
-    ptr-record lines provide additional named PTR entries.
-    """
-    return [
-        host_record_config(host, inventory, ipv4_transform),
-        host_ptr_config(host, inventory),
-        host_caa_config(host, inventory),
-        host_sshfp_records(host, inventory, ipv4_transform),
-    ]
-
-
 def sections_to_text(sections: list[list[str]]) -> str:
     """Format sections into a single config file string.
 
@@ -337,8 +234,8 @@ def validate_dnsmasq_output(files: dict[str, str]) -> ValidationResult:
     code that would break forward-confirmed reverse DNS (FCrDNS).
 
     Args:
-        files: Dict mapping filename to config file content (as returned
-            by generate_dnsmasq_internal / generate_dnsmasq_external).
+        files: Dict mapping filename to config file content, as returned by
+            generate_dnsmasq_leaf ("{net}/generated/{host}.conf" keys).
 
     Returns:
         ValidationResult with ERROR-severity violations for any PTR name

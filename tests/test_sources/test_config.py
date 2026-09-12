@@ -40,9 +40,11 @@ class TestLoadConfig:
         assert config.sheets_config.credentials_file == ""
         assert config.sheets_config.token_cache == ".cache/google_oauth_token.json"
 
-        # Generators
-        assert "dnsmasq_internal" in config.generators
-        assert config.generators["dnsmasq_internal"].output_dir == "internal"
+        # Generators: the example enables the deployed set (the retired
+        # dnsmasq_internal/dnsmasq_external pair is gone).
+        assert config.generators["dnsmasq_leaf"].enabled
+        assert "dnsmasq_internal" not in config.generators
+        assert "dnsmasq_external" not in config.generators
 
     def test_load_minimal_config(self, tmp_path: Path):
         """Load a minimal TOML config."""

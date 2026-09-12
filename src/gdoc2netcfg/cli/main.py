@@ -770,11 +770,6 @@ def _dns_data_serial(config, config_path) -> int | None:
 def _get_generator(name: str):
     """Get a generator function by name."""
     generators = {
-        "dnsmasq_internal": ("gdoc2netcfg.generators.dnsmasq", "generate_dnsmasq_internal"),
-        "dnsmasq_external": (
-            "gdoc2netcfg.generators.dnsmasq_external",
-            "generate_dnsmasq_external",
-        ),
         "dnsmasq_leaf": ("gdoc2netcfg.generators.dnsmasq_leaf", "generate_dnsmasq_leaf"),
         "pdns_internal": ("gdoc2netcfg.generators.pdns_zones", "generate_pdns_internal"),
         "pdns_external": ("gdoc2netcfg.generators.pdns_external", "generate_pdns_external"),
@@ -835,6 +830,15 @@ def _write_multi_file_output(name, file_dict, gen_config, args):
     print(f"  {name}: wrote {len(file_dict)} files to {output_dir}/ ({total_bytes} bytes)")
 
 
+#: Generators whose output gets the post-generation FCrDNS check (every
+#: ptr-record's forward name must also appear as a host-record name).  The
+#: per-net leaf is the generator whose output a deploy installs into
+#: /etc/dnsmasq.d, so it is the one that has to be self-consistent.  The check
+#: used to name only the retired dnsmasq_internal/dnsmasq_external pair, which
+#: meant the output actually reaching /etc was never checked.
+FCRDNS_VALIDATED_GENERATORS = ("dnsmasq_leaf",)
+
+
 def cmd_generate(args: argparse.Namespace) -> int:
     """Run the pipeline and produce output config files."""
     config = _load_config(args)
@@ -872,11 +876,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
 
         # Build kwargs for generators that accept extra parameters
         kwargs = {}
-        if name == "dnsmasq_external" and gen_config and gen_config.params.get("public_ipv4"):
-            kwargs["public_ipv4"] = gen_config.params["public_ipv4"]
-        elif name == "dnsmasq_external":
-            kwargs["public_ipv4"] = config.site.public_ipv4
-        elif name == "letsencrypt" and gen_config:
+        if name == "letsencrypt" and gen_config:
             for key in ("auth_hook", "dnsmasq_conf_dir", "dnsmasq_conf", "dnsmasq_service"):
                 if gen_config.params.get(key):
                     kwargs[key] = gen_config.params[key]
@@ -910,8 +910,8 @@ def cmd_generate(args: argparse.Namespace) -> int:
 
         output = gen_func(inventory, **kwargs)
 
-        # Post-generation FCrDNS validation for dnsmasq generators
-        if name in ("dnsmasq_internal", "dnsmasq_external") and isinstance(output, dict):
+        # Post-generation FCrDNS validation for the deployed dnsmasq output
+        if name in FCRDNS_VALIDATED_GENERATORS and isinstance(output, dict):
             from gdoc2netcfg.generators.dnsmasq_common import validate_dnsmasq_output
 
             post_result = validate_dnsmasq_output(output)

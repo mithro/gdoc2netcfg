@@ -264,3 +264,57 @@ class TestEmptyAndEdgeCases:
         }
         result = validate_dnsmasq_output(files)
         assert result.is_valid
+
+
+# --- the check now guards the LIVE per-net leaf output ---------------------
+# The leaf generator is what `make deploy` installs into /etc; the retired
+# dnsmasq_internal/dnsmasq_external pair it used to guard is gone.  The leaf
+# builds its ptr-record and host-record lines through its own code path, so
+# it needs this check more than the pair ever did.
+
+def test_leaf_output_passes_fcrdns_validation():
+    """Real leaf output must be self-consistent: every ptr-record's forward
+    name also appears as a host-record name."""
+    from gdoc2netcfg.generators.dnsmasq_leaf import generate_dnsmasq_leaf
+
+    host = _host_with_iface(
+        "desktop", "aa:bb:cc:dd:ee:ff", "10.1.10.1", dhcp_name="desktop",
+    )
+    inventory = _make_inventory(
+        hosts=[host],
+        ip_to_hostname={"10.1.10.1": "desktop"},
+        ip_to_macs={"10.1.10.1": [(MACAddress.parse("aa:bb:cc:dd:ee:ff"), "desktop")]},
+    )
+    files = generate_dnsmasq_leaf(inventory)
+
+    assert files, "expected leaf fragments to exercise the check"
+    result = validate_dnsmasq_output(files)
+    assert not result.has_errors, result.report()
+
+
+def test_leaf_shaped_ptr_without_host_record_is_an_error():
+    """A ptr-record naming something with no host-record breaks FCrDNS and must
+    be an ERROR, keyed by the leaf's "{net}/generated/{host}.conf" path."""
+    files = {
+        "iot/generated/esp32-433mhz-cc1101-green.iot.conf": "\n".join([
+            "dhcp-host=e8:3d:c1:8c:4f:d8,10.1.90.72",
+            "host-record=esp32-433mhz-cc1101-green.iot.welland.mithis.com,10.1.90.72",
+            "ptr-record=72.90.1.10.in-addr.arpa,typo-green.iot.welland.mithis.com",
+        ]),
+    }
+
+    result = validate_dnsmasq_output(files)
+
+    assert result.has_errors
+    assert "typo-green.iot.welland.mithis.com" in result.report()
+
+
+def test_cli_runs_the_check_on_the_deployed_generator_only():
+    """The CLI names which generators get post-generation FCrDNS validation.
+    It must be the leaf (whose output reaches /etc), not the retired
+    dnsmasq_internal/dnsmasq_external pair."""
+    from gdoc2netcfg.cli.main import FCRDNS_VALIDATED_GENERATORS
+
+    assert "dnsmasq_leaf" in FCRDNS_VALIDATED_GENERATORS
+    assert "dnsmasq_internal" not in FCRDNS_VALIDATED_GENERATORS
+    assert "dnsmasq_external" not in FCRDNS_VALIDATED_GENERATORS

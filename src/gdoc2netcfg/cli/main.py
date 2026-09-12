@@ -835,6 +835,15 @@ def _write_multi_file_output(name, file_dict, gen_config, args):
     print(f"  {name}: wrote {len(file_dict)} files to {output_dir}/ ({total_bytes} bytes)")
 
 
+#: Generators whose output gets the post-generation FCrDNS check (every
+#: ptr-record's forward name must also appear as a host-record name).  The
+#: per-net leaf is the generator whose output a deploy installs into
+#: /etc/dnsmasq.d, so it is the one that has to be self-consistent.  The check
+#: used to name only the retired dnsmasq_internal/dnsmasq_external pair, which
+#: meant the output actually reaching /etc was never checked.
+FCRDNS_VALIDATED_GENERATORS = ("dnsmasq_leaf",)
+
+
 def cmd_generate(args: argparse.Namespace) -> int:
     """Run the pipeline and produce output config files."""
     config = _load_config(args)
@@ -910,8 +919,8 @@ def cmd_generate(args: argparse.Namespace) -> int:
 
         output = gen_func(inventory, **kwargs)
 
-        # Post-generation FCrDNS validation for dnsmasq generators
-        if name in ("dnsmasq_internal", "dnsmasq_external") and isinstance(output, dict):
+        # Post-generation FCrDNS validation for the deployed dnsmasq output
+        if name in FCRDNS_VALIDATED_GENERATORS and isinstance(output, dict):
             from gdoc2netcfg.generators.dnsmasq_common import validate_dnsmasq_output
 
             post_result = validate_dnsmasq_output(output)

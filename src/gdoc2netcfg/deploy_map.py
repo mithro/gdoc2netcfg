@@ -49,9 +49,10 @@ class Drift:
     """One generated-vs-installed difference.
 
     *kind* is ``"changed"`` (installed copy differs), ``"missing"`` (never
-    installed) or ``"extra"`` (installed but no longer generated, which a real
-    deploy would delete).  *path* is always the ``/etc`` path, because that is
-    what an operator needs to look at.
+    installed), ``"extra"`` (installed but no longer generated, which a real
+    deploy would delete) or ``"empty"`` (the generator produced nothing where
+    ``/etc`` has content — a broken run, never a pending deploy).  *path* is
+    always the ``/etc`` path, because that is what an operator needs to look at.
     """
 
     component: str
@@ -179,9 +180,17 @@ def _compare(component: str, src: Path, dst: Path) -> list[Drift]:
         return []
     if not dst.exists():
         return [Drift(component, "missing", dst)]
-    if src.read_bytes() != dst.read_bytes():
-        return [Drift(component, "changed", dst)]
-    return []
+    src_bytes = src.read_bytes()
+    dst_bytes = dst.read_bytes()
+    if src_bytes == dst_bytes:
+        return []
+    # A generator that produced nothing where /etc has content means the run
+    # was broken (wrong cache directory, missing database), not that /etc is
+    # stale.  Reporting it as drift would invite a deploy that installs the
+    # emptiness — for known_hosts, wiping every host key.
+    if not src_bytes:
+        return [Drift(component, "empty", dst)]
+    return [Drift(component, "changed", dst)]
 
 
 def _nginx_extras(out: Path, etc: Path) -> list[Drift]:

@@ -195,3 +195,30 @@ def test_recursor_forward_zones_drift(tmp_path):
     assert [(d.component, d.kind, d.path) for d in drift] == [
         ("dns", "changed", etc / "powerdns" / "forward-zones.yml"),
     ]
+
+
+def test_empty_generated_file_against_installed_content_is_not_called_stale(tmp_path):
+    """A generator that produced nothing is a broken run, not a pending deploy.
+
+    Seen for real: running with a config whose relative .cache resolved to the
+    wrong directory produced a 0-byte known_hosts, which compared as ordinary
+    drift against the live 237 KB file — i.e. it invited a deploy that would
+    have wiped every host key.
+    """
+    out = tmp_path / "out"
+    etc = tmp_path / "etc"
+    write(out / "known_hosts", "")
+    write(etc / "ssh" / "ssh_known_hosts", "ten64 ssh-ed25519 AAAA\n")
+
+    drift = deploy_map.find_drift(out, etc=etc)
+
+    assert [(d.component, d.kind) for d in drift] == [("known_hosts", "empty")]
+
+
+def test_empty_generated_file_is_fine_when_etc_is_empty_too(tmp_path):
+    out = tmp_path / "out"
+    etc = tmp_path / "etc"
+    write(out / "known_hosts", "")
+    write(etc / "ssh" / "ssh_known_hosts", "")
+
+    assert deploy_map.find_drift(out, etc=etc) == []

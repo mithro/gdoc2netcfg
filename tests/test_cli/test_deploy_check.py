@@ -87,3 +87,19 @@ def test_listing_is_capped_but_the_reported_count_is_the_true_total(tmp_path, ca
     assert "nginx" in output
     assert "7" in output
     assert output.count("http.conf") == 2
+
+
+def test_empty_generated_file_exits_two_rather_than_reporting_drift(tmp_path, capsys):
+    """An empty generated file means the comparison is unsound: exit 2, and do
+    not invite a deploy that would install the emptiness."""
+    out = tmp_path / "out"
+    etc = tmp_path / "etc"
+    write(out / "known_hosts", "")
+    write(etc / "ssh" / "ssh_known_hosts", "ten64 ssh-ed25519 AAAA\n")
+
+    rc = cli.main(["deploy-check", "--out", str(out), "--etc", str(etc)])
+
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "empty" in captured.out + captured.err
+    assert "sudo make deploy" not in captured.out

@@ -988,6 +988,17 @@ def _report_drift(out: Path, etc: Path, limit: int) -> int:
         print(f"{etc} is in sync with the generated config.")
         return 0
 
+    empty = [d for d in drift if d.kind == "empty"]
+    if empty:
+        print("deploy-check: generated these as EMPTY while the installed copy "
+              "has content — the generate run was broken, so NOT reporting a "
+              "pending deploy:", file=sys.stderr)
+        for item in empty:
+            print(f"    [empty] {item.path}", file=sys.stderr)
+        print("Check the cache directory (it is relative to the working "
+              "directory) and the discovery database.", file=sys.stderr)
+        return 2
+
     by_component: dict[str, list[deploy_map.Drift]] = {}
     for item in drift:
         by_component.setdefault(item.component, []).append(item)

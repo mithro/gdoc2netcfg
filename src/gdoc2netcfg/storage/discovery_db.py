@@ -229,7 +229,7 @@ def _sql_type(expected: object) -> str:
     if isinstance(expected, tuple):
         if type(None) in expected:
             inner = [t for t in expected if t is not type(None)]
-            if inner == [int]:
+            if inner in ([int], [bool]):
                 return "INTEGER"
             if inner == [str]:
                 return "TEXT"
@@ -352,7 +352,41 @@ def _structured_ddl_statements() -> list[str]:
         ("is_tombstone", "INTEGER NOT NULL DEFAULT 0"),
     ))
 
+    # RPi hardware: a head row per host, a header-board row per board that
+    # identified itself, an fpga row per FPGA board.
+    stmts += _entity_table_ddl("rpi_hardware", "hostname", (
+        *((key, _sql_type(typ)) for key, typ in _RPI_HARDWARE_FIELDS),
+        ("is_tombstone", "INTEGER NOT NULL DEFAULT 0"),
+    ))
+    stmts += _entity_table_ddl("rpi_hardware_header", "hostname", (
+        ("product", "TEXT NOT NULL"),
+    ))
+    stmts += _entity_table_ddl("rpi_hardware_fpga", "hostname", (
+        ("kind", "TEXT NOT NULL"),
+        ("serial", "TEXT"),
+        ("dna", "TEXT"),
+        ("idcode", "TEXT"),
+    ))
+
     return stmts
+
+
+# RPi hardware identity (supplements/rpi_hardware.py): one head row per
+# host holding the scalar facts the probe reports, plus two list tables
+# for the boards on the header and the FPGA boards, each delta'd as one
+# document per host.  ext5v_v is deliberately NOT stored: it moves a few
+# tens of millivolts between reads and would churn rows for nothing.
+_RPI_HARDWARE_FIELDS = (
+    ("model", str),
+    ("serial", str),
+    ("revision", str),
+    ("power_class", str),
+    ("rtc_battery", (bool, type(None))),
+    ("fan", (bool, type(None))),
+    ("max_current_ma", (int, type(None))),
+    ("probe_user", str),
+)
+_RPI_HARDWARE_FPGA_COLS = ("kind", "serial", "dna", "idcode")
 
 
 # -- Document validation ----------------------------------------------------
@@ -607,6 +641,62 @@ def _insert_tasmota_tombstone(
     )
 
 
+def _validate_rpi_hardware_doc(hostname: str, doc: dict) -> None:
+    what = f"rpi_hardware[{hostname}]"
+    _expect_keys(
+        what, doc,
+        frozenset(key for key, _t in _RPI_HARDWARE_FIELDS) | {"header", "fpga"},
+    )
+    for key, typ in _RPI_HARDWARE_FIELDS:
+        _typecheck(f"{what}.{key}", doc[key], typ)
+    if not isinstance(doc["header"], list) or not all(
+        isinstance(x, str) for x in doc["header"]
+    ):
+        raise ValueError(f"{what}.header: expected a list of str")
+    if not isinstance(doc["fpga"], list):
+        raise ValueError(f"{what}.fpga: expected a list")
+    for i, board in enumerate(doc["fpga"]):
+        _expect_keys(
+            f"{what}.fpga[{i}]", board, frozenset({"kind"}),
+            optional=frozenset(_RPI_HARDWARE_FPGA_COLS) - {"kind"},
+        )
+        for col in _RPI_HARDWARE_FPGA_COLS:
+            if col in board:
+                _typecheck(f"{what}.fpga[{i}].{col}", board[col], str)
+
+
+def _insert_rpi_hardware_rows(
+    cur: sqlite3.Cursor, scan_id: int, hostname: str, doc: dict,
+) -> None:
+    _validate_rpi_hardware_doc(hostname, doc)
+    _insert_row(
+        cur, "rpi_hardware", "hostname", scan_id, hostname,
+        (*(key for key, _t in _RPI_HARDWARE_FIELDS), "is_tombstone"),
+        (*(int(doc[key]) if isinstance(doc[key], bool) else doc[key]
+           for key, _t in _RPI_HARDWARE_FIELDS), 0),
+    )
+    for product in doc["header"]:
+        _insert_row(cur, "rpi_hardware_header", "hostname", scan_id, hostname,
+                    ("product",), (product,))
+    for board in doc["fpga"]:
+        _insert_row(
+            cur, "rpi_hardware_fpga", "hostname", scan_id, hostname,
+            _RPI_HARDWARE_FPGA_COLS,
+            tuple(board.get(col) for col in _RPI_HARDWARE_FPGA_COLS),
+        )
+
+
+def _insert_rpi_hardware_tombstone(
+    cur: sqlite3.Cursor, scan_id: int, hostname: str,
+) -> None:
+    """A host gone from the sheet: INSERT-only tombstone (history kept)."""
+    _insert_row(
+        cur, "rpi_hardware", "hostname", scan_id, hostname,
+        (*(key for key, _t in _RPI_HARDWARE_FIELDS), "is_tombstone"),
+        (*(_tombstone_value(typ) for _k, typ in _RPI_HARDWARE_FIELDS), 1),
+    )
+
+
 def _insert_zigbee_site_row(
     cur: sqlite3.Cursor, scan_id: int, site: str, bridge: dict | None,
 ) -> None:
@@ -747,6 +837,13 @@ def _upgrade_v7_extended_bridge_data(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE bridge_port_statistics_v6")
 
 
+def _upgrade_v10_rpi_hardware(conn: sqlite3.Connection) -> None:
+    """v10: the three rpi_hardware tables (CREATE IF NOT EXISTS is idempotent)."""
+    for stmt in _structured_ddl_statements():
+        if "rpi_hardware" in stmt:
+            conn.execute(stmt)
+
+
 class DiscoveryDB(BaseDatabase):
     """SQLite storage for supplement scan results."""
 
@@ -762,7 +859,9 @@ class DiscoveryDB(BaseDatabase):
     # v8: tasmota_devices.is_tombstone (sheet-MAC identity tombstones).
     # v9: tasmota_devices.syslog_level/log_host/log_port (remote syslog
     #     settings read back from the device).
-    SCHEMA_VERSION = 9
+    # v10: rpi_hardware, rpi_hardware_header, rpi_hardware_fpga (the Pi
+    #      hardware-identity probe: HAT/bonnet, power source, FPGA boards).
+    SCHEMA_VERSION = 10
     SCHEMA_UPGRADES = {
         5: ["ALTER TABLE tasmota_devices ADD COLUMN mqtt_count INTEGER"],
         6: [_upgrade_v6_port_aliases],
@@ -772,6 +871,7 @@ class DiscoveryDB(BaseDatabase):
         9: ["ALTER TABLE tasmota_devices ADD COLUMN syslog_level INTEGER",
             "ALTER TABLE tasmota_devices ADD COLUMN log_host TEXT",
             "ALTER TABLE tasmota_devices ADD COLUMN log_port INTEGER"],
+        10: [_upgrade_v10_rpi_hardware],
     }
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:
@@ -1518,6 +1618,75 @@ class DiscoveryDB(BaseDatabase):
                 for (key, _t), value in zip(_TASMOTA_FIELDS, row[1:])
                 if not (key in _TASMOTA_OPTIONAL_FIELDS and value is None)
             }
+        return result
+
+    # -- RPi hardware --
+
+    def save_rpi_hardware(self, scan_id: int, data: dict[str, dict]) -> int:
+        """Store per-host hardware identity documents, delta per host."""
+        return self._save_entities(
+            scan_id, data, self._latest_rpi_hardware(), _insert_rpi_hardware_rows,
+        )
+
+    def load_latest_rpi_hardware(self) -> dict[str, dict] | None:
+        if self.latest_scan_id("rpi_hardware") is None:
+            return None
+        return self._latest_rpi_hardware()
+
+    def tombstone_missing_rpi_hardware(
+        self, scan_id: int, present: set[str],
+    ) -> int:
+        """Tombstone hosts in the DB's latest state but absent from a full
+        scan's *present* set (a host removed from the sheet).  Refuses an
+        empty set: that is a failed scan, not an emptied fleet."""
+        if not present:
+            raise ValueError(
+                "tombstone_missing_rpi_hardware called with an empty present "
+                "set — refusing to tombstone every host."
+            )
+        missing = sorted(set(self._latest_rpi_hardware()) - set(present))
+        cur = self._conn.cursor()
+        try:
+            cur.execute("BEGIN")
+            for hostname in missing:
+                _insert_rpi_hardware_tombstone(cur, scan_id, hostname)
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return len(missing)
+
+    def _latest_rpi_hardware(self) -> dict[str, dict]:
+        field_cols = ", ".join(key for key, _t in _RPI_HARDWARE_FIELDS)
+        result: dict[str, dict] = {}
+        for hostname, scan_id in sorted(
+            self._latest_entity_scans("rpi_hardware", "hostname").items()
+        ):
+            row = self._conn.execute(
+                f"SELECT is_tombstone, {field_cols} FROM rpi_hardware "  # noqa: S608
+                "WHERE scan_id = ? AND hostname = ?",
+                (scan_id, hostname),
+            ).fetchone()
+            if row[0]:
+                continue
+            doc: dict = {}
+            for (key, typ), value in zip(_RPI_HARDWARE_FIELDS, row[1:]):
+                if isinstance(typ, tuple) and bool in typ and value is not None:
+                    value = bool(value)
+                doc[key] = value
+            doc["header"] = [
+                r[0] for r in self._load_list_rows(
+                    "rpi_hardware_header", ("product",), scan_id, hostname,
+                )
+            ]
+            doc["fpga"] = [
+                {col: val for col, val in zip(_RPI_HARDWARE_FPGA_COLS, r)
+                 if val is not None}
+                for r in self._load_list_rows(
+                    "rpi_hardware_fpga", _RPI_HARDWARE_FPGA_COLS, scan_id, hostname,
+                )
+            ]
+            result[hostname] = doc
         return result
 
     # -- Zigbee --

@@ -185,3 +185,14 @@ output = "etc/powerdns/forward-zones.yml"
 # mirrors /etc — deployed by `sudo make deploy-syslog`).
 [generators.rsyslog]
 output_dir = "etc"
+
+# ── Raspberry Pi hardware identity ──────────────────────────────────
+# Presence of this section enables `gdoc2netcfg rpi-hardware scan`, which
+# runs a probe over SSH on every Pi in the sheet (HAT/bonnet on the header,
+# what powers it, any FPGA board, Pi 5 RTC cell and fan) and
+# `rpi-hardware update-sheet`, which upserts the "RPi Hardware" tab keyed
+# by Pi serial. Needs passwordless sudo on the Pi for i2c-tools/vcgencmd.
+[rpi_hardware]
+sheet_name = "RPi Hardware"
+users = ["tim", "pi"]           # tried in order
+jtag_hosts = []                 # machine names whose GPIO JTAG harness may be driven

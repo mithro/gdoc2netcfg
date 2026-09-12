@@ -116,6 +116,21 @@ class ZigbeeConfig:
 
 
 @dataclass
+class RpiHardwareConfig:
+    """Configuration for the Raspberry Pi hardware-identity probe.
+
+    Presence of the [rpi_hardware] section enables the scan. `users` are
+    tried in order for each Pi; `jtag_hosts` are the machine names whose
+    GPIO JTAG harness may be driven for an FPGA idcode and DNA.
+    """
+
+    enabled: bool = False
+    sheet_name: str = "RPi Hardware"
+    users: tuple[str, ...] = ("tim", "pi")
+    jtag_hosts: frozenset[str] = frozenset()
+
+
+@dataclass
 class SheetsConfig:
     """Google Sheets write-access credentials, from the [sheets] section.
 
@@ -179,6 +194,7 @@ class PipelineConfig:
     sensors2mqtt: Sensors2mqttConfig = field(default_factory=Sensors2mqttConfig)
     homeassistant: HomeAssistantConfig = field(default_factory=HomeAssistantConfig)
     zigbee: ZigbeeConfig = field(default_factory=ZigbeeConfig)
+    rpi_hardware: RpiHardwareConfig = field(default_factory=RpiHardwareConfig)
 
 
 def _build_site(data: dict) -> Site:
@@ -319,6 +335,25 @@ def _build_sensors2mqtt(data: dict) -> Sensors2mqttConfig:
     )
 
 
+def _build_rpi_hardware(data: dict) -> RpiHardwareConfig:
+    """Build the rpi_hardware config; the section's presence enables it."""
+    section = data.get("rpi_hardware", {})
+    if not section:
+        return RpiHardwareConfig()
+    users = section.get("users", ["tim", "pi"])
+    jtag_hosts = section.get("jtag_hosts", [])
+    if not isinstance(users, list) or not all(isinstance(u, str) for u in users):
+        raise ValueError("[rpi_hardware] users must be a list of strings")
+    if not isinstance(jtag_hosts, list) or not all(isinstance(h, str) for h in jtag_hosts):
+        raise ValueError("[rpi_hardware] jtag_hosts must be a list of strings")
+    return RpiHardwareConfig(
+        enabled=True,
+        sheet_name=section.get("sheet_name", "RPi Hardware"),
+        users=tuple(users),
+        jtag_hosts=frozenset(jtag_hosts),
+    )
+
+
 def _build_zigbee(data: dict) -> ZigbeeConfig:
     """Build Zigbee config from parsed TOML data.
 
@@ -382,4 +417,5 @@ def load_config(config_path: Path | str | None = None) -> PipelineConfig:
         sensors2mqtt=_build_sensors2mqtt(data),
         homeassistant=_build_homeassistant(data),
         zigbee=_build_zigbee(data),
+        rpi_hardware=_build_rpi_hardware(data),
     )

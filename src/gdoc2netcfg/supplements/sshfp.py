@@ -183,6 +183,23 @@ def derive_sshfp_from_host_keys(keys: list[str]) -> list[str]:
     return records
 
 
+def _merge_keys_by_type(known: list[str], fresh: list[str]) -> list[str]:
+    """Merge fresh key lines over known ones, keyed by SSH key type.
+
+    A stored key is superseded only by a newer key of the *same* type.
+    ssh-keyscan returns a partial result whenever one key type fails to
+    negotiate, so a type absent from *fresh* keeps its known value rather
+    than being dropped.
+    """
+    by_type: dict[str, str] = {}
+    for line in [*known, *fresh]:
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            raise SSHKeyscanError(f"Malformed SSH key line: {line!r}")
+        by_type[parts[1]] = line
+    return sorted(by_type.values())
+
+
 def scan_ssh_host_keys(
     hosts: list[Host],
     baseline: dict[str, list[str]] | None,
@@ -299,8 +316,11 @@ def scan_ssh_host_keys(
             )
             continue
 
-        # All IPs agree — use the canonical sorted list
-        host_keys[host.hostname] = sorted(
+        # All IPs agree — merge the fresh keys over the last-known ones,
+        # per key type.  A key type the scan did not return says nothing
+        # about that type, so its baseline value stands (issue #42).
+        host_keys[host.hostname] = _merge_keys_by_type(
+            host_keys.get(host.hostname, []),
             next(iter(per_ip_keys.values())),
         )
 

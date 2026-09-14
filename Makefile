@@ -133,13 +133,24 @@ LETSENCRYPT_DIR := /etc/letsencrypt
 # have left the sheet (45 of them had accumulated by 2026-09-12), and a stale
 # creation script is how you end up creating a cert for a host that no longer
 # exists. etckeeper records the removals.
+# Site-conditional: only welland deploys these scripts.  monarto has
+# /etc/letsencrypt (certbot runs there) but no certs-available/, so an
+# unconditional recipe would die on the cp and take the rest of `make deploy`
+# with it — deploy-syslog would never run.  deploy-check already treats a
+# missing certs-available/ as "not deployed at this site" rather than drift;
+# this keeps the Makefile consistent with that.
 .PHONY: deploy-letsencrypt
+ifneq ($(wildcard $(LETSENCRYPT_DIR)/certs-available),)
 deploy-letsencrypt: $(VENV)/.stamp ## Generate and deploy certbot cert-creation scripts (run with sudo)
 	$(VENV_BIN)/gdoc2netcfg generate letsencrypt --output-dir $(OUTPUT_DIR)
 	rm -f $(LETSENCRYPT_DIR)/certs-available/*
 	cp $(OUTPUT_DIR)/letsencrypt/certs-available/* $(LETSENCRYPT_DIR)/certs-available/
 	cp $(OUTPUT_DIR)/letsencrypt/renew-enabled.sh $(LETSENCRYPT_DIR)/renew-enabled.sh
 	$(ETCKEEPER_COMMIT) "gdoc2netcfg deploy letsencrypt: $(GDOC2NETCFG_VERSION)" $(LETSENCRYPT_DIR)/certs-available $(LETSENCRYPT_DIR)/renew-enabled.sh
+else
+deploy-letsencrypt: ## Not deployed at this site (no $(LETSENCRYPT_DIR)/certs-available)
+	@echo "skip deploy-letsencrypt: no $(LETSENCRYPT_DIR)/certs-available on this host"
+endif
 
 RSYSLOG_REMOTE_CONF := /etc/rsyslog.d/remote-logs.conf
 LOGROTATE_REMOTE_CONF := /etc/logrotate.d/remote-logs

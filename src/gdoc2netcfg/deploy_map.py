@@ -40,6 +40,23 @@ DEPLOY_GENERATORS = (
     "letsencrypt",
 )
 
+#: The ``make`` target that installs each compared component.  deploy-check
+#: tells the operator to run ``sudo make deploy``, so every component listed
+#: in DEPLOY_GENERATORS must have a target here AND that target must be a
+#: prerequisite of the Makefile's ``deploy`` rule — otherwise the instruction
+#: cannot clear the drift it reports, and the nightly cron check mails about
+#: it forever.  tests/test_deploy_map.py enforces both halves.
+DEPLOY_TARGETS = {
+    "dnsmasq_leaf": "deploy-dns",
+    "pdns_internal": "deploy-dns",
+    "pdns_external": "deploy-dns",
+    "recursor_forward": "deploy-dns",
+    "nginx": "deploy-nginx",
+    "known_hosts": "deploy-known-hosts",
+    "rsyslog": "deploy-syslog",
+    "letsencrypt": "deploy-letsencrypt",
+}
+
 #: Installed by the nginx deploy itself (and chowned to www-data), never
 #: generated — comparing it would report drift forever.
 NGINX_DEPLOY_ARTIFACTS = frozenset({"status.txt"})

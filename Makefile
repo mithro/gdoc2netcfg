@@ -122,6 +122,25 @@ deploy-known-hosts: generate-deploy ## Generate and deploy system-wide SSH known
 	cp $(OUTPUT_DIR)/known_hosts $(SSH_KNOWN_HOSTS)
 	$(ETCKEEPER_COMMIT) "gdoc2netcfg deploy known-hosts: $(GDOC2NETCFG_VERSION)" $(SSH_KNOWN_HOSTS)
 
+LETSENCRYPT_DIR := /etc/letsencrypt
+
+# The cert-creation scripts are a menu, not a schedule: renew-enabled.sh loops
+# over certs-enabled/, so nothing here runs on its own. Renewals are driven by
+# /etc/letsencrypt/renewal/*.conf via certbot-renew.service, so removing a
+# script never affects an existing cert's renewal.
+#
+# Wipe-and-replace like deploy-nginx: a plain cp leaves scripts for hosts that
+# have left the sheet (45 of them had accumulated by 2026-09-12), and a stale
+# creation script is how you end up creating a cert for a host that no longer
+# exists. etckeeper records the removals.
+.PHONY: deploy-letsencrypt
+deploy-letsencrypt: $(VENV)/.stamp ## Generate and deploy certbot cert-creation scripts (run with sudo)
+	$(VENV_BIN)/gdoc2netcfg generate letsencrypt --output-dir $(OUTPUT_DIR)
+	rm -f $(LETSENCRYPT_DIR)/certs-available/*
+	cp $(OUTPUT_DIR)/letsencrypt/certs-available/* $(LETSENCRYPT_DIR)/certs-available/
+	cp $(OUTPUT_DIR)/letsencrypt/renew-enabled.sh $(LETSENCRYPT_DIR)/renew-enabled.sh
+	$(ETCKEEPER_COMMIT) "gdoc2netcfg deploy letsencrypt: $(GDOC2NETCFG_VERSION)" $(LETSENCRYPT_DIR)/certs-available $(LETSENCRYPT_DIR)/renew-enabled.sh
+
 RSYSLOG_REMOTE_CONF := /etc/rsyslog.d/remote-logs.conf
 LOGROTATE_REMOTE_CONF := /etc/logrotate.d/remote-logs
 

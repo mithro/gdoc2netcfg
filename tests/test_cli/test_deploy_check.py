@@ -103,3 +103,61 @@ def test_empty_generated_file_exits_two_rather_than_reporting_drift(tmp_path, ca
     assert rc == 2
     assert "empty" in captured.out + captured.err
     assert "sudo make deploy" not in captured.out
+
+
+def test_letsencrypt_drift_exits_one_and_names_component_and_path(tmp_path, capsys):
+    """A departed host's leftover creation script is drift a deploy would remove."""
+    out = tmp_path / "out"
+    etc = tmp_path / "etc"
+    write(out / "letsencrypt" / "certs-available" / "kept.welland.mithis.com", "same\n")
+    write(etc / "letsencrypt" / "certs-available" / "kept.welland.mithis.com", "same\n")
+    write(etc / "letsencrypt" / "certs-available" / "departed.welland.mithis.com", "old\n")
+
+    rc = cli.main(["deploy-check", "--out", str(out), "--etc", str(etc)])
+
+    assert rc == 1
+    output = capsys.readouterr().out
+    # The component summary line, not a bare substring: tmp_path itself
+    # contains "letsencrypt" in these tests.
+    assert "  letsencrypt: " in output
+    assert "departed.welland.mithis.com" in output
+    assert "extra" in output
+
+
+def test_letsencrypt_not_deployed_here_is_reported_without_failing(tmp_path, capsys):
+    """monarto generates the scripts but installs none of them; that is a site
+    difference, not a pending deploy."""
+    out = tmp_path / "out"
+    etc = tmp_path / "etc"
+    write(out / "letsencrypt" / "certs-available" / "ten64.monarto.mithis.com", "s\n")
+    write(etc / "letsencrypt" / "live" / "ten64.monarto.mithis.com" / "fullchain.pem", "x\n")
+
+    rc = cli.main(["deploy-check", "--out", str(out), "--etc", str(etc)])
+
+    assert rc == 0
+    assert "skipped letsencrypt" in capsys.readouterr().out
+
+
+def test_generated_tree_requests_every_deploy_generator_by_name(tmp_path, monkeypatch):
+    """letsencrypt is in no site's `[generators] enabled` list, so the scratch
+    generate must name the generators explicitly or the whole tree reads as
+    missing."""
+    seen: list[list[str]] = []
+
+    class _Completed:
+        returncode = 0
+
+    def fake_run(argv, *args, **kwargs):
+        seen.append(argv)
+        return _Completed()
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    cli.main(["deploy-check", "--etc", str(tmp_path / "etc")])
+
+    assert len(seen) == 1
+    argv = seen[0]
+    assert "generate" in argv
+    for generator in cli.deploy_map.DEPLOY_GENERATORS:
+        assert generator in argv
+    assert "letsencrypt" in argv

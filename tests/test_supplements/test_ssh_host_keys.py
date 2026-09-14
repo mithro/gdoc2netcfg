@@ -438,6 +438,73 @@ class TestScanSSHHostKeys:
         assert result["server"] == [f"server ssh-rsa {_RSA_B64}"]
         mock_keyscan.assert_called_once()
 
+    @patch("gdoc2netcfg.supplements.sshfp.check_port_open")
+    @patch("gdoc2netcfg.supplements.sshfp._keyscan_pubkeys")
+    def test_partial_scan_keeps_baseline_key_types(
+        self, mock_keyscan, mock_port,
+    ):
+        """A scan returning one key type keeps the baseline's other types.
+
+        ssh-keyscan yields a partial result when a key type fails to
+        negotiate, which is routine for flaky hosts.  The types it did
+        not return must keep their last-known values.
+        """
+        mock_port.return_value = True
+        mock_keyscan.return_value = [f"server ssh-rsa {_RSA_B64}"]
+        baseline = {
+            "server": [
+                f"server ssh-ed25519 {_ED25519_B64}",
+                f"server ssh-rsa {_RSA_B64}",
+            ],
+        }
+        reachability = {
+            "server": HostReachability(
+                hostname="server", active_ips=("10.1.10.1",),
+            ),
+        }
+        host = _make_host("server", "10.1.10.1")
+
+        result, errors = scan_ssh_host_keys(
+            [host], baseline, reachability=reachability,
+        )
+
+        assert result["server"] == [
+            f"server ssh-ed25519 {_ED25519_B64}",
+            f"server ssh-rsa {_RSA_B64}",
+        ]
+        assert errors == []
+
+    @patch("gdoc2netcfg.supplements.sshfp.check_port_open")
+    @patch("gdoc2netcfg.supplements.sshfp._keyscan_pubkeys")
+    def test_fresh_key_replaces_baseline_key_of_same_type(
+        self, mock_keyscan, mock_port,
+    ):
+        """A newer key of the same type supersedes the baseline's."""
+        rotated = base64.b64encode(b"rotated-rsa-key-blob").decode()
+        mock_port.return_value = True
+        mock_keyscan.return_value = [f"server ssh-rsa {rotated}"]
+        baseline = {
+            "server": [
+                f"server ssh-ed25519 {_ED25519_B64}",
+                f"server ssh-rsa {_RSA_B64}",
+            ],
+        }
+        reachability = {
+            "server": HostReachability(
+                hostname="server", active_ips=("10.1.10.1",),
+            ),
+        }
+        host = _make_host("server", "10.1.10.1")
+
+        result, errors = scan_ssh_host_keys(
+            [host], baseline, reachability=reachability,
+        )
+
+        assert result["server"] == [
+            f"server ssh-ed25519 {_ED25519_B64}",
+            f"server ssh-rsa {rotated}",
+        ]
+
     @patch("gdoc2netcfg.supplements.sshfp._keyscan_pubkeys")
     def test_scan_skips_unreachable(self, mock_keyscan, tmp_path):
         reachability = {

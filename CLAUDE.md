@@ -473,12 +473,25 @@ against the CWD, not against the config file, so always run from
 `/opt/gdoc2netcfg` (which is what the cron line's `uv --directory` does).
 
 `gdoc2netcfg/deploy_map.py` holds the generated-to-installed path mapping for
-all four components (dns, nginx, known_hosts, syslog) and is imported by both
-`scripts/deploy_dns.py` and the check, so a deploy and the check cannot
-disagree about where a file belongs. Three asymmetries it encodes: a net with
-no `/etc/dnsmasq.d/<net>/` is *skipped*, not stale; nginx's `status.txt` is
-created by the deploy and never generated; a pdns zone file that was never
-generated is left in place on purpose (hand `extra_zones`) and is not drift.
+all five components (dns, nginx, known_hosts, syslog, letsencrypt) and is
+imported by both `scripts/deploy_dns.py` and the check, so a deploy and the
+check cannot disagree about where a file belongs. Four asymmetries it encodes:
+a net with no `/etc/dnsmasq.d/<net>/` is *skipped*, not stale; nginx's
+`status.txt` is created by the deploy and never generated; a pdns zone file
+that was never generated is left in place on purpose (hand `extra_zones`) and
+is not drift; a host with no `/etc/letsencrypt/certs-available/` (monarto,
+which uses certbot directly) is skipped the same way a net is.
+
+`deploy_map.DEPLOY_GENERATORS` is **not** the Makefile's list — it also carries
+`rsyslog` and `letsencrypt`, whose own deploy targets generate them. The check
+passes those names to `generate` explicitly, which is load-bearing: neither is
+in any site's `[generators] enabled` list, so a run driven by the enabled list
+would emit nothing for them and report every installed file as missing. A
+generator missing from this tuple is a component whose drift goes unnoticed —
+letsencrypt was, until 2026-09-14, by which point all 128 deployed certbot
+scripts still named the retired `certbot-hook-dnsmasq` and 45 belonged to hosts
+that had left the sheet. `certs-available/` is wipe-and-replace like the nginx
+subtrees, so a script with no generated counterpart is `[extra]`.
 
 ### DNS deployment
 

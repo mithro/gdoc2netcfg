@@ -21,9 +21,14 @@ from pathlib import Path
 ETC = Path("/etc")
 
 #: The generators whose output a deploy installs — the Makefile's
-#: DEPLOY_GENERATORS plus rsyslog (``make deploy-syslog`` generates that one
-#: itself).  Keep the two in step: a generator missing here is a component
-#: whose drift goes unnoticed.
+#: DEPLOY_GENERATORS plus rsyslog and letsencrypt (``make deploy-syslog`` and
+#: ``make deploy-letsencrypt`` generate those two themselves).  Keep the two in
+#: step: a generator missing here is a component whose drift goes unnoticed.
+#:
+#: ``deploy-check`` passes this tuple to ``generate`` as explicit names, which
+#: is what makes rsyslog and letsencrypt comparable at all: neither appears in
+#: any site's ``[generators] enabled`` list, so a run that relied on the enabled
+#: list would emit nothing for them and report all of /etc as missing.
 DEPLOY_GENERATORS = (
     "dnsmasq_leaf",
     "pdns_internal",
@@ -32,6 +37,7 @@ DEPLOY_GENERATORS = (
     "nginx",
     "known_hosts",
     "rsyslog",
+    "letsencrypt",
 )
 
 #: Installed by the nginx deploy itself (and chowned to www-data), never
@@ -42,6 +48,11 @@ NGINX_DEPLOY_ARTIFACTS = frozenset({"status.txt"})
 #: an "extra" file: anything else under the deploy root is never removed, so a
 #: leftover there is not something a deploy would clean up.
 NGINX_WIPED_SUBTREES = ("sites-available", "scripts", "conf.d", "stream.d")
+
+#: The subtree `make deploy-letsencrypt` wipes before copying.  Everything else
+#: under /etc/letsencrypt is certbot's own (live/, archive/, renewal/) and the
+#: deploy never touches it, so only a file here can be "extra".
+LETSENCRYPT_WIPED_SUBTREES = ("certs-available",)
 
 
 @dataclass(frozen=True)
@@ -174,6 +185,47 @@ def nginx_pairs(out: Path, etc: Path = ETC) -> list[tuple[Path, Path]]:
     ]
 
 
+def letsencrypt_root(etc: Path = ETC) -> Path:
+    """Where `make deploy-letsencrypt` installs the generated scripts."""
+    return etc / "letsencrypt"
+
+
+def letsencrypt_deployed(etc: Path = ETC) -> bool:
+    """True when this host actually installs the letsencrypt generator's output.
+
+    Welland's per-host DNS-01 certs are created from ``certs-available/``;
+    monarto has the generator configured but manages its certs with certbot
+    directly and has no such directory.  No installed tree means there is
+    nothing to compare — the same treatment a net with no
+    ``/etc/dnsmasq.d/<net>/`` gets from ``dnsmasq_leaf_dirs``.
+    """
+    return (letsencrypt_root(etc) / "certs-available").is_dir()
+
+
+def letsencrypt_skipped(out: Path, *, etc: Path = ETC) -> bool:
+    """True when the generator produced a tree this host does not install."""
+    return (out / "letsencrypt").is_dir() and not letsencrypt_deployed(etc)
+
+
+def letsencrypt_pairs(out: Path, etc: Path = ETC) -> list[tuple[Path, Path]]:
+    """Every generated certbot script and where the deploy's ``cp`` puts it.
+
+    The generator writes under ``<out>/letsencrypt/`` (its default output_dir),
+    not the output root, and the deploy copies ``certs-available/*`` plus
+    ``renew-enabled.sh`` into ``/etc/letsencrypt/`` — the same relative layout,
+    so the generated tree maps onto the installed one file for file.
+    """
+    src_root = out / "letsencrypt"
+    if not src_root.is_dir() or not letsencrypt_deployed(etc):
+        return []
+    dst_root = letsencrypt_root(etc)
+    return [
+        (src, dst_root / src.relative_to(src_root))
+        for src in sorted(src_root.rglob("*"))
+        if src.is_file()
+    ]
+
+
 def _compare(component: str, src: Path, dst: Path) -> list[Drift]:
     """Drift for a single generated file, or [] when it is in sync."""
     if not src.exists():
@@ -212,6 +264,30 @@ def _nginx_extras(out: Path, etc: Path) -> list[Drift]:
     return extras
 
 
+def _letsencrypt_extras(out: Path, etc: Path) -> list[Drift]:
+    """Installed cert scripts in the wiped subtree that are no longer generated.
+
+    45 of these had accumulated by 2026-09-12, one per host that had left the
+    sheet.  A deploy deletes them, so leaving them unreported would call a /etc
+    holding creation scripts for departed hosts "in sync".
+    """
+    src_root = out / "letsencrypt"
+    if not src_root.is_dir() or not letsencrypt_deployed(etc):
+        return []
+    dst_root = letsencrypt_root(etc)
+    extras: list[Drift] = []
+    for subtree in LETSENCRYPT_WIPED_SUBTREES:
+        installed_root = dst_root / subtree
+        if not installed_root.is_dir():
+            continue
+        for installed in sorted(installed_root.rglob("*")):
+            if not installed.is_file():
+                continue
+            if not (src_root / installed.relative_to(dst_root)).exists():
+                extras.append(Drift("letsencrypt", "extra", installed))
+    return extras
+
+
 def _dns_drift(out: Path, etc: Path) -> list[Drift]:
     """Drift for the dnsmasq leaves, both pdns views and the recursor."""
     drift: list[Drift] = []
@@ -241,6 +317,9 @@ def find_drift(out: Path, *, etc: Path = ETC) -> list[Drift]:
     for src, dst in nginx_pairs(out, etc):
         drift += _compare("nginx", src, dst)
     drift += _nginx_extras(out, etc)
+    for src, dst in letsencrypt_pairs(out, etc):
+        drift += _compare("letsencrypt", src, dst)
+    drift += _letsencrypt_extras(out, etc)
     drift += _compare("known_hosts", *known_hosts_pair(out, etc))
     for src, dst in syslog_pairs(out, etc):
         drift += _compare("syslog", src, dst)

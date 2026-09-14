@@ -153,7 +153,7 @@ deploy-syslog: $(VENV)/.stamp ## Deploy generated per-net remote syslog + logrot
 	$(ETCKEEPER_COMMIT) "gdoc2netcfg deploy syslog: $(GDOC2NETCFG_VERSION)" /etc/rsyslog.d /etc/logrotate.d
 
 .PHONY: deploy
-deploy: deploy-dns deploy-nginx deploy-known-hosts ## Run all deploy steps (run with sudo)
+deploy: deploy-dns deploy-nginx deploy-known-hosts deploy-letsencrypt deploy-syslog ## Run all deploy steps (run with sudo)
 
 .PHONY: install
 install: ## Install into /opt/gdoc2netcfg

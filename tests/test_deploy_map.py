@@ -343,3 +343,40 @@ def test_letsencrypt_skipped_is_false_where_the_tree_is_deployed(tmp_path):
     write(etc / "letsencrypt" / "certs-available" / "ten64.welland.mithis.com", "s\n")
 
     assert deploy_map.letsencrypt_skipped(out, etc=etc) is False
+
+
+class TestDeployTargetCoverage:
+    """`make deploy` must run a target for every component deploy-check compares.
+
+    deploy-check tells the operator "Deploy with: sudo make deploy".  If a
+    compared component has no target in that rule, following the instruction
+    cannot clear the drift, and the 05:00 cron check mails root about it every
+    morning forever.  The coupling used to be a comment; these tests make it
+    enforceable.
+    """
+
+    def _deploy_prerequisites(self) -> set[str]:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        for line in makefile.read_text().splitlines():
+            if line.startswith("deploy:"):
+                body = line.split(":", 1)[1].split("##")[0]
+                return set(body.split())
+        raise AssertionError("no `deploy:` target found in the Makefile")
+
+    def test_every_compared_component_has_a_make_target(self):
+        missing = set(deploy_map.DEPLOY_GENERATORS) - set(deploy_map.DEPLOY_TARGETS)
+        assert not missing, (
+            f"components compared by deploy-check with no make target: {missing}"
+        )
+
+    def test_deploy_runs_a_target_for_every_compared_component(self):
+        prereqs = self._deploy_prerequisites()
+        missing = {
+            component: deploy_map.DEPLOY_TARGETS[component]
+            for component in deploy_map.DEPLOY_GENERATORS
+            if deploy_map.DEPLOY_TARGETS[component] not in prereqs
+        }
+        assert not missing, (
+            "`make deploy` does not run these components' targets, so the "
+            f"drift it reports cannot be cleared by it: {missing}"
+        )

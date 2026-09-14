@@ -228,7 +228,8 @@ class TestSSHHostKeys:
         changed = db.save_ssh_host_keys(s, data)
         db.finish_scan(s, host_count=1, changed_count=changed)
 
-        assert changed == 1
+        # changed_count counts keys, not hosts: one host, two key types.
+        assert changed == 2
         loaded = db.load_latest_ssh_host_keys()
         assert loaded is not None
         assert "server1" in loaded
@@ -294,6 +295,27 @@ class TestSSHHostKeys:
         s2 = db.begin_scan("ssh_host_keys")
         changed = db.save_ssh_host_keys(s2, {"h": keys2})
         db.finish_scan(s2, host_count=1, changed_count=changed)
+        assert changed == 0
+
+    def test_partial_scan_keeps_unmentioned_key_types(self, db: DiscoveryDB):
+        """A scan returning only some key types must not delete the rest.
+
+        ssh-keyscan yields a partial result when one key type fails to
+        negotiate.  That says nothing about the types it did not mention,
+        so the last known value for those must stand.
+        """
+        s1 = db.begin_scan("ssh_host_keys")
+        db.save_ssh_host_keys(
+            s1, {"h": ["h ssh-rsa RSA1", "h ssh-ed25519 ED1"]}
+        )
+        db.finish_scan(s1, host_count=1, changed_count=2)
+
+        s2 = db.begin_scan("ssh_host_keys")
+        changed = db.save_ssh_host_keys(s2, {"h": ["h ssh-rsa RSA1"]})
+        db.finish_scan(s2, host_count=1, changed_count=changed)
+
+        loaded = db.load_latest_ssh_host_keys()
+        assert loaded["h"] == ["h ssh-ed25519 ED1", "h ssh-rsa RSA1"]
         assert changed == 0
 
 

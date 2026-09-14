@@ -1006,14 +1006,21 @@ class DiscoveryDB(BaseDatabase):
         scan_id: int,
         data: dict[str, list[str]],
     ) -> int:
-        """Store SSH host keys, delta-based per hostname.
+        """Store SSH host keys, delta-based per (hostname, key type).
 
         *data* maps hostname -> list of key lines
         (``"hostname key_type base64_data"``).
 
-        Returns changed_count.
+        A stored key is superseded only by a newer key of the *same* type.
+        A scan that does not mention a key type says nothing about it --
+        ssh-keyscan returns a partial result whenever one key type fails
+        to negotiate -- so the last known key of that type is kept rather
+        than deleted.  Rows are never removed here; the spreadsheet
+        decides when a host goes away (see #43).
+
+        Returns changed_count (keys stored, not hosts).
         """
-        latest = self._latest_ssh_keys_by_host()
+        latest = self._latest_ssh_key_by_host_and_type()
         changed = 0
         cur = self._conn.cursor()
         try:
@@ -1022,10 +1029,10 @@ class DiscoveryDB(BaseDatabase):
                 new_keys = frozenset(
                     _parse_ssh_key_line(line) for line in key_lines
                 )
-                if hostname in latest and latest[hostname] == new_keys:
-                    continue
-                changed += 1
                 for key_type, key_data in sorted(new_keys):
+                    if latest.get((hostname, key_type)) == key_data:
+                        continue
+                    changed += 1
                     cur.execute(
                         "INSERT INTO ssh_host_keys "
                         "(scan_id, hostname, key_type, key_data) "
@@ -1051,7 +1058,7 @@ class DiscoveryDB(BaseDatabase):
 
         cur = self._conn.execute(
             self._latest_rows_sql(
-                "ssh_host_keys", ("hostname",),
+                "ssh_host_keys", ("hostname", "key_type"),
                 "t.hostname, t.key_type, t.key_data",
                 order_by="ORDER BY t.hostname, t.key_type",
             )
@@ -1062,19 +1069,17 @@ class DiscoveryDB(BaseDatabase):
             result.setdefault(hostname, []).append(line)
         return result
 
-    def _latest_ssh_keys_by_host(self) -> dict[str, frozenset]:
-        """Build hostname -> frozenset((key_type, key_data)) for comparison."""
+    def _latest_ssh_key_by_host_and_type(self) -> dict[tuple[str, str], str]:
+        """Build (hostname, key_type) -> key_data for delta comparison."""
         cur = self._conn.execute(
             self._latest_rows_sql(
-                "ssh_host_keys", ("hostname",),
+                "ssh_host_keys", ("hostname", "key_type"),
                 "t.hostname, t.key_type, t.key_data",
             )
         )
-        entries: dict[str, list[tuple[str, str]]] = {}
-        for hostname, key_type, key_data in cur.fetchall():
-            entries.setdefault(hostname, []).append((key_type, key_data))
         return {
-            h: frozenset(keys) for h, keys in entries.items()
+            (hostname, key_type): key_data
+            for hostname, key_type, key_data in cur.fetchall()
         }
 
     # ==================================================================

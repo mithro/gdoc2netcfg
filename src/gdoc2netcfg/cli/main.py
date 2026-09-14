@@ -983,6 +983,9 @@ def _report_drift(out: Path, etc: Path, limit: int) -> int:
     drift = deploy_map.find_drift(out, etc=etc)
     for net in deploy_map.skipped_nets(out, etc=etc):
         print(f"  skipped {net}: no {etc}/dnsmasq.d/{net}/ on this host")
+    if deploy_map.letsencrypt_skipped(out, etc=etc):
+        print(f"  skipped letsencrypt: no {etc}/letsencrypt/certs-available/ "
+              "on this host")
 
     if not drift:
         print(f"{etc} is in sync with the generated config.")

@@ -256,6 +256,23 @@ it had never checked what reaches /etc. See `FCRDNS_VALIDATED_GENERATORS`.
 
 The letsencrypt generator (`letsencrypt.py`) produces per-host certbot scripts in `certs-available/{primary_fqdn}` and a `renew-enabled.sh` orchestrator, using DNS-01 challenge validation. BOTH sites' live dns-01 renewal configs use `/opt/certbot/bin/certbot-hook-pdns` (`auth-hook`/`cleanup-hook`), which edits the pdns@external bind-backend zone file directly (pdnsutil record edits are SQL-backend-only), bumps the SOA serial, reloads, NOTIFYs the Rollernet secondaries, and waits until the TXT is visible on ns1.rollernet.us before returning. The generator emits that same hook (`certbot-hook-pdns auth-hook` / `cleanup-hook`, no flags, no environment) as of 2026-09-12; it previously emitted the legacy `certbot-hook-dnsmasq` with `--conf-dir`/`--conf`/`--service` pointing at the retired dnsmasq@external, which would have failed validation for any newly-created cert. Deploy the regenerated scripts with `sudo make deploy-letsencrypt`; they are a creation menu, not a schedule (`renew-enabled.sh` loops over `certs-enabled/`, which does not exist). Deploy hooks are added based on `hardware_type` (e.g. supermicro-bmc, netgear-switch). Only public FQDNs (`is_fqdn=True`) are included as `-d` domains.
 
+**Two caveats before trusting a generated script (verified on both sites 2026-09-15):**
+
+1. **The generated `--deploy-hook /usr/local/bin/certbot-hook-netgear-switches` path does not exist on either site.** Every switch cert that actually works was wired up by hand, with `renew_hook` pointing at a per-switch script under `/opt/certbot/hooks/certbot-hook-netgear-switches/deploy-hooks/deploy-<switch>.sh`. Running a generated `certs-available/` script as-is would obtain the cert and then fail at the deploy-hook step.
+
+2. **The generator emits dns-01, but switch certs in production are issued with http-01 (`--webroot -w /var/www/acme`).** That is deliberate: the nginx generator already emits an ACME carve-out into each proxied site —
+
+   ```nginx
+   location /.well-known/acme-challenge/ {
+       root /var/www/acme;
+       try_files $uri @acme_fallback;   # served off ten64; only a miss proxies on
+   }
+   ```
+
+   so ten64 answers the challenge itself and the device never sees it. http-01 also avoids the dns-01 hook needing write access to every net-scoped zone. dns-01 remains correct for the wildcard and for names not reachable on :80.
+
+   **Trap:** `ipv4.*` names publish only an A record and `ipv6.*` names only an AAAA. If a device's AAAA points at the device rather than at nginx, its `ipv6.*` SANs can never be validated over http-01 and there is no A record to fall back on — the cert issues (LE may reuse a cached authorization) but then fails every renewal. Always follow a first issuance with `certbot renew --dry-run`, and check `ip -6 neigh` for the device before trusting a published AAAA.
+
 ### Nginx Reverse Proxy
 
 The nginx generator (`nginx.py`) produces per-host config directories under `sites-available/{fqdn}/`. Each host gets three files: `http-proxy.conf` (HTTP reverse proxy on port 80), `https-upstream.conf` (stream upstream for TLS passthrough), and `https-map.conf` (SNI map entries). Multi-interface hosts additionally get `http-healthcheck.lua`, `https-healthcheck.lua`, and `https-balancer.lua` in their directory.

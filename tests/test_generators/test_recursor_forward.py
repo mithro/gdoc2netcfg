@@ -146,6 +146,15 @@ class TestForwardZones:
         assert e["monarto.mithis.com"] == ["10.98.2.2"]
         assert e["2.10.in-addr.arpa"] == ["10.98.2.2"]
 
+    def test_central_extra_zones_knob(self):
+        """Hand-maintained zones our own central auth serves (birds).
+
+        They are NOT peer zones: the peer knob emits a recursive forward,
+        which is wrong for pdns auth (see TestRecurseFlags).
+        """
+        e = _entries(_generate(central_extra_zones=["birds.mithis.com"]))
+        assert e["birds.mithis.com"] == ["127.0.0.1:5300"]
+
     def test_no_leaf_zone_for_wg_or_transit(self):
         e = _entries(_generate())
         # wg/tfpgas must NOT point at a leaf gateway
@@ -173,6 +182,12 @@ class TestRecurseFlags:
             b for b in blocks if b.startswith("welland.mithis.com")
         )
         assert "recurse" not in site_block
+
+    def test_central_extra_zones_do_not_recurse(self):
+        yaml_text = _generate(central_extra_zones=["birds.mithis.com"])
+        blocks = yaml_text.split("- zone: ")
+        birds_block = next(b for b in blocks if b.startswith("birds."))
+        assert "recurse" not in birds_block
 
     def test_delegated_net_recurses(self):
         yaml_text = _generate()

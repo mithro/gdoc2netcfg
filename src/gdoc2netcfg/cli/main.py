@@ -907,6 +907,10 @@ def cmd_generate(args: argparse.Namespace) -> int:
                 kwargs["central_auth"] = gen_config.params["central_auth"]
             if gen_config.params.get("peer_zones"):
                 kwargs["peer_zones"] = gen_config.params["peer_zones"]
+            if gen_config.params.get("central_extra_zones"):
+                kwargs["central_extra_zones"] = gen_config.params[
+                    "central_extra_zones"
+                ]
 
         output = gen_func(inventory, **kwargs)
 

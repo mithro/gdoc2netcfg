@@ -86,7 +86,10 @@ def test_listing_is_capped_but_the_reported_count_is_the_true_total(tmp_path, ca
     output = capsys.readouterr().out
     assert "nginx" in output
     assert "7" in output
-    assert output.count("http.conf") == 2
+    # Count the LISTING lines, not every mention: the diff section names
+    # each file it shows again, and it is bounded by the same --limit.
+    assert len([l for l in output.splitlines()
+                if l.strip().startswith("[changed]")]) == 2
 
 
 def test_empty_generated_file_exits_two_rather_than_reporting_drift(tmp_path, capsys):
@@ -161,3 +164,92 @@ def test_generated_tree_requests_every_deploy_generator_by_name(tmp_path, monkey
     for generator in cli.deploy_map.DEPLOY_GENERATORS:
         assert generator in argv
     assert "letsencrypt" in argv
+
+
+class TestDrifDiffs:
+    """The drift list says WHICH files differ; the mail also needs to show
+    HOW, so a pending deploy can be judged without ssh-ing in to diff by
+    hand.  The cron wrapper mails only the last DEFAULT_TAIL_LINES lines,
+    so the diffs are capped and the summary stays last."""
+
+    def test_changed_file_shows_a_diff(self, tmp_path, capsys):
+        out = tmp_path / "out"
+        etc = tmp_path / "etc"
+        write(out / "known_hosts", "ten64 ssh-ed25519 NEWKEY\n")
+        write(etc / "ssh" / "ssh_known_hosts", "ten64 ssh-ed25519 OLDKEY\n")
+
+        rc = cli.main(["deploy-check", "--out", str(out), "--etc", str(etc)])
+
+        assert rc == 1
+        output = capsys.readouterr().out
+        assert "-ten64 ssh-ed25519 OLDKEY" in output
+        assert "+ten64 ssh-ed25519 NEWKEY" in output
+
+    def test_summary_comes_after_the_diffs(self, tmp_path, capsys):
+        """cron mails the TAIL of the output, so the total must not be
+        pushed out of view by a long diff."""
+        out = tmp_path / "out"
+        etc = tmp_path / "etc"
+        write(out / "known_hosts", "new\n")
+        write(etc / "ssh" / "ssh_known_hosts", "old\n")
+
+        cli.main(["deploy-check", "--out", str(out), "--etc", str(etc)])
+
+        output = capsys.readouterr().out
+        assert output.index("+new") < output.index("path(s) pending")
+
+    def test_per_file_diff_is_capped(self, tmp_path, capsys):
+        out = tmp_path / "out"
+        etc = tmp_path / "etc"
+        write(out / "known_hosts", "".join(f"new line {i}\n" for i in range(200)))
+        write(etc / "ssh" / "ssh_known_hosts",
+              "".join(f"old line {i}\n" for i in range(200)))
+
+        cli.main(["deploy-check", "--out", str(out), "--etc", str(etc),
+                  "--diff-lines", "10"])
+
+        output = capsys.readouterr().out
+        assert len([l for l in output.splitlines() if l.startswith("+")]) <= 10
+        assert "more diff line" in output
+
+    def test_diff_lines_zero_disables_diffs(self, tmp_path, capsys):
+        out = tmp_path / "out"
+        etc = tmp_path / "etc"
+        write(out / "known_hosts", "new\n")
+        write(etc / "ssh" / "ssh_known_hosts", "old\n")
+
+        rc = cli.main(["deploy-check", "--out", str(out), "--etc", str(etc),
+                       "--diff-lines", "0"])
+
+        output = capsys.readouterr().out
+        assert rc == 1
+        assert "ssh_known_hosts" in output
+        assert "+new" not in output
+
+    def test_missing_file_has_no_diff(self, tmp_path, capsys):
+        """Nothing is installed yet, so there is nothing to diff against."""
+        out = tmp_path / "out"
+        etc = tmp_path / "etc"
+        write(out / "known_hosts", "ten64 ssh-ed25519 KEY\n")
+        (etc / "ssh").mkdir(parents=True)
+
+        cli.main(["deploy-check", "--out", str(out), "--etc", str(etc)])
+
+        output = capsys.readouterr().out
+        assert "missing" in output
+        assert "@@" not in output
+
+    def test_binary_file_is_reported_not_diffed(self, tmp_path, capsys):
+        out = tmp_path / "out"
+        etc = tmp_path / "etc"
+        (out).mkdir(parents=True, exist_ok=True)
+        (etc / "ssh").mkdir(parents=True, exist_ok=True)
+        (out / "known_hosts").write_bytes(b"\xff\xfe\x00binary\n")
+        (etc / "ssh" / "ssh_known_hosts").write_bytes(b"\xff\xfe\x00other\n")
+
+        cli.main(["deploy-check", "--out", str(out), "--etc", str(etc)])
+
+        output = capsys.readouterr().out
+        # NB tmp_path embeds the test name, so asserting on the bare word
+        # "binary" would pass without any implementation at all.
+        assert "binary file, diff not shown" in output

@@ -22,6 +22,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import difflib
 import re
 import sqlite3
 import subprocess
@@ -977,8 +978,71 @@ def cmd_validate(args: argparse.Namespace) -> int:
 #: would push the summary out of view.
 DEPLOY_CHECK_LIMIT = 20
 
+#: Diff lines shown per changed file, and across the whole report.  The cron
+#: wrapper mails only the last ``cron.DEFAULT_TAIL_LINES`` lines, so an
+#: uncapped diff would push the summary — and every other component — out of
+#: the mail.  The full diff is always reproducible with `sudo make
+#: deploy-check` (and the whole run is in .cache/cron.log).
+DEPLOY_CHECK_DIFF_LINES = 40
+DEPLOY_CHECK_DIFF_TOTAL = 120
 
-def _report_drift(out: Path, etc: Path, limit: int) -> int:
+
+def _file_diff(item: deploy_map.Drift, limit: int) -> list[str]:
+    """Unified diff for one drifted file: what a deploy would change.
+
+    ``-`` is what is installed now, ``+`` what the generators produce.
+    difflib's ``---``/``+++`` header lines are dropped so that counting
+    +/- lines counts real changes, and the paths are already in the
+    heading we print ourselves.
+    """
+    if item.kind != "changed" or item.src is None:
+        return []
+    try:
+        installed = item.path.read_text().splitlines()
+        generated = item.src.read_text().splitlines()
+    except (UnicodeDecodeError, OSError) as exc:
+        if isinstance(exc, UnicodeDecodeError):
+            return ["    (binary file, diff not shown)"]
+        return [f"    (could not read: {exc})"]
+
+    body = [
+        line for line in difflib.unified_diff(
+            installed, generated, lineterm="", n=1,
+        )
+        if not line.startswith(("---", "+++"))
+    ]
+    shown = body[:limit]
+    if len(body) > limit:
+        shown.append(f"    ... and {len(body) - limit} more diff line(s)")
+    return shown
+
+
+def _print_diffs(drift: list[deploy_map.Drift], limit: int) -> None:
+    """Print per-file diffs, capped so the summary survives the mail tail."""
+    if limit <= 0:
+        return
+    changed = [d for d in drift if d.kind == "changed"]
+    if not changed:
+        return
+
+    print("\nWhat a deploy would change (- installed, + generated):")
+    budget = DEPLOY_CHECK_DIFF_TOTAL
+    for index, item in enumerate(changed):
+        lines = _file_diff(item, min(limit, budget))
+        if not lines:
+            continue
+        if budget <= 0:
+            print(f"  ... and {len(changed) - index} more changed file(s) "
+                  "not shown; run `sudo make deploy-check` for the rest")
+            return
+        print(f"  {item.component}: {item.path}")
+        for line in lines:
+            print(f"    {line}" if not line.startswith("    ") else line)
+        budget -= len(lines)
+
+
+def _report_drift(out: Path, etc: Path, limit: int,
+                  diff_lines: int = DEPLOY_CHECK_DIFF_LINES) -> int:
     """Print the generated-vs-installed comparison; 0 in sync, 1 drifted."""
     drift = deploy_map.find_drift(out, etc=etc)
     for net in deploy_map.skipped_nets(out, etc=etc):
@@ -1007,12 +1071,20 @@ def _report_drift(out: Path, etc: Path, limit: int) -> int:
         by_component.setdefault(item.component, []).append(item)
 
     print(f"{etc} does NOT match the generated config — a deploy is pending:")
+    listed: list[deploy_map.Drift] = []
     for component, items in sorted(by_component.items()):
         print(f"  {component}: {len(items)} path(s) differ")
         for item in items[:limit]:
             print(f"    [{item.kind}] {item.path}")
+        listed.extend(items[:limit])
         if len(items) > limit:
             print(f"    ... and {len(items) - limit} more")
+
+    # Diffs go BEFORE the total: cron mails the tail of this output, so the
+    # last line must stay the summary.  Only files the listing named are
+    # diffed, so --limit still bounds how much one component can print.
+    _print_diffs(listed, diff_lines)
+
     print(f"\nTotal {len(drift)} path(s) pending. Deploy with: sudo make deploy")
     return 1
 
@@ -1031,7 +1103,7 @@ def cmd_deploy_check(args: argparse.Namespace) -> int:
             print(f"deploy-check: {out} is not a directory — omit --out to "
                   "generate a fresh tree", file=sys.stderr)
             return 2
-        return _report_drift(out, etc, args.limit)
+        return _report_drift(out, etc, args.limit, args.diff_lines)
 
     # No --out: generate the deploy set into a scratch tree. The project's out/
     # tree is written BY a deploy, so comparing against it would call a stale
@@ -1046,7 +1118,7 @@ def cmd_deploy_check(args: argparse.Namespace) -> int:
             print(f"deploy-check: generate exited {completed.returncode} — cannot "
                   "compare, so NOT reporting /etc as in sync", file=sys.stderr)
             return 2
-        return _report_drift(Path(tmp), etc, args.limit)
+        return _report_drift(Path(tmp), etc, args.limit, args.diff_lines)
 
 
 # ---------------------------------------------------------------------------
@@ -3271,6 +3343,12 @@ def main(argv: list[str] | None = None) -> int:
     deploy_check_parser.add_argument(
         "--limit", type=int, default=DEPLOY_CHECK_LIMIT,
         help=f"Paths listed per component (default: {DEPLOY_CHECK_LIMIT})",
+    )
+    deploy_check_parser.add_argument(
+        "--diff-lines", type=int, default=DEPLOY_CHECK_DIFF_LINES,
+        help="Diff lines shown per changed file, 0 for no diffs "
+             f"(default: {DEPLOY_CHECK_DIFF_LINES}; "
+             f"{DEPLOY_CHECK_DIFF_TOTAL} across the whole report)",
     )
 
     # info

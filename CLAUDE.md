@@ -477,6 +477,14 @@ the `cron run` wrapper mails it. Exit 2 means the comparison could not be made
 (generate or validation failed) — never read as a pass. It runs daily at 05:00
 and keeps mailing until someone deploys.
 
+The report names each drifted path **and shows a unified diff of what a
+deploy would change** (`-` installed, `+` generated), so the mail alone says
+whether the pending deploy is expected. The diffs are capped (40 lines per
+file, 120 across the report, `--diff-lines 0` to switch them off) and only
+cover the files the per-component listing named, because the `cron run`
+wrapper mails just the last 200 lines of output — that is also why the
+diffs print *before* the closing total.
+
 It generates into a scratch tree of its own. It must never compare against
 `out/`: that tree is written *by* a deploy, so a week-stale `/etc` matches it
 exactly and the check would pass while being maximally wrong.

@@ -236,7 +236,11 @@ mirrors `/etc`:
 - **`recursor_forward`** — the pdns-recursor routing table
   (`forward-zones.yml`): leaf nets → their gateways (`recurse: true` —
   dnsmasq is not a clean auth), central zones → `127.0.0.1:5300`, delegated
-  nets (fpgas → tweed) and `peer_zones` knob for cross-site + vanity zones.
+  nets (fpgas → tweed) and the `peer_zones` knob for cross-site zones.
+  Hand-maintained zones OUR central auth serves (pdns_external's
+  `extra_zones`, e.g. `birds.mithis.com`) go in `central_extra_zones`, not
+  `peer_zones`: they need an auth-style forward, and the peer knob emits
+  `recurse: true`, which treats a clean auth answer as lame.
 
 SOA serials = newest input-data change-time (sheet CSV/toml mtimes + last
 data-changing SSHFP scan) + the code's git-describe number — zone files only

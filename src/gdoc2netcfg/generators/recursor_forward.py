@@ -42,6 +42,7 @@ def generate_recursor_forward(
     inventory: NetworkInventory,
     central_auth: str = CENTRAL_AUTH,
     peer_zones: dict[str, list[str]] | None = None,
+    central_extra_zones: list[str] | None = None,
 ) -> str:
     """Generate the recursor forward-zones YAML file content."""
     site = inventory.site
@@ -57,6 +58,13 @@ def generate_recursor_forward(
     entries.append((domain, [central_auth], False))
     for net in sorted(_central_nets(site)):
         entries.append((f"{net}.{domain}", [central_auth], False))
+
+    # Hand-maintained zones outside the site domain that the central auth
+    # also serves (pdns_external's extra_zones, e.g. birds.mithis.com).
+    # Auth-style, like every other central zone — the peer knob's
+    # recursive forward would be wrong here.
+    for zone in sorted(central_extra_zones or ()):
+        entries.append((zone, [central_auth], False))
 
     # Catch-all reverses for no-net site-octet leftovers (100G, …):
     # leaf slices below are more specific and win.

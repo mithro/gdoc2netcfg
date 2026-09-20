@@ -88,8 +88,8 @@ def test_listing_is_capped_but_the_reported_count_is_the_true_total(tmp_path, ca
     assert "7" in output
     # Count the LISTING lines, not every mention: the diff section names
     # each file it shows again, and it is bounded by the same --limit.
-    assert len([l for l in output.splitlines()
-                if l.strip().startswith("[changed]")]) == 2
+    assert len([line for line in output.splitlines()
+                if line.strip().startswith("[changed]")]) == 2
 
 
 def test_empty_generated_file_exits_two_rather_than_reporting_drift(tmp_path, capsys):
@@ -209,7 +209,8 @@ class TestDrifDiffs:
                   "--diff-lines", "10"])
 
         output = capsys.readouterr().out
-        assert len([l for l in output.splitlines() if l.startswith("+")]) <= 10
+        assert len([line for line in output.splitlines()
+                    if line.startswith("+")]) <= 10
         assert "more diff line" in output
 
     def test_diff_lines_zero_disables_diffs(self, tmp_path, capsys):

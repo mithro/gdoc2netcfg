@@ -253,6 +253,29 @@ class TestBindConfig:
         files = _generate(_ten64(), zones_dir="/tmp/zones")
         assert f'file "/tmp/zones/{DOMAIN}.zone"' in files["bind-internal.conf"]
 
+    def test_extra_zone_in_bind_conf(self):
+        """Hand-maintained zones the INTERNAL view also serves — the
+        split-horizon half of pdns_external's extra_zones (birds has a
+        signed internal view sharing one CSK).  Only the bind conf
+        references them; their zone files live in /etc, never generated.
+
+        Without this the deploy would silently DELETE the zone statement
+        and the internal view would stop being served.
+        """
+        files = _generate(_ten64(), extra_zones=["birds.mithis.com"])
+        assert (
+            'zone "birds.mithis.com" { type primary; '
+            'file "/etc/powerdns/zones-internal/birds.mithis.com.zone"; };'
+            in files["bind-internal.conf"]
+        )
+        assert "zones-internal/birds.mithis.com.zone" not in files
+
+    def test_extra_zone_does_not_disturb_generated_zones(self):
+        with_extra = _generate(_ten64(), extra_zones=["birds.mithis.com"])
+        without = _generate(_ten64())
+        assert set(with_extra) - set(without) == set()
+        assert f'zone "{DOMAIN}"' in with_extra["bind-internal.conf"]
+
 
 @pytest.mark.skipif(
     shutil.which("named-checkzone") is None,

@@ -232,7 +232,11 @@ mirrors `/etc`:
   (`etc/powerdns/zones-internal/` + `bind-internal.conf`).
 - **`pdns_external`** — the public zone (`etc/powerdns/zones-external/`);
   RFC 1918 v4 maps to the site's public IPv4, v6 stays real; CGNAT excluded;
-  `extra_zones` references hand-maintained publicly-delegated zones.
+  `extra_zones` references hand-maintained delegated zones (the zone files
+  live in /etc, never generated). **Set it on `pdns_internal` too for any
+  zone with a split-horizon internal view** (birds.mithis.com), or the
+  deploy rewrites `bind-internal.conf` without it and the internal view
+  stops being served.
 - **`recursor_forward`** — the pdns-recursor routing table
   (`forward-zones.yml`): leaf nets → their gateways (`recurse: true` —
   dnsmasq is not a clean auth), central zones → `127.0.0.1:5300`, delegated

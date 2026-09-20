@@ -139,12 +139,20 @@ def generate_pdns_internal(
     serial: int | None = None,
     zones_dir: str = "/etc/powerdns/zones-internal",
     site_extra_include: str | None = None,
+    extra_zones: list[str] | None = None,
 ) -> dict[str, str]:
     """Generate the internal pdns auth zone files + bind config.
 
     Returns a dict keyed with deploy-relative paths under /etc/powerdns:
     "zones-internal/{zonename}.zone" + "bind-internal.conf". serial=None
     (the default) derives each zone's serial from its own content.
+
+    *extra_zones* names hand-maintained zones this view also serves — the
+    split-horizon twin of pdns_external's knob (birds.mithis.com is signed
+    in BOTH views with one shared CSK).  They are referenced in the bind
+    config only; their zone files live in /etc and are never generated.
+    Leaving them out makes a deploy DELETE the zone statement, so the
+    internal view silently stops being served.
     """
     site = inventory.site
     domain = site.domain
@@ -171,7 +179,8 @@ def generate_pdns_internal(
     files = finalize_zone_serials(files, serial)
 
     zone_names = sorted(
-        f[len("zones-internal/"): -len(".zone")] for f in files
+        [f[len("zones-internal/"): -len(".zone")] for f in files]
+        + list(extra_zones or [])
     )
     files["bind-internal.conf"] = "".join(
         f'zone "{z}" {{ type primary; file "{zones_dir}/{z}.zone"; }};\n'

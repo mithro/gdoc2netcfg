@@ -172,6 +172,66 @@ def test_pdns_zone_and_bind_conf_drift(tmp_path):
     assert {d.component for d in drift} == {"dns"}
 
 
+SOA = ("welland.mithis.com. 3600 IN SOA ten64.welland.mithis.com. "
+       "hostmaster.mithis.com. {serial} 10800 3600 604800 300\n")
+SSHFP = "ten64.welland.mithis.com. 300 IN SSHFP 4 2 {fp}\n"
+
+
+def zone_pair(tmp_path, *, generated: str, installed: str) -> tuple[Path, Path]:
+    """OUT and ETC trees holding one internal zone file with the given text."""
+    out = tmp_path / "out"
+    etc = tmp_path / "etc"
+    name = "welland.mithis.com.zone"
+    write(out / "etc" / "powerdns" / "zones-internal" / name, generated)
+    write(etc / "powerdns" / "zones-internal" / name, installed)
+    return out, etc
+
+
+def test_zone_differing_only_in_soa_serial_is_not_drift(tmp_path):
+    """The serial is derived from the newest data change plus the code
+    revision, so every commit and every sheet edit renumbers EVERY zone.  A
+    zone whose records are unchanged is not a pending deploy."""
+    out, etc = zone_pair(
+        tmp_path,
+        generated=SOA.format(serial=1789900000) + SSHFP.format(fp="aa"),
+        installed=SOA.format(serial=1789872220) + SSHFP.format(fp="aa"),
+    )
+
+    assert deploy_map.find_drift(out, etc=etc) == []
+
+
+def test_zone_with_a_record_change_is_drift_even_though_the_serial_moved(tmp_path):
+    out, etc = zone_pair(
+        tmp_path,
+        generated=SOA.format(serial=1789900000) + SSHFP.format(fp="bb"),
+        installed=SOA.format(serial=1789872220) + SSHFP.format(fp="aa"),
+    )
+
+    assert [d.kind for d in deploy_map.find_drift(out, etc=etc)] == ["changed"]
+
+
+def test_zone_soa_change_other_than_the_serial_is_drift(tmp_path):
+    """Only the serial is ignored: a new primary or new timers are a real
+    change that pdns must load."""
+    out, etc = zone_pair(
+        tmp_path,
+        generated=SOA.format(serial=1).replace("10800", "7200"),
+        installed=SOA.format(serial=1),
+    )
+
+    assert [d.kind for d in deploy_map.find_drift(out, etc=etc)] == ["changed"]
+
+
+def test_serial_like_text_outside_a_zone_file_is_still_compared(tmp_path):
+    """The serial is masked in zone files only; any other file is byte-exact."""
+    out = tmp_path / "out"
+    etc = tmp_path / "etc"
+    write(out / "etc" / "powerdns" / "forward-zones.yml", SOA.format(serial=2))
+    write(etc / "powerdns" / "forward-zones.yml", SOA.format(serial=1))
+
+    assert [d.kind for d in deploy_map.find_drift(out, etc=etc)] == ["changed"]
+
+
 def test_orphaned_pdns_zone_file_is_not_drift(tmp_path):
     """deploy_pdns deliberately leaves non-generated zone files in place (hand
     extra_zones such as birds), so they must not be reported as drift."""

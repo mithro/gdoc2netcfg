@@ -493,6 +493,16 @@ cover the files the per-component listing named, because the `cron run`
 wrapper mails just the last 200 lines of output — that is also why the
 diffs print *before* the closing total.
 
+A zone file that differs **only in its SOA serial** is in sync. The serial is
+the newest data change plus the code revision (`_dns_data_serial`), so any
+commit or sheet edit renumbers every zone; before 2026-09-24 that made the
+check list all 13 welland zones after unrelated changes, and a deploy rewrote
+and reloaded them for nothing. `deploy_map.changed()` masks the serial field
+(nothing else in the SOA) in `*.zone` files only, and `scripts/deploy_dns.py`
+uses the same function, so such a zone is neither reported nor installed. The
+serial pdns@external presents to the secondaries comes from SOA-EDIT, not the
+file, so leaving an older on-disk serial in place is harmless.
+
 It generates into a scratch tree of its own. It must never compare against
 `out/`: that tree is written *by* a deploy, so a week-stale `/etc` matches it
 exactly and the check would pass while being maximally wrong.

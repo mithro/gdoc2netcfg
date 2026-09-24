@@ -68,6 +68,22 @@ def test_bind_conf_change_restarts_instead_of_reloading(layout):
     assert calls == [["systemctl", "restart", "pdns@internal"]]
 
 
+def test_zone_differing_only_in_soa_serial_is_neither_installed_nor_reloaded(layout):
+    """deploy-check calls such a zone in sync, so the deploy must agree:
+    rewriting it would only churn etckeeper and reload pdns for nothing."""
+    out_etc, etc, calls, make = layout
+    make("internal")
+    zone = "powerdns/zones-internal/welland.mithis.com.zone"
+    soa = ("welland.mithis.com. 3600 IN SOA ten64.welland.mithis.com. "
+           "hostmaster.mithis.com. {} 10800 3600 604800 300\n")
+    (out_etc / zone).write_text(soa.format(1789900000))
+    (etc / zone).write_text(soa.format(1789872220))
+
+    assert deploy_dns.deploy_pdns(out_etc.parent, "internal", dry=False) == []
+    assert calls == []
+    assert (etc / zone).read_text() == soa.format(1789872220)
+
+
 # --- deploy_leaves ---------------------------------------------------------
 # Characterization tests pinning the behaviour that already exists, so the
 # switch to the shared gdoc2netcfg.deploy_map mapping cannot change it.

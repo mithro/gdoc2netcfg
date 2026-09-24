@@ -15,6 +15,7 @@ address, when in truth their reservations had never been installed).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -94,9 +95,32 @@ class Drift:
     src: Path | None = None
 
 
+#: The serial field of a zone file's SOA record: owner, optional TTL and
+#: class, then MNAME and RNAME, then the serial.
+_SOA_SERIAL = re.compile(
+    rb"^(\S+(?:[ \t]+\d+)?(?:[ \t]+IN)?[ \t]+SOA[ \t]+\S+[ \t]+\S+[ \t]+)\d+(?=\s)",
+    re.MULTILINE,
+)
+
+
+def comparable(path: Path, data: bytes) -> bytes:
+    """*data* as compared for drift: zone files with their SOA serial masked.
+
+    The generators derive the serial from the newest data change plus the code
+    revision, so any commit or sheet edit renumbers every zone.  A zone whose
+    records are unchanged is not a pending deploy, and installing it would only
+    reload pdns for nothing.  Everything else in the SOA still counts.
+    """
+    if path.suffix != ".zone":
+        return data
+    return _SOA_SERIAL.sub(rb"\g<1>SERIAL", data)
+
+
 def changed(src: Path, dst: Path) -> bool:
-    """True if *dst* is absent or its bytes differ from *src*."""
-    return not dst.exists() or src.read_bytes() != dst.read_bytes()
+    """True if *dst* is absent or differs from *src* (see ``comparable``)."""
+    if not dst.exists():
+        return True
+    return comparable(src, src.read_bytes()) != comparable(dst, dst.read_bytes())
 
 
 def known_hosts_pair(out: Path, etc: Path = ETC) -> tuple[Path, Path]:
@@ -255,10 +279,9 @@ def _compare(component: str, src: Path, dst: Path) -> list[Drift]:
         return []
     if not dst.exists():
         return [Drift(component, "missing", dst, src)]
-    src_bytes = src.read_bytes()
-    dst_bytes = dst.read_bytes()
-    if src_bytes == dst_bytes:
+    if not changed(src, dst):
         return []
+    src_bytes = src.read_bytes()
     # A generator that produced nothing where /etc has content means the run
     # was broken (wrong cache directory, missing database), not that /etc is
     # stale.  Reporting it as drift would invite a deploy that installs the

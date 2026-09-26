@@ -92,7 +92,7 @@ generate-deploy: $(VENV)/.stamp fetch validate ## Fetch + validate + generate ev
 	$(VENV_BIN)/gdoc2netcfg generate $(DEPLOY_GENERATORS) --output-dir $(OUTPUT_DIR)
 
 .PHONY: deploy-dns
-deploy-dns: generate-deploy ## Deploy dnsmasq leaves + pdns zones + recursor (diff-aware; run with sudo)
+deploy-dns: generate-deploy ## Deploy dnsmasq leaves + their logrotate + pdns zones + recursor (diff-aware; run with sudo)
 	$(VENV_BIN)/python scripts/deploy_dns.py --out $(OUTPUT_DIR) --version-label "$(GDOC2NETCFG_VERSION)"
 
 # Read-only. Generates into a scratch tree of its own, never $(OUTPUT_DIR) —

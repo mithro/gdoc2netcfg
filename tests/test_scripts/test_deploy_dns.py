@@ -158,3 +158,41 @@ def test_dry_run_installs_nothing_but_previews_the_restart(leaves):
 
     assert not (etc / "dnsmasq.d" / "iot" / "generated" / "esp32.iot.conf").exists()
     assert calls == [["systemctl", "restart", "dnsmasq@iot"]]
+
+
+# --- deploy_logrotate ------------------------------------------------------
+
+def test_changed_logrotate_is_installed_without_touching_dnsmasq(leaves):
+    """logrotate reads its config on every run, so installing a new policy
+    needs no restart — and a dnsmasq restart here would be pure disruption."""
+    out_etc, etc, calls, generated, installed = leaves
+    (out_etc / "logrotate.d").mkdir(parents=True)
+    (out_etc / "logrotate.d" / "dnsmasq").write_text("new policy\n")
+    (etc / "logrotate.d").mkdir(parents=True)
+    (etc / "logrotate.d" / "dnsmasq").write_text("old policy\n")
+
+    touched = deploy_dns.deploy_logrotate(out_etc.parent, dry=False)
+
+    assert touched == [etc / "logrotate.d" / "dnsmasq"]
+    assert calls == []
+    assert (etc / "logrotate.d" / "dnsmasq").read_text() == "new policy\n"
+
+
+def test_unchanged_logrotate_is_left_alone(leaves):
+    out_etc, etc, calls, generated, installed = leaves
+    (out_etc / "logrotate.d").mkdir(parents=True)
+    (out_etc / "logrotate.d" / "dnsmasq").write_text("same\n")
+    (etc / "logrotate.d").mkdir(parents=True)
+    (etc / "logrotate.d" / "dnsmasq").write_text("same\n")
+
+    assert deploy_dns.deploy_logrotate(out_etc.parent, dry=False) == []
+
+
+def test_logrotate_dry_run_installs_nothing(leaves):
+    out_etc, etc, calls, generated, installed = leaves
+    (out_etc / "logrotate.d").mkdir(parents=True)
+    (out_etc / "logrotate.d" / "dnsmasq").write_text("new\n")
+
+    deploy_dns.deploy_logrotate(out_etc.parent, dry=True)
+
+    assert not (etc / "logrotate.d" / "dnsmasq").exists()

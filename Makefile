@@ -84,7 +84,7 @@ validate: $(VENV)/.stamp ## Validate sheet data (deploys require 0 errors — ne
 # dns-redesign layout: out/etc mirrors /etc (per-net dnsmasq leaves + pdns
 # internal/external views + recursor forward-zones). The dnsmasq@internal /
 # @external instances are retired — their deploy targets are gone with them.
-DEPLOY_GENERATORS := dnsmasq_leaf pdns_internal pdns_external recursor_forward nginx known_hosts
+DEPLOY_GENERATORS := dnsmasq_leaf dnsmasq_logrotate pdns_internal pdns_external recursor_forward nginx known_hosts
 
 .PHONY: generate-deploy
 generate-deploy: $(VENV)/.stamp fetch validate ## Fetch + validate + generate everything `deploy` needs

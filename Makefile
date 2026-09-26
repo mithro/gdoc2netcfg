@@ -84,7 +84,7 @@ validate: $(VENV)/.stamp ## Validate sheet data (deploys require 0 errors — ne
 # dns-redesign layout: out/etc mirrors /etc (per-net dnsmasq leaves + pdns
 # internal/external views + recursor forward-zones). The dnsmasq@internal /
 # @external instances are retired — their deploy targets are gone with them.
-DEPLOY_GENERATORS := dnsmasq_leaf pdns_internal pdns_external recursor_forward nginx known_hosts
+DEPLOY_GENERATORS := dnsmasq_leaf dnsmasq_logrotate pdns_internal pdns_external recursor_forward nginx known_hosts
 
 .PHONY: generate-deploy
 generate-deploy: $(VENV)/.stamp fetch validate ## Fetch + validate + generate everything `deploy` needs
@@ -92,7 +92,7 @@ generate-deploy: $(VENV)/.stamp fetch validate ## Fetch + validate + generate ev
 	$(VENV_BIN)/gdoc2netcfg generate $(DEPLOY_GENERATORS) --output-dir $(OUTPUT_DIR)
 
 .PHONY: deploy-dns
-deploy-dns: generate-deploy ## Deploy dnsmasq leaves + pdns zones + recursor (diff-aware; run with sudo)
+deploy-dns: generate-deploy ## Deploy dnsmasq leaves + their logrotate + pdns zones + recursor (diff-aware; run with sudo)
 	$(VENV_BIN)/python scripts/deploy_dns.py --out $(OUTPUT_DIR) --version-label "$(GDOC2NETCFG_VERSION)"
 
 # Read-only. Generates into a scratch tree of its own, never $(OUTPUT_DIR) —

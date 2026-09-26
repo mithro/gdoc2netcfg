@@ -7,6 +7,8 @@ changed:
   dnsmasq leaves   etc/dnsmasq.d/<net>/generated/*.conf  (wipe-and-replace per
                    net: stale generated conf files are removed) -> restart
                    dnsmasq@<net> for changed nets only
+  dnsmasq logrotate etc/logrotate.d/dnsmasq -> no restart (logrotate reads
+                   its config on every run)
   pdns internal    etc/powerdns/bind-internal.conf + zones-internal/*.zone
                    bind conf changed -> systemctl restart pdns@internal
                    only zones changed -> pdns_control bind-reload-now <zones>
@@ -123,6 +125,15 @@ def deploy_recursor(out: Path, dry: bool) -> list[Path]:
     return [dst]
 
 
+def deploy_logrotate(out: Path, dry: bool) -> list[Path]:
+    """Install the shared dnsmasq log's logrotate policy if it changed."""
+    src, dst = deploy_map.dnsmasq_logrotate_pair(out, ETC)
+    if not src.exists() or not changed(src, dst):
+        return []
+    copy(src, dst, dry)
+    return [dst]
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", default="out", help="generator output dir")
@@ -140,6 +151,8 @@ def main(argv=None) -> int:
     touched: list[Path] = []
     print("== dnsmasq leaves ==")
     touched += deploy_leaves(out, args.dry_run)
+    print("== dnsmasq logrotate ==")
+    touched += deploy_logrotate(out, args.dry_run)
     print("== pdns internal ==")
     touched += deploy_pdns(out, "internal", args.dry_run)
     print("== pdns external ==")

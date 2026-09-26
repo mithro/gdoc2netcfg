@@ -32,6 +32,7 @@ ETC = Path("/etc")
 #: list would emit nothing for them and report all of /etc as missing.
 DEPLOY_GENERATORS = (
     "dnsmasq_leaf",
+    "dnsmasq_logrotate",
     "pdns_internal",
     "pdns_external",
     "recursor_forward",
@@ -49,6 +50,7 @@ DEPLOY_GENERATORS = (
 #: it forever.  tests/test_deploy_map.py enforces both halves.
 DEPLOY_TARGETS = {
     "dnsmasq_leaf": "deploy-dns",
+    "dnsmasq_logrotate": "deploy-dns",
     "pdns_internal": "deploy-dns",
     "pdns_external": "deploy-dns",
     "recursor_forward": "deploy-dns",
@@ -204,6 +206,12 @@ def recursor_pair(out: Path, etc: Path = ETC) -> tuple[Path, Path]:
             etc / "powerdns" / "forward-zones.yml")
 
 
+def dnsmasq_logrotate_pair(out: Path, etc: Path = ETC) -> tuple[Path, Path]:
+    """The generated logrotate policy for the shared dnsmasq log."""
+    return (out / "etc" / "logrotate.d" / "dnsmasq",
+            etc / "logrotate.d" / "dnsmasq")
+
+
 def syslog_pairs(out: Path, etc: Path = ETC) -> list[tuple[Path, Path]]:
     """The two files `make deploy-syslog` installs."""
     return [
@@ -335,7 +343,8 @@ def _letsencrypt_extras(out: Path, etc: Path) -> list[Drift]:
 
 
 def _dns_drift(out: Path, etc: Path) -> list[Drift]:
-    """Drift for the dnsmasq leaves, both pdns views and the recursor."""
+    """Drift for the dnsmasq leaves and their logrotate policy, both pdns
+    views and the recursor."""
     drift: list[Drift] = []
     for leaf in dnsmasq_leaf_dirs(out, etc):
         generated = {p.name for p in leaf.src_dir.glob("*.conf")}
@@ -345,6 +354,7 @@ def _dns_drift(out: Path, etc: Path) -> list[Drift]:
         for installed in sorted(leaf.dst_dir.glob("*.conf")):
             if installed.name not in generated:
                 drift.append(Drift("dns", "extra", installed))
+    drift += _compare("dns", *dnsmasq_logrotate_pair(out, etc))
     for view in ("internal", "external"):
         plan = pdns_plan(out, view, etc)
         # Zone files that are not generated are left in place on purpose (hand

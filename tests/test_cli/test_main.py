@@ -126,6 +126,47 @@ class TestGenerateCommand:
         assert "dhcp-host=" in captured.out
         assert "aa:bb:cc:dd:ee:ff" in captured.out
 
+    def test_generate_dnsmasq_logrotate_needs_no_site_config(self, tmp_path):
+        """No site toml has a [generators.dnsmasq_logrotate] section, and deploy
+        and deploy-check both read out/etc/logrotate.d/dnsmasq — so the file
+        must land there with nothing configured."""
+        cache_dir = tmp_path / ".cache"
+        cache_dir.mkdir()
+        (cache_dir / "network.csv").write_text(
+            "Machine,MAC Address,IP,Interface\n"
+            "desktop,aa:bb:cc:dd:ee:ff,10.1.10.1,\n"
+        )
+        config = tmp_path / "gdoc2netcfg.toml"
+        config.write_text(textwrap.dedent(f"""\
+            [site]
+            name = "test"
+            domain = "test.example.com"
+
+            [sheets]
+            network = "https://example.com/not-used"
+
+            [cache]
+            directory = "{cache_dir}"
+
+            [ipv6]
+            prefixes = []
+
+            [vlans]
+
+            [network_subdomains]
+
+            [generators]
+            enabled = []
+        """))
+        out = tmp_path / "out"
+
+        result = main(["-c", str(config), "generate", "dnsmasq_logrotate",
+                       "--output-dir", str(out)])
+
+        assert result == 0
+        installed = out / "etc" / "logrotate.d" / "dnsmasq"
+        assert installed.read_text().startswith("/var/log/dnsmasq.log {\n")
+
     def test_generate_unknown_generator(self, tmp_path, capsys):
         """Unknown generator name should warn but not crash."""
         cache_dir = tmp_path / ".cache"
@@ -199,6 +240,15 @@ class TestMultiFileOutput:
         args = argparse.Namespace(stdout=False)
         _write_multi_file_output("nginx", {"f.txt": "x"}, gen_config, args)
         assert (tmp_path / "nginx" / "f.txt").exists()
+
+    def test_dnsmasq_logrotate_defaults_to_the_etc_mirror(self, tmp_path, monkeypatch):
+        """Unconfigured, dnsmasq_logrotate writes under etc/ (mirroring /etc),
+        not under a directory named after the generator."""
+        monkeypatch.chdir(tmp_path)
+        args = argparse.Namespace(stdout=False)
+        _write_multi_file_output(
+            "dnsmasq_logrotate", {"logrotate.d/dnsmasq": "x"}, None, args)
+        assert (tmp_path / "etc" / "logrotate.d" / "dnsmasq").exists()
 
     def test_path_traversal_blocked(self, tmp_path, capsys):
         output_dir = tmp_path / "nginx"

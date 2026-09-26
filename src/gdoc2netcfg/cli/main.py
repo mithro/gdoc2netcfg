@@ -785,6 +785,10 @@ def _get_generator(name: str):
         "known_hosts": ("gdoc2netcfg.generators.known_hosts", "generate_known_hosts"),
         "wifi": ("gdoc2netcfg.generators.wifi", "generate_wifi"),
         "rsyslog": ("gdoc2netcfg.generators.rsyslog", "generate_rsyslog"),
+        "dnsmasq_logrotate": (
+            "gdoc2netcfg.generators.dnsmasq_logrotate",
+            "generate_dnsmasq_logrotate",
+        ),
     }
     if name not in generators:
         return None
@@ -803,6 +807,13 @@ def _resolve_output_path(output_path: str, args: argparse.Namespace) -> Path:
     return p
 
 
+#: output_dir for generators that need no site configuration at all: without
+#: an entry here an unconfigured generator writes under a directory named
+#: after itself.  dnsmasq_logrotate is in no site toml, and deploy_map expects
+#: its file in the out/etc mirror of /etc.
+DEFAULT_OUTPUT_DIRS = {"dnsmasq_logrotate": "etc"}
+
+
 def _write_multi_file_output(name, file_dict, gen_config, args):
     """Write a multi-file generator output (dict[str, str]).
 
@@ -814,7 +825,10 @@ def _write_multi_file_output(name, file_dict, gen_config, args):
             print(content)
         return
 
-    output_dir = gen_config.output_dir if gen_config and gen_config.output_dir else name
+    if gen_config and gen_config.output_dir:
+        output_dir = gen_config.output_dir
+    else:
+        output_dir = DEFAULT_OUTPUT_DIRS.get(name, name)
     base = _resolve_output_path(output_dir, args).resolve()
     total_bytes = 0
     for rel_path, content in sorted(file_dict.items()):

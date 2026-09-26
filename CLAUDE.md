@@ -19,6 +19,7 @@ uv run gdoc2netcfg generate nginx             # Generate nginx reverse proxy con
 uv run gdoc2netcfg generate topology          # Generate Graphviz DOT topology diagram
 uv run gdoc2netcfg generate known_hosts        # Generate SSH known_hosts file
 uv run gdoc2netcfg generate rsyslog            # Generate per-net remote syslog + logrotate config
+uv run gdoc2netcfg generate dnsmasq_logrotate  # Generate /etc/logrotate.d/dnsmasq (out/etc mirror; no toml section needed)
 uv run gdoc2netcfg validate             # Run constraint validation
 uv run gdoc2netcfg info                 # Show pipeline configuration
 uv run gdoc2netcfg reachability         # Ping all hosts and report up/down
@@ -226,6 +227,15 @@ mirrors `/etc`:
 
 - **`dnsmasq_leaf`** — per-net DHCP+DNS fragments (`etc/dnsmasq.d/<net>/generated/`),
   one dnsmasq instance per network.
+- **`dnsmasq_logrotate`** — `etc/logrotate.d/dnsmasq` for the one log every
+  leaf shares (`log-facility` in the hand-maintained
+  `/etc/dnsmasq.d/shared/05-logging.conf`; `DNSMASQ_LOG_FILE` must match it).
+  Its postrotate is `systemctl kill --signal=USR2 'dnsmasq@*.service'` — a
+  glob, never unit names: the hand-kept file it replaced named the retired
+  `dnsmasq@internal`/`@external`, so the 2026-09-20 rotation signalled nothing
+  and every leaf kept writing into `dnsmasq.log.1`. Inventory-independent and
+  in no site toml: `cli.main.DEFAULT_OUTPUT_DIRS` puts it under `etc/`.
+  Installed by `deploy_dns.py` (no restart — logrotate reads its config each run).
 - **`pdns_internal`** — the central authoritative zones (site zone with
   aggregate records + CNAME projections + insecure NS delegations, wg/transit
   zones, central + catch-all reverses) as bind-backend zone files
@@ -526,7 +536,9 @@ is not drift; a host with no `/etc/letsencrypt/certs-available/` (monarto,
 which uses certbot directly) is skipped the same way a net is.
 
 `deploy_map.DEPLOY_GENERATORS` is **not** the Makefile's list — it also carries
-`rsyslog` and `letsencrypt`, whose own deploy targets generate them. The check
+`rsyslog` and `letsencrypt`, whose own deploy targets generate them (every
+other entry must be in the Makefile's `DEPLOY_GENERATORS`; a test enforces
+it). The check
 passes those names to `generate` explicitly, which is load-bearing: neither is
 in any site's `[generators] enabled` list, so a run driven by the enabled list
 would emit nothing for them and report every installed file as missing. A
@@ -555,6 +567,7 @@ primary IP or their NOTIFY ACL refuses).
   adblock/adblock.conf           # local=/domain/ blocklist — roam + int leaves ONLY
   <net>/                         # 00-listen, 01-upstream, 02-dns, 03-dhcp (+05-pxe on PXE nets)
   <net>/generated/               # ← gdoc2netcfg dnsmasq_leaf output (wipe-and-replace safe)
+/etc/logrotate.d/dnsmasq         # ← dnsmasq_logrotate output (the shared /var/log/dnsmasq.log)
 /etc/powerdns/
   recursor.d/10-welland-central.yml   # listens, forward-zones file, DNSSEC + trust anchor + NTAs
   forward-zones.yml                   # ← recursor_forward output

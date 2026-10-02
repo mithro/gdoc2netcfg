@@ -260,3 +260,42 @@ def test_render_tree_shape():
         "└─ tasmota: p1\n"
         "   └─ host: d"
     )
+
+
+def test_controls_iot_lowercase_sheet_is_tasmota():
+    # The real IoT sheet key is lowercase "iot" (from [sheets] iot), so the
+    # category check must be case-insensitive like host_builder's.
+    recs = [_rec("au-plug-4", "desktop", sheet="iot")]
+    g = PowerGraph()
+    add_controls_edges(g, recs, [_host("desktop")], _site())
+    assert g.nodes["au-plug-4"].category == "tasmota"
+
+
+def test_poe_switch_case_insensitive_match():
+    # Node id carries the raw-case machine name; the bridge key is the
+    # lowercased hostname. They must still match (no duplicate node).
+    g = PowerGraph()
+    g.add_node(PowerNode("SW-BB-25G", "host", "SW-BB-25G"))
+    g.add_node(PowerNode("rpi5-pmod", "host", "rpi5-pmod"))
+    bridge = {"sw-bb-25g": {
+        "poe_status": [(1, 1, 3)], "port_names": [(1, "1/0/1")],
+        "port_aliases": [(1, "eth0.rpi5-pmod")], "lldp_neighbors": [],
+    }}
+    add_poe_edges(g, bridge, _resolver(["SW-BB-25G", "rpi5-pmod"]))
+    assert g.children_of("SW-BB-25G") == {"SW-BB-25G 1/0/1"}
+    assert "sw-bb-25g" not in g.nodes          # no duplicate lowercased node
+
+
+def test_poe_unreferenced_switch_added_and_warned():
+    # A bridge switch that no Controls cell references must NOT be silently
+    # dropped: add it as a node and warn, so its PoE subtree is not lost.
+    g = PowerGraph()
+    g.add_node(PowerNode("rpi5-pmod", "host", "rpi5-pmod"))
+    bridge = {"sw-lonely": {
+        "poe_status": [(1, 1, 3)], "port_names": [(1, "1/0/1")],
+        "port_aliases": [(1, "eth0.rpi5-pmod")], "lldp_neighbors": [],
+    }}
+    add_poe_edges(g, bridge, _resolver(["rpi5-pmod"]))
+    assert "sw-lonely" in g.nodes
+    assert g.children_of("sw-lonely") == {"sw-lonely 1/0/1"}
+    assert any("sw-lonely" in w for w in g.warnings)

@@ -71,12 +71,12 @@ def _in_site(record_site: str, site_name: str) -> bool:
 
 
 def _node_category(record) -> str:
+    # Sheet keys arrive as the lowercase [sheets] TOML key ("iot", "network"),
+    # so compare case-insensitively like host_builder does.
     cat = infra_category(record.machine)
     if cat is not None:
         return cat
-    if record.sheet_name == "Zigbee Info":
-        return "zigbee"
-    if record.sheet_name == "IoT":
+    if record.sheet_name.lower() == "iot":
         return "tasmota"
     return "host"
 
@@ -157,13 +157,37 @@ def _poe_host_name(aliases: dict[int, str], lldp: dict[int, str], port: int,
     return alias or lldp_name or None
 
 
+def _match_switch_node(graph: PowerGraph, switch: str) -> str | None:
+    """Find the existing graph node for a bridge switch key, case-insensitively.
+
+    Node ids carry the raw-case ``Machine`` cell; the bridge dict is keyed by
+    the lowercased hostname, so an exact match can miss. Returns the matching
+    node id, or None if no node exists for this switch yet.
+    """
+    if switch in graph.nodes:
+        return switch
+    low = switch.lower()
+    for nid in graph.nodes:
+        if nid.lower() == low:
+            return nid
+    return None
+
+
 def add_poe_edges(graph: PowerGraph, bridge, resolver: NameResolver) -> None:
     """Add switch -> poe-port -> host edges from bridge PoE data."""
     if not bridge:
         return
     for switch, doc in sorted(bridge.items()):
-        if switch not in graph.nodes:
-            continue  # switch not an in-site node; its PoE is out of scope
+        switch_id = _match_switch_node(graph, switch)
+        if switch_id is None:
+            # Not referenced by any Controls cell — still a real PoE source.
+            # Never silently drop it: add the switch as a node and warn.
+            switch_id = switch
+            graph.add_node(PowerNode(switch, "host", switch))
+            graph.warnings.append(
+                f"bridge switch {switch!r} not referenced by any Controls cell; "
+                f"including its PoE subtree as a root"
+            )
         names = dict(doc.get("port_names", ()))
         aliases = {p: a for p, a in doc.get("port_aliases", ())}
         lldp = {lp: sn for lp, sn, *_ in doc.get("lldp_neighbors", ())}
@@ -188,9 +212,9 @@ def add_poe_edges(graph: PowerGraph, bridge, resolver: NameResolver) -> None:
                 raise ValueError(
                     f"PoE {switch} port {port} delivering/held-off but has no ifName"
                 )
-            port_id = f"{switch} {names[port]}"
+            port_id = f"{switch_id} {names[port]}"
             graph.add_node(PowerNode(port_id, "poe", port_id))
-            graph.add_edge(switch, port_id)
+            graph.add_edge(switch_id, port_id)
             target = resolver.resolve(raw)
             if target is None:
                 target = raw

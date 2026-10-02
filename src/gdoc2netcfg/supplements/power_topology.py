@@ -321,3 +321,17 @@ def render_upstream(graph: PowerGraph, node_id: str) -> str:
     return "\n".join(
         ", ".join(_label(graph, nid) for nid in level) for level in levels
     )
+
+
+def build_power_graph(records, hosts, bridge, site) -> PowerGraph:
+    """Assemble the full power graph for one site and run integrity checks."""
+    graph = PowerGraph()
+    add_controls_edges(graph, records, hosts, site)
+    node_ids = set(graph.nodes)
+    for h in hosts:
+        node_ids.add(h.machine_name)
+        node_ids.add(h.hostname)
+    add_poe_edges(graph, bridge, NameResolver(node_ids, site.domain))
+    check_acyclic(graph)
+    hosts_not_reaching_mains(graph)   # appends warnings
+    return graph

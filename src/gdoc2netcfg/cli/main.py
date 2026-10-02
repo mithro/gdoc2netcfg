@@ -3303,6 +3303,57 @@ def cmd_db_cleanup_incomplete_scans(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# power (read-only power-topology engine)
+# ---------------------------------------------------------------------------
+
+def _power_graph(args: argparse.Namespace):
+    from gdoc2netcfg.supplements.power_topology import build_power_graph
+
+    config = _load_config(args)
+    records, hosts, _inventory, _result = _build_pipeline(config)
+    bridge = _load_latest_from_db(config, "load_latest_bridge")
+    if bridge is None:
+        print("warning: no completed 'bridge' scan — PoE contributes nothing "
+              "(run: sudo .venv/bin/gdoc2netcfg bridge --force)", file=sys.stderr)
+    graph = build_power_graph(records, hosts, bridge, config.site)
+    for w in graph.warnings:
+        print(f"warning: {w}", file=sys.stderr)
+    return graph
+
+
+def cmd_power_tree(args: argparse.Namespace) -> int:
+    from gdoc2netcfg.supplements.power_topology import render_tree
+
+    print(render_tree(_power_graph(args)))
+    return 0
+
+
+def cmd_power_downstream(args: argparse.Namespace) -> int:
+    from gdoc2netcfg.supplements.power_topology import downstream
+
+    graph = _power_graph(args)
+    if args.node not in graph.nodes:
+        print(f"error: {args.node!r} is not a node in the power graph",
+              file=sys.stderr)
+        return 1
+    for nid in sorted(downstream(graph, args.node)):
+        print(f"{graph.nodes[nid].category}: {graph.nodes[nid].label}")
+    return 0
+
+
+def cmd_power_upstream(args: argparse.Namespace) -> int:
+    from gdoc2netcfg.supplements.power_topology import render_upstream
+
+    graph = _power_graph(args)
+    if args.host not in graph.nodes:
+        print(f"error: {args.host!r} is not a node in the power graph",
+              file=sys.stderr)
+        return 1
+    print(render_upstream(graph, args.host))
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -3696,6 +3747,21 @@ def main(argv: list[str] | None = None) -> int:
         help="Output credential value(s) only (for piping/scripting)",
     )
 
+    # power (read-only power-topology engine)
+    power_parser = subparsers.add_parser(
+        "power", help="Power-dependency topology (read-only)",
+    )
+    power_subparsers = power_parser.add_subparsers(dest="power_command")
+    power_subparsers.add_parser("tree", help="Print the power hierarchy as a tree")
+    power_down = power_subparsers.add_parser(
+        "downstream", help="What loses power if a node is toggled off",
+    )
+    power_down.add_argument("node", help="Controller node (plug/port/ups/switch)")
+    power_up = power_subparsers.add_parser(
+        "upstream", help="What controls power to a host",
+    )
+    power_up.add_argument("host", help="Host machine name")
+
     args = parser.parse_args(argv)
 
     if args.command is None:
@@ -3714,6 +3780,18 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_db_cleanup_incomplete_scans(args)
         else:
             db_parser.print_help()
+            return 0
+
+    # Handle power subcommands
+    if args.command == "power":
+        if args.power_command == "tree":
+            return cmd_power_tree(args)
+        elif args.power_command == "downstream":
+            return cmd_power_downstream(args)
+        elif args.power_command == "upstream":
+            return cmd_power_upstream(args)
+        else:
+            power_parser.print_help()
             return 0
 
     # Handle bridge subcommands

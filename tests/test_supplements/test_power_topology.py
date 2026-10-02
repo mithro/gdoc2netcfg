@@ -10,8 +10,11 @@ from gdoc2netcfg.supplements.power_topology import (
     add_controls_edges,
     add_poe_edges,
     check_acyclic,
+    downstream,
     hosts_not_reaching_mains,
     infra_category,
+    powered,
+    upstream_levels,
 )
 
 
@@ -187,3 +190,47 @@ def test_mains_termination_warns():
     assert "desktop" in bad
     assert "au-plug-1" not in bad
     assert any("desktop" in w for w in g.warnings)
+
+
+def _chain_graph():
+    g = PowerGraph()
+    for n, c in [("mains-w", "mains"), ("p47", "tasmota"), ("ups-x", "ups"),
+                 ("p48", "tasmota"), ("p46", "tasmota"), ("sw-bb", "host")]:
+        g.add_node(PowerNode(n, c, n))
+    g.add_edge("mains-w", "p47")
+    g.add_edge("p47", "ups-x")
+    g.add_edge("ups-x", "p48")
+    g.add_edge("p48", "p46")
+    g.add_edge("p46", "sw-bb")
+    return g
+
+
+def test_downstream_chain():
+    g = _chain_graph()
+    assert downstream(g, "p48") == {"p46", "sw-bb"}
+    assert downstream(g, "p47") == {"ups-x", "p48", "p46", "sw-bb"}
+
+
+def test_downstream_redundant_feed_drops_nothing():
+    g = PowerGraph()
+    for n, c in [("mains-w", "mains"), ("p10", "tasmota"), ("p11", "tasmota"),
+                 ("srv", "host")]:
+        g.add_node(PowerNode(n, c, n))
+    g.add_edge("mains-w", "p10")
+    g.add_edge("mains-w", "p11")
+    g.add_edge("p10", "srv")
+    g.add_edge("p11", "srv")        # redundant second feed
+    assert downstream(g, "p10") == set()   # srv still fed by p11
+
+
+def test_powered_excludes_blocked_subtree():
+    g = _chain_graph()
+    assert "sw-bb" in powered(g)
+    assert "sw-bb" not in powered(g, blocked=frozenset({"p48"}))
+
+
+def test_upstream_levels_order():
+    g = _chain_graph()
+    assert upstream_levels(g, "sw-bb") == [
+        ["p46"], ["p48"], ["ups-x"], ["p47"], ["mains-w"],
+    ]

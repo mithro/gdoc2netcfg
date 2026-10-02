@@ -245,3 +245,45 @@ def hosts_not_reaching_mains(graph: PowerGraph) -> list[str]:
             bad.append(nid)
             graph.warnings.append(f"{nid}: power chain does not reach a mains node")
     return bad
+
+
+def powered(graph: PowerGraph, blocked: frozenset[str] = frozenset()) -> set[str]:
+    """Nodes reachable from roots via child edges, never entering a blocked node."""
+    result: set[str] = set()
+    stack = [r for r in graph.roots() if r not in blocked]
+    while stack:
+        nid = stack.pop()
+        if nid in result:
+            continue
+        result.add(nid)
+        for child in graph.children_of(nid):
+            if child not in blocked:
+                stack.append(child)
+    return result
+
+
+def downstream(graph: PowerGraph, node_id: str) -> set[str]:
+    """Nodes that lose power when node_id is toggled off (redundancy-aware)."""
+    before = powered(graph)
+    after = powered(graph, blocked=frozenset({node_id}))
+    return (before - after) - {node_id}
+
+
+def upstream_levels(graph: PowerGraph, node_id: str) -> list[list[str]]:
+    """Ancestors grouped by longest hop-distance from node_id (direct first)."""
+    level: dict[str, int] = {}
+    frontier = {node_id: 0}
+    changed = True
+    while changed:
+        changed = False
+        for nid, dist in list(frontier.items()):
+            for parent in graph.parents_of(nid):
+                nd = dist + 1
+                if nd > level.get(parent, 0):
+                    level[parent] = nd
+                    frontier[parent] = nd
+                    changed = True
+    by_level: dict[int, list[str]] = {}
+    for nid, lvl in level.items():
+        by_level.setdefault(lvl, []).append(nid)
+    return [sorted(by_level[d]) for d in sorted(by_level)]

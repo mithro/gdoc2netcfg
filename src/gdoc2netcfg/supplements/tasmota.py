@@ -12,7 +12,6 @@ tasmota_configure.py.
 from __future__ import annotations
 
 import json
-import re
 import sys
 import urllib.error
 import urllib.request
@@ -22,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from gdoc2netcfg.models.addressing import MACAddress
 from gdoc2netcfg.models.host import TasmotaData
+from gdoc2netcfg.utils.controls import parse_controls_cell
 
 if TYPE_CHECKING:
     from gdoc2netcfg.models.host import Host
@@ -336,10 +336,7 @@ def enrich_hosts_with_tasmota(
             continue
 
         # Parse controls from spreadsheet extra column (comma or newline separated)
-        controls_str = host.extra.get("Controls", "")
-        controls = tuple(
-            c.strip() for c in re.split(r"[,\r\n]", controls_str) if c.strip()
-        )
+        controls = parse_controls_cell(host.extra.get("Controls", ""))
 
         host.tasmota_data = TasmotaData(
             device_name=info.get("device_name", ""),

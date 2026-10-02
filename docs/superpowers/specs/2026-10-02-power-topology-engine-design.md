@@ -181,8 +181,8 @@ Resolve a free-text target to a canonical node, in order:
 
 ## Commands (all read-only)
 
-Command group **`gdoc2netcfg power`** (name to confirm; alt `controlled-by`).
-No sheet or device writes anywhere in this sub-project.
+Command group **`gdoc2netcfg power`** (confirmed). No sheet or device writes
+anywhere in this sub-project.
 
 ### `power tree [--site S]`
 ASCII tree of the power hierarchy: roots (`mains-*`, and any parentless node) at

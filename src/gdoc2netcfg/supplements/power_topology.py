@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from gdoc2netcfg.utils.controls import parse_controls_cell
+from gdoc2netcfg.utils.controls import parse_controls_cell, strip_interface_prefix
 
 CATEGORIES = (
     "host", "tasmota", "zigbee", "poe",
@@ -135,3 +135,69 @@ def add_controls_edges(graph: PowerGraph, records, hosts, site) -> None:
             elif target not in graph.nodes:
                 graph.add_node(PowerNode(target, "host", target))
             graph.add_edge(r.machine, target)
+
+
+_ADMIN_ON, _ADMIN_OFF = 1, 2
+_DET_DELIVERING = 3
+
+
+def _poe_host_name(aliases: dict[int, str], lldp: dict[int, str], port: int,
+                   graph: PowerGraph, switch: str) -> str | None:
+    """Pick the connected-host name for a port: alias, else LLDP; warn on disagreement."""
+    alias = ""
+    if aliases.get(port):
+        alias = strip_interface_prefix(aliases[port].strip())[1]
+    lldp_name = lldp.get(port, "")
+    if alias and lldp_name and alias != lldp_name:
+        graph.warnings.append(
+            f"PoE {switch} port {port}: alias {alias!r} disagrees with LLDP "
+            f"{lldp_name!r}; using LLDP"
+        )
+        return lldp_name
+    return alias or lldp_name or None
+
+
+def add_poe_edges(graph: PowerGraph, bridge, resolver: NameResolver) -> None:
+    """Add switch -> poe-port -> host edges from bridge PoE data."""
+    if not bridge:
+        return
+    for switch, doc in sorted(bridge.items()):
+        if switch not in graph.nodes:
+            continue  # switch not an in-site node; its PoE is out of scope
+        names = dict(doc.get("port_names", ()))
+        aliases = {p: a for p, a in doc.get("port_aliases", ())}
+        lldp = {lp: sn for lp, sn, *_ in doc.get("lldp_neighbors", ())}
+        for port, admin, detection in doc.get("poe_status", ()):
+            if admin not in (_ADMIN_ON, _ADMIN_OFF) or not (1 <= detection <= 6):
+                raise ValueError(
+                    f"PoE {switch} port {port}: admin/detection out of range "
+                    f"({admin}, {detection})"
+                )
+            deliver = admin == _ADMIN_ON and detection == _DET_DELIVERING
+            held_off = admin == _ADMIN_OFF
+            if not (deliver or held_off):
+                if admin == _ADMIN_ON and detection not in (_DET_DELIVERING, 2):
+                    graph.warnings.append(
+                        f"PoE {switch} port {port}: fault/test state {detection}"
+                    )
+                continue
+            raw = _poe_host_name(aliases, lldp, port, graph, switch)
+            if raw is None:
+                continue  # delivering/off but no name — empty described port
+            if port not in names:
+                raise ValueError(
+                    f"PoE {switch} port {port} delivering/held-off but has no ifName"
+                )
+            port_id = f"{switch} {names[port]}"
+            graph.add_node(PowerNode(port_id, "poe", port_id))
+            graph.add_edge(switch, port_id)
+            target = resolver.resolve(raw)
+            if target is None:
+                target = raw
+                graph.add_node(PowerNode(raw, "unresolved", raw))
+                graph.warnings.append(
+                    f"PoE {port_id} names {raw!r} which matches no known host"
+                )
+            elif target not in graph.nodes:
+                graph.add_node(PowerNode(target, "host", target))
+            graph.add_edge(port_id, target)

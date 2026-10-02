@@ -287,3 +287,37 @@ def upstream_levels(graph: PowerGraph, node_id: str) -> list[list[str]]:
     for nid, lvl in level.items():
         by_level.setdefault(lvl, []).append(nid)
     return [sorted(by_level[d]) for d in sorted(by_level)]
+
+
+def _label(graph: PowerGraph, nid: str) -> str:
+    n = graph.nodes[nid]
+    return f"{n.category}: {n.label}"
+
+
+def render_tree(graph: PowerGraph) -> str:
+    """ASCII tree of the power hierarchy (roots at top, children indented)."""
+    lines: list[str] = []
+
+    def walk(nid: str, prefix: str, is_root: bool, is_last: bool) -> None:
+        if is_root:
+            lines.append(_label(graph, nid))
+            child_prefix = ""
+        else:
+            connector = "└─ " if is_last else "├─ "
+            lines.append(f"{prefix}{connector}{_label(graph, nid)}")
+            child_prefix = prefix + ("   " if is_last else "│  ")
+        kids = sorted(graph.children_of(nid))
+        for i, child in enumerate(kids):
+            walk(child, child_prefix, False, i == len(kids) - 1)
+
+    for root in graph.roots():
+        walk(root, "", True, True)
+    return "\n".join(lines)
+
+
+def render_upstream(graph: PowerGraph, node_id: str) -> str:
+    """One line per hop-level (direct first -> mains last), same-level comma-joined."""
+    levels = upstream_levels(graph, node_id)
+    return "\n".join(
+        ", ".join(_label(graph, nid) for nid in level) for level in levels
+    )

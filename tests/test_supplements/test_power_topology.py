@@ -14,6 +14,8 @@ from gdoc2netcfg.supplements.power_topology import (
     hosts_not_reaching_mains,
     infra_category,
     powered,
+    render_tree,
+    render_upstream,
     upstream_levels,
 )
 
@@ -234,3 +236,27 @@ def test_upstream_levels_order():
     assert upstream_levels(g, "sw-bb") == [
         ["p46"], ["p48"], ["ups-x"], ["p47"], ["mains-w"],
     ]
+
+
+def test_render_upstream_lines():
+    g = _chain_graph()
+    assert render_upstream(g, "sw-bb") == (
+        "tasmota: p46\n"
+        "tasmota: p48\n"
+        "ups: ups-x\n"
+        "tasmota: p47\n"
+        "mains: mains-w"
+    )
+
+
+def test_render_tree_shape():
+    g = PowerGraph()
+    for n, c in [("mains-w", "mains"), ("p1", "tasmota"), ("d", "host")]:
+        g.add_node(PowerNode(n, c, n))
+    g.add_edge("mains-w", "p1")
+    g.add_edge("p1", "d")
+    assert render_tree(g) == (
+        "mains: mains-w\n"
+        "└─ tasmota: p1\n"
+        "   └─ host: d"
+    )

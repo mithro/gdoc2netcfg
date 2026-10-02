@@ -4,10 +4,13 @@ import pytest
 
 from gdoc2netcfg.supplements.power_topology import (
     NameResolver,
+    PowerCycleError,
     PowerGraph,
     PowerNode,
     add_controls_edges,
     add_poe_edges,
+    check_acyclic,
+    hosts_not_reaching_mains,
     infra_category,
 )
 
@@ -160,3 +163,27 @@ def test_poe_out_of_range_raises():
     g.add_node(PowerNode("sw-s1", "host", "sw-s1"))
     with pytest.raises(ValueError, match="out of range"):
         add_poe_edges(g, _bridge([(1, 9, 3)], [(1, "1/0/1")]), _resolver(["sw-s1"]))
+
+
+def test_cycle_raises():
+    g = PowerGraph()
+    for n in ("a", "b"):
+        g.add_node(PowerNode(n, "tasmota", n))
+    g.add_edge("a", "b")
+    g.add_edge("b", "a")
+    with pytest.raises(PowerCycleError):
+        check_acyclic(g)
+
+
+def test_mains_termination_warns():
+    g = PowerGraph()
+    g.add_node(PowerNode("mains-w", "mains", "mains-w"))
+    g.add_node(PowerNode("au-plug-1", "tasmota", "au-plug-1"))
+    g.add_node(PowerNode("desktop", "host", "desktop"))   # fed by a parentless plug
+    g.add_node(PowerNode("au-plug-2", "tasmota", "au-plug-2"))
+    g.add_edge("mains-w", "au-plug-1")
+    g.add_edge("au-plug-2", "desktop")   # au-plug-2 has no mains upstream
+    bad = hosts_not_reaching_mains(g)
+    assert "desktop" in bad
+    assert "au-plug-1" not in bad
+    assert any("desktop" in w for w in g.warnings)

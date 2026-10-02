@@ -201,3 +201,47 @@ def add_poe_edges(graph: PowerGraph, bridge, resolver: NameResolver) -> None:
             elif target not in graph.nodes:
                 graph.add_node(PowerNode(target, "host", target))
             graph.add_edge(port_id, target)
+
+
+def check_acyclic(graph: PowerGraph) -> None:
+    """Raise PowerCycleError if the graph contains a cycle."""
+    WHITE, GREY, BLACK = 0, 1, 2
+    color = dict.fromkeys(graph.nodes, WHITE)
+
+    def visit(nid: str, stack: list[str]) -> None:
+        color[nid] = GREY
+        for child in sorted(graph.children_of(nid)):
+            if color[child] == GREY:
+                cyc = stack[stack.index(child):] + [child]
+                raise PowerCycleError("power cycle: " + " -> ".join(cyc))
+            if color[child] == WHITE:
+                visit(child, stack + [child])
+        color[nid] = BLACK
+
+    for nid in sorted(graph.nodes):
+        if color[nid] == WHITE:
+            visit(nid, [nid])
+
+
+def hosts_not_reaching_mains(graph: PowerGraph) -> list[str]:
+    """Node ids whose ancestry contains no `mains` node (chain truncated)."""
+    bad: list[str] = []
+    for nid in sorted(graph.nodes):
+        if graph.nodes[nid].category == "mains":
+            continue
+        seen: set[str] = set()
+        queue = list(graph.parents_of(nid))
+        reaches = False
+        while queue:
+            p = queue.pop()
+            if p in seen:
+                continue
+            seen.add(p)
+            if graph.nodes[p].category == "mains":
+                reaches = True
+                break
+            queue.extend(graph.parents_of(p))
+        if not reaches:
+            bad.append(nid)
+            graph.warnings.append(f"{nid}: power chain does not reach a mains node")
+    return bad

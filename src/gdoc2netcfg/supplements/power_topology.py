@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from gdoc2netcfg.utils.controls import parse_controls_cell
+
 CATEGORIES = (
     "host", "tasmota", "zigbee", "poe",
     "ups", "mains", "busbar", "strip", "unresolved",
@@ -61,3 +63,75 @@ class PowerGraph:
 
     def roots(self) -> list[str]:
         return sorted(nid for nid in self.nodes if not self._parents.get(nid))
+
+
+def _in_site(record_site: str, site_name: str) -> bool:
+    s = (record_site or "").strip().lower()
+    return s == "" or s == site_name.strip().lower()
+
+
+def _node_category(record) -> str:
+    cat = infra_category(record.machine)
+    if cat is not None:
+        return cat
+    if record.sheet_name == "Zigbee Info":
+        return "zigbee"
+    if record.sheet_name == "IoT":
+        return "tasmota"
+    return "host"
+
+
+class NameResolver:
+    """Resolve a free-text Controls/PoE value to a canonical node id."""
+
+    def __init__(self, node_ids: set[str], site_domain: str):
+        self._ids = set(node_ids)
+        self._suffix = "." + site_domain if site_domain else ""
+
+    def resolve(self, raw: str) -> str | None:
+        name = raw.strip()
+        if name in self._ids:
+            return name
+        if self._suffix and name.endswith(self._suffix):
+            trimmed = name[: -len(self._suffix)]
+            if trimmed in self._ids:
+                return trimmed
+        first = name.split(".")[0]
+        if first in self._ids:
+            return first
+        return None
+
+
+def add_controls_edges(graph: PowerGraph, records, hosts, site) -> None:
+    """Add nodes and Controls edges (plugs + infra) for one site.
+
+    Controllers are in-site device rows with a Controls cell; targets are
+    resolved to known nodes, else kept as ``unresolved`` leaves with a warning.
+    """
+    in_site = [r for r in records if _in_site(r.site, site.name)]
+
+    node_ids: set[str] = {r.machine for r in in_site if r.machine}
+    for h in hosts:
+        node_ids.add(h.machine_name)
+        node_ids.add(h.hostname)
+    resolver = NameResolver(node_ids, site.domain)
+
+    for r in in_site:
+        if not r.machine:
+            continue
+        graph.add_node(PowerNode(r.machine, _node_category(r), r.machine))
+
+    for r in in_site:
+        if not r.machine:
+            continue
+        for raw in parse_controls_cell(r.extra.get("Controls", "")):
+            target = resolver.resolve(raw)
+            if target is None:
+                target = raw
+                graph.add_node(PowerNode(raw, "unresolved", raw))
+                graph.warnings.append(
+                    f"Controls target {raw!r} (from {r.machine}) matches no known host"
+                )
+            elif target not in graph.nodes:
+                graph.add_node(PowerNode(target, "host", target))
+            graph.add_edge(r.machine, target)

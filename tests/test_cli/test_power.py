@@ -18,12 +18,19 @@ def _cfg():
                                                 domain="welland.mithis.com"))
 
 
-def _patchers(records, bridge=None):
+def _zrec(machine, controls, site="welland"):
+    return SimpleNamespace(sheet_name="zigbee", machine=machine, site=site,
+                           extra={"Controls": controls})
+
+
+def _patchers(records, bridge=None, zigbee=()):
     return [
         patch("gdoc2netcfg.cli.main._load_config", return_value=_cfg()),
         patch("gdoc2netcfg.cli.main._build_pipeline",
               return_value=(records, [_host("desktop")], None, None)),
         patch("gdoc2netcfg.cli.main._load_latest_from_db", return_value=bridge),
+        patch("gdoc2netcfg.cli.main._zigbee_controls_records",
+              return_value=list(zigbee)),
     ]
 
 
@@ -53,6 +60,19 @@ def test_power_downstream(capsys):
         for p in ctx:
             p.stop()
     assert "desktop" in capsys.readouterr().out
+
+
+def test_power_tree_includes_zigbee(capsys):
+    recs = [_rec("mains-welland", "au-plug-4"), _rec("au-plug-4", "desktop")]
+    ctx = _patchers(recs, zigbee=[_zrec("Z5", "desktop")])
+    for p in ctx:
+        p.start()
+    try:
+        assert main(["power", "tree"]) == 0
+    finally:
+        for p in ctx:
+            p.stop()
+    assert "zigbee: Z5" in capsys.readouterr().out
 
 
 def test_power_upstream_unknown_node_exit_1(capsys):

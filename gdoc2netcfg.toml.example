@@ -35,6 +35,11 @@ vlan_allocations = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5
 wifi = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=1724224613&single=true&output=csv"
 # Sites tab: drives all_sites (valid "Site" values) and is cross-checked against [site]/[ipv6].
 sites = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=582797138&single=true&output=csv"
+# Zigbee Info tab: a non-device sheet (no Machine/MAC cols) read by the
+# `power` topology engine. An optional "Controls" column on this tab (plug
+# Entity Name -> the hosts/plugs it powers) feeds power-dependency edges;
+# absent, it contributes nothing. Fetched+cached like any other sheet.
+zigbee = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=283200403&single=true&output=csv"
 # Edit URL of the same spreadsheet — used by 'zigbee update-sheet' for write access.
 # Get this from your browser's address bar while the sheet is open.
 # spreadsheet_url = "https://docs.google.com/spreadsheets/d/{ID}/edit"

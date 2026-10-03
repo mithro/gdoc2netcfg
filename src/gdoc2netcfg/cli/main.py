@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 # tabs.  Every host builder skips these so their rows are never parsed as
 # devices.  Single source of truth shared by _build_hosts_from_csvs and
 # _build_pipeline, so the exclusion can't drift between the two.
-_NON_DEVICE_SHEETS = frozenset({"vlan_allocations", "sites"})
+_NON_DEVICE_SHEETS = frozenset({"vlan_allocations", "sites", "zigbee"})
 
 
 def _load_config(args: argparse.Namespace):
@@ -3306,11 +3306,29 @@ def cmd_db_cleanup_incomplete_scans(args: argparse.Namespace) -> int:
 # power (read-only power-topology engine)
 # ---------------------------------------------------------------------------
 
+def _zigbee_controls_records(config):
+    """Read the cached Zigbee Info sheet's Controls column as controller records.
+
+    The Zigbee Info sheet is fetched and cached like any other [sheets]
+    source (as .cache/zigbee.csv); here we read it from the cache (never a
+    live spreadsheet) and parse its Controls column. No cached sheet -> no
+    zigbee edges.
+    """
+    from gdoc2netcfg.sources.cache import CSVCache
+    from gdoc2netcfg.sources.zigbee_controls import parse_zigbee_controls
+
+    cache = CSVCache(config.cache.directory)
+    if not cache.has("zigbee"):
+        return []
+    return parse_zigbee_controls(cache.read("zigbee"))
+
+
 def _power_graph(args: argparse.Namespace):
     from gdoc2netcfg.supplements.power_topology import build_power_graph
 
     config = _load_config(args)
     records, hosts, _inventory, _result = _build_pipeline(config)
+    records = list(records) + _zigbee_controls_records(config)
     bridge = _load_latest_from_db(config, "load_latest_bridge")
     if bridge is None:
         print("warning: no completed 'bridge' scan — PoE contributes nothing "

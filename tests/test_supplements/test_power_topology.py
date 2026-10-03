@@ -271,6 +271,15 @@ def test_controls_iot_lowercase_sheet_is_tasmota():
     assert g.nodes["au-plug-4"].category == "tasmota"
 
 
+def test_controls_zigbee_sheet_is_zigbee():
+    # Zigbee Info controller rows carry sheet_name "zigbee".
+    recs = [_rec("Z5", "desktop", sheet="zigbee")]
+    g = PowerGraph()
+    add_controls_edges(g, recs, [_host("desktop")], _site())
+    assert g.nodes["Z5"].category == "zigbee"
+    assert g.children_of("Z5") == {"desktop"}
+
+
 def test_poe_switch_case_insensitive_match():
     # Node id carries the raw-case machine name; the bridge key is the
     # lowercased hostname. They must still match (no duplicate node).

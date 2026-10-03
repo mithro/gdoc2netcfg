@@ -76,8 +76,11 @@ def _node_category(record) -> str:
     cat = infra_category(record.machine)
     if cat is not None:
         return cat
-    if record.sheet_name.lower() == "iot":
+    sheet = record.sheet_name.lower()
+    if sheet == "iot":
         return "tasmota"
+    if sheet == "zigbee":
+        return "zigbee"
     return "host"
 
 

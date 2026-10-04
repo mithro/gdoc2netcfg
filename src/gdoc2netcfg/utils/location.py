@@ -5,8 +5,7 @@ from __future__ import annotations
 import re
 
 _LOCATION_SEP = " - "
-_WS = re.compile(r"\s+")
-_NONALNUM = re.compile(r"[^0-9a-z ]")
+_NONALNUM = re.compile(r"[^0-9a-z]+")
 _DIGITS = re.compile(r"(\d+)")
 
 
@@ -18,16 +17,14 @@ def parse_location_path(cell: str) -> tuple[str, ...]:
 
 
 def location_key(cell: str) -> str:
-    """Normalized confusable key: casefold, collapse whitespace, drop punctuation.
+    """Normalized confusable key: casefold, drop every non-alphanumeric char.
 
-    Two location cells that differ only by case/spacing/punctuation map to the
-    same key — used ONLY to detect confusable duplicates, never to merge them.
+    Separator/space/punctuation-insensitive, so ``Back Shed - Soundproof Rack``
+    and ``Back Shed-Soundproof Rack`` (a missing space around the ` - `
+    separator) map to the same key. Used ONLY to detect confusable duplicates,
+    never to merge them — the fix makes the raw values identical.
     """
-    parts = []
-    for seg in parse_location_path(cell):
-        seg = _NONALNUM.sub(" ", seg.casefold())
-        parts.append(_WS.sub(" ", seg).strip().replace(" ", ""))
-    return "/".join(p for p in parts if p)
+    return _NONALNUM.sub("", cell.casefold())
 
 
 def natural_sort_key(s: str) -> tuple:

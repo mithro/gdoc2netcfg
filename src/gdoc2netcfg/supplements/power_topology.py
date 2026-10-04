@@ -166,8 +166,14 @@ def add_controls_edges(graph: PowerGraph, records, hosts, site) -> None:
 
 
 def _is_bmc_host(host) -> bool:
-    """A BMC host is one whose hostname's first label contains ``bmc``."""
-    return "bmc" in host.hostname.split(".")[0].lower()
+    """A BMC host is one whose hostname's first label *starts with* ``bmc``.
+
+    A prefix (not substring) test: real BMC hosts are ``bmc.<host>`` /
+    ``bmc-alt.<host>`` etc. A substring test would misclassify a host like
+    ``webmc`` whose hostname equals its machine name, creating a self-loop
+    (``add_edge(x, x)``) that ``check_acyclic`` would reject.
+    """
+    return host.hostname.split(".")[0].lower().startswith("bmc")
 
 
 def add_bmc_edges(graph: PowerGraph, hosts) -> None:

@@ -64,6 +64,17 @@ def test_bmc_without_parent_node_warns_no_edge():
     assert any("ghost" in w for w in g.warnings)
 
 
+def test_host_with_bmc_substring_not_treated_as_bmc():
+    # A first label that merely CONTAINS 'bmc' (e.g. 'webmc') is not a BMC;
+    # a prefix match avoids a self-loop (hostname == machine_name) that would
+    # otherwise raise PowerCycleError and break the whole power command.
+    g = PowerGraph()
+    g.add_node(PowerNode("webmc", "host", "webmc"))
+    add_bmc_edges(g, [SimpleNamespace(hostname="webmc", machine_name="webmc")])
+    assert g.nodes["webmc"].category == "host"
+    assert "webmc" not in g.children_of("webmc")
+
+
 # ---- Task 6: stale-switch exclusion -------------------------------------
 
 

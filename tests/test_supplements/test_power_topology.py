@@ -295,9 +295,10 @@ def test_poe_switch_case_insensitive_match():
     assert "sw-bb-25g" not in g.nodes          # no duplicate lowercased node
 
 
-def test_poe_unreferenced_switch_added_and_warned():
-    # A bridge switch that no Controls cell references must NOT be silently
-    # dropped: add it as a node and warn, so its PoE subtree is not lost.
+def test_poe_switch_absent_from_inventory_is_stale_and_excluded():
+    # A bridge switch with no node in the current inventory is stale scan
+    # history (the bridge scan never tombstones a vanished switch): exclude
+    # its PoE subtree and warn, rather than add it as a phantom root.
     g = PowerGraph()
     g.add_node(PowerNode("rpi5-pmod", "host", "rpi5-pmod"))
     bridge = {"sw-lonely": {
@@ -305,6 +306,6 @@ def test_poe_unreferenced_switch_added_and_warned():
         "port_aliases": [(1, "eth0.rpi5-pmod")], "lldp_neighbors": [],
     }}
     add_poe_edges(g, bridge, _resolver(["rpi5-pmod"]))
-    assert "sw-lonely" in g.nodes
-    assert g.children_of("sw-lonely") == {"sw-lonely 1/0/1"}
-    assert any("sw-lonely" in w for w in g.warnings)
+    assert "sw-lonely" not in g.nodes
+    assert "sw-lonely 1/0/1" not in g.nodes
+    assert any("sw-lonely" in w and "stale" in w.lower() for w in g.warnings)

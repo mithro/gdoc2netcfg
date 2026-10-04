@@ -3,10 +3,12 @@
 from types import SimpleNamespace
 
 from gdoc2netcfg.supplements.power_topology import (
+    NameResolver,
     PowerGraph,
     PowerNode,
     add_bmc_edges,
     add_controls_edges,
+    add_poe_edges,
 )
 
 
@@ -59,3 +61,35 @@ def test_bmc_without_parent_node_warns_no_edge():
     assert "bmc.ghost" in g.nodes
     assert g.children_of("bmc.ghost") == set()
     assert any("ghost" in w for w in g.warnings)
+
+
+# ---- Task 6: stale-switch exclusion -------------------------------------
+
+
+def test_stale_bridge_switch_excluded():
+    g = PowerGraph()  # empty inventory
+    bridge = {
+        "sw-ghost": {
+            "port_names": [(1, "1/0/1")],
+            "poe_status": [(1, 1, 3)],
+            "lldp_neighbors": [(1, "somehost", "x", "y", None)],
+        }
+    }
+    add_poe_edges(g, bridge, NameResolver(set(), "welland.mithis.com"))
+    assert "sw-ghost" not in g.nodes
+    assert any("sw-ghost" in w and "stale" in w.lower() for w in g.warnings)
+
+
+def test_in_inventory_switch_keeps_poe_subtree():
+    g = PowerGraph()
+    g.add_node(PowerNode("sw-real", "host", "sw-real"))
+    bridge = {
+        "sw-real": {
+            "port_names": [(1, "1/0/1")],
+            "poe_status": [(1, 1, 3)],
+            "lldp_neighbors": [(1, "desktop", "x", "y", None)],
+        }
+    }
+    add_poe_edges(g, bridge, NameResolver({"sw-real", "desktop"}, "welland.mithis.com"))
+    assert "sw-real 1/0/1" in g.nodes
+    assert "sw-real 1/0/1" in g.children_of("sw-real")

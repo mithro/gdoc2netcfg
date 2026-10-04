@@ -231,14 +231,14 @@ def add_poe_edges(graph: PowerGraph, bridge, resolver: NameResolver) -> None:
     for switch, doc in sorted(bridge.items()):
         switch_id = _match_switch_node(graph, switch)
         if switch_id is None:
-            # Not referenced by any Controls cell — still a real PoE source.
-            # Never silently drop it: add the switch as a node and warn.
-            switch_id = switch
-            graph.add_node(PowerNode(switch, "host", switch))
+            # A bridge switch with no node in the current inventory is stale
+            # scan history (the bridge scan never tombstones a vanished switch).
+            # Exclude its PoE subtree and surface it as a violation.
             graph.warnings.append(
-                f"bridge switch {switch!r} not referenced by any Controls cell; "
-                f"including its PoE subtree as a root"
+                f"bridge switch {switch!r} is not in current inventory — "
+                f"stale scan history; its PoE subtree is excluded"
             )
+            continue
         names = dict(doc.get("port_names", ()))
         aliases = {p: a for p, a in doc.get("port_aliases", ())}
         lldp = {lp: sn for lp, sn, *_ in doc.get("lldp_neighbors", ())}

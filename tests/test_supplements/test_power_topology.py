@@ -251,14 +251,17 @@ def test_render_upstream_lines():
 
 def test_render_tree_shape():
     g = PowerGraph()
+    loc = ("Shed",)
     for n, c in [("mains-w", "mains"), ("p1", "tasmota"), ("d", "host")]:
-        g.add_node(PowerNode(n, c, n))
+        g.add_node(PowerNode(n, c, n, location=loc))
     g.add_edge("mains-w", "p1")
     g.add_edge("p1", "d")
-    assert render_tree(g) == (
-        "mains: mains-w\n"
-        "└─ tasmota: p1\n"
-        "   └─ host: d"
+    assert render_tree(g, "welland") == (
+        "mains: meter-welland\n"
+        "   [Shed]\n"
+        "      └─ mains: mains-w\n"
+        "         └─ tasmota: p1\n"
+        "            └─ host: d"
     )
 
 

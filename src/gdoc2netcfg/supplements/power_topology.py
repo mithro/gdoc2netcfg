@@ -11,7 +11,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from gdoc2netcfg.utils.controls import parse_controls_cell, strip_interface_prefix
-from gdoc2netcfg.utils.location import parse_location_path
+from gdoc2netcfg.utils.location import (
+    location_key,
+    natural_sort_key,
+    parse_location_path,
+)
 
 _LOCATION_KEYS = ("Physical Location", "Location")
 
@@ -366,27 +370,67 @@ def upstream_levels(graph: PowerGraph, node_id: str) -> list[list[str]]:
 
 def _label(graph: PowerGraph, nid: str) -> str:
     n = graph.nodes[nid]
-    return f"{n.category}: {n.label}"
+    base = f"{n.category}: {n.label}"
+    return f"{base} ({n.note})" if n.note else base
 
 
-def render_tree(graph: PowerGraph) -> str:
-    """ASCII tree of the power hierarchy (roots at top, children indented)."""
-    lines: list[str] = []
+def _loc_display(path: tuple[str, ...]) -> str:
+    return " - ".join(path)
 
-    def walk(nid: str, prefix: str, is_root: bool, is_last: bool) -> None:
-        if is_root:
-            lines.append(_label(graph, nid))
-            child_prefix = ""
-        else:
-            connector = "└─ " if is_last else "├─ "
-            lines.append(f"{prefix}{connector}{_label(graph, nid)}")
-            child_prefix = prefix + ("   " if is_last else "│  ")
-        kids = sorted(graph.children_of(nid))
+
+def _insert_root(tree: dict, path: tuple[str, ...], nid: str) -> None:
+    """Insert a root id into the nested location tree under `path`."""
+    node = tree
+    for seg in path:
+        node = node.setdefault("sub", {}).setdefault(seg, {})
+    node.setdefault("roots", []).append(nid)
+
+
+def render_tree(graph: PowerGraph, site_name: str) -> str:
+    """Meter-rooted, location-grouped ASCII tree.
+
+    Line 1 is the synthetic site meter. Power roots are grouped under a
+    nested location tree keyed by each root's location path; each root's
+    power subtree is walked via child edges, siblings natural-sorted. A
+    child whose location diverges from its parent's is flagged, as is a
+    placed node with no location. Meter/location lines are presentation
+    only — no graph nodes or edges are added.
+    """
+    lines: list[str] = [f"mains: meter-{site_name}"]
+
+    def walk(nid: str, parent_key: str, prefix: str, is_last: bool) -> None:
+        n = graph.nodes[nid]
+        suffix = ""
+        if not n.location:
+            suffix = "  ⚠ loc unknown"
+        elif location_key(_loc_display(n.location)) != parent_key:
+            suffix = f"  ⚠ loc={_loc_display(n.location)}"
+        connector = "└─ " if is_last else "├─ "
+        lines.append(f"{prefix}{connector}{_label(graph, nid)}{suffix}")
+        child_prefix = prefix + ("   " if is_last else "│  ")
+        my_key = location_key(_loc_display(n.location))
+        kids = sorted(graph.children_of(nid),
+                      key=lambda c: natural_sort_key(graph.nodes[c].label))
         for i, child in enumerate(kids):
-            walk(child, child_prefix, False, i == len(kids) - 1)
+            walk(child, my_key, child_prefix, i == len(kids) - 1)
 
-    for root in graph.roots():
-        walk(root, "", True, True)
+    tree: dict = {}
+    roots = sorted(graph.roots(),
+                   key=lambda r: natural_sort_key(graph.nodes[r].label))
+    for r in roots:
+        path = graph.nodes[r].location or ("[unknown location]",)
+        _insert_root(tree, path, r)
+
+    def render_locs(node: dict, depth: int) -> None:
+        indent = "   " * depth
+        for name in sorted(node.get("sub", {}), key=natural_sort_key):
+            lines.append(f"{indent}[{name}]")
+            render_locs(node["sub"][name], depth + 1)
+        for r in node.get("roots", []):
+            key = location_key(_loc_display(graph.nodes[r].location))
+            walk(r, key, indent, True)
+
+    render_locs(tree, 1)
     return "\n".join(lines)
 
 

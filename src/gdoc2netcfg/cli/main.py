@@ -3336,20 +3336,21 @@ def _power_graph(args: argparse.Namespace):
     graph = build_power_graph(records, hosts, bridge, config.site)
     for w in graph.warnings:
         print(f"warning: {w}", file=sys.stderr)
-    return graph
+    return graph, config.site.name
 
 
 def cmd_power_tree(args: argparse.Namespace) -> int:
     from gdoc2netcfg.supplements.power_topology import render_tree
 
-    print(render_tree(_power_graph(args)))
+    graph, site_name = _power_graph(args)
+    print(render_tree(graph, site_name))
     return 0
 
 
 def cmd_power_downstream(args: argparse.Namespace) -> int:
     from gdoc2netcfg.supplements.power_topology import downstream
 
-    graph = _power_graph(args)
+    graph, _ = _power_graph(args)
     if args.node not in graph.nodes:
         print(f"error: {args.node!r} is not a node in the power graph",
               file=sys.stderr)
@@ -3362,7 +3363,7 @@ def cmd_power_downstream(args: argparse.Namespace) -> int:
 def cmd_power_upstream(args: argparse.Namespace) -> int:
     from gdoc2netcfg.supplements.power_topology import render_upstream
 
-    graph = _power_graph(args)
+    graph, _ = _power_graph(args)
     if args.host not in graph.nodes:
         print(f"error: {args.host!r} is not a node in the power graph",
               file=sys.stderr)

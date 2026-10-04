@@ -84,8 +84,7 @@ LOCATION_MAP: dict[str, tuple[str, str | None]] = {
     "Monarto - Back Corner Room": ("Back Corner Room", None),
     "Monarto - Back Door near Shed": ("Back Door near Shed", None),
     "Monarto cabinet in dinning room": ("Dining Room", "in cabinet"),
-    "???? - Monarto?": ("", None),
-    "????": ("", None),
+    "????": ("", None),  # no site hint -> blank, Site left as-is
 }
 
 OFFLINE_SWITCHES = {
@@ -93,10 +92,14 @@ OFFLINE_SWITCHES = {
     "sw-edgecore-switch", "sw-cisco-shed",
 }
 SITE_CASE = {"Welland": "welland", "Monarto": "monarto", "Special": "special"}
-# A bare site name in the Location field belongs in the Site column: set Site
-# and clear Location (fixes blank-Site rows like light7/light8 that used
-# Location to record the site).
-SITE_AS_LOCATION = {"Monarto": "monarto", "Welland": "welland"}
+# A bare site name (or a site-hint placeholder) in the Location field belongs
+# in the Site column: set Site and clear Location (fixes blank-Site rows like
+# light7/light8 / rpi-sdr-rtlsdr-v4 that recorded the site in Location).
+SITE_AS_LOCATION = {"Monarto": "monarto", "Welland": "welland",
+                    "???? - Monarto?": "monarto"}
+# A 'Site - sublocation' prefix names the site; set Site (only when blank, so a
+# real Site value is never clobbered) — the LOCATION_MAP strips the prefix.
+SITE_PREFIXES = {"Welland": "welland", "Monarto": "monarto"}
 
 IOT_NEW_ROWS = [{
     "Machine": "ups-apc-srv3k", "Site": "welland",
@@ -142,6 +145,11 @@ def _edit_row(row: list[str], cols: dict[str, int], loc_col: str, notes_col: str
         return row != before
     if row[li] in SITE_AS_LOCATION:  # bare site name in Location -> Site column
         row[si], row[li] = SITE_AS_LOCATION[row[li]], ""
+    elif not row[si]:  # 'Site - sublocation' prefix names the site (Site blank)
+        for pfx, s in SITE_PREFIXES.items():
+            if row[li].startswith(pfx + " - "):
+                row[si] = s
+                break
     if ctrl_col and machine in IOT_CONTROLS:
         ci = cols[ctrl_col]
         _pad(row, ci)

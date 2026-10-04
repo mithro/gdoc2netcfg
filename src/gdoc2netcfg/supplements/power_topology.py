@@ -11,6 +11,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from gdoc2netcfg.utils.controls import parse_controls_cell, strip_interface_prefix
+from gdoc2netcfg.utils.location import parse_location_path
+
+_LOCATION_KEYS = ("Physical Location", "Location")
+
+
+def _record_location(record) -> str:
+    """Return a record's location cell (IoT ``Physical Location`` / Network ``Location``)."""
+    for key in _LOCATION_KEYS:
+        val = record.extra.get(key)
+        if val:
+            return val
+    return ""
 
 CATEGORIES = (
     "host", "tasmota", "zigbee", "poe",
@@ -37,6 +49,8 @@ class PowerNode:
     id: str        # canonical id: machine name, or "switch ifname" for a PoE port
     category: str  # one of CATEGORIES
     label: str     # display label
+    location: tuple[str, ...] = ()  # hierarchy path (e.g. ("Back Shed", "Rack"))
+    note: str = ""  # descriptive annotation (e.g. "monitored by rpi4-ups")
 
 
 @dataclass
@@ -122,7 +136,14 @@ def add_controls_edges(graph: PowerGraph, records, hosts, site) -> None:
     for r in in_site:
         if not r.machine:
             continue
-        graph.add_node(PowerNode(r.machine, _node_category(r), r.machine))
+        # Only infra nodes (ups/mains/busbar/strip) carry their Human Name as a
+        # descriptive note; a plug/host Human Name would just clutter the label.
+        note = r.extra.get("Human Name", "") if infra_category(r.machine) else ""
+        graph.add_node(PowerNode(
+            r.machine, _node_category(r), r.machine,
+            location=parse_location_path(_record_location(r)),
+            note=note,
+        ))
 
     for r in in_site:
         if not r.machine:

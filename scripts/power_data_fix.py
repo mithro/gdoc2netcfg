@@ -78,7 +78,6 @@ LOCATION_MAP: dict[str, tuple[str, str | None]] = {
     "Welland - Meter Box": ("Meter Box", None),
     "Parent's Bedroom": ("Parent's Bedroom", None),
     "With Tish": ("With Tish", None),
-    "Monarto": ("", None),
     "Monarto - Power Meter Box": ("Meter Box", None),
     "Monarto - Meter Box": ("Meter Box", None),
     "Monarto - Purple Bedroom": ("Purple Bedroom", None),
@@ -94,6 +93,10 @@ OFFLINE_SWITCHES = {
     "sw-edgecore-switch", "sw-cisco-shed",
 }
 SITE_CASE = {"Welland": "welland", "Monarto": "monarto", "Special": "special"}
+# A bare site name in the Location field belongs in the Site column: set Site
+# and clear Location (fixes blank-Site rows like light7/light8 that used
+# Location to record the site).
+SITE_AS_LOCATION = {"Monarto": "monarto", "Welland": "welland"}
 
 IOT_NEW_ROWS = [{
     "Machine": "ups-apc-srv3k", "Site": "welland",
@@ -137,6 +140,8 @@ def _edit_row(row: list[str], cols: dict[str, int], loc_col: str, notes_col: str
     if is_network and machine in OFFLINE_SWITCHES:
         row[si], row[li] = "special", ""
         return row != before
+    if row[li] in SITE_AS_LOCATION:  # bare site name in Location -> Site column
+        row[si], row[li] = SITE_AS_LOCATION[row[li]], ""
     if ctrl_col and machine in IOT_CONTROLS:
         ci = cols[ctrl_col]
         _pad(row, ci)

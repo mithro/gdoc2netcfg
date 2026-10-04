@@ -64,6 +64,21 @@ def test_bmc_without_parent_node_warns_no_edge():
     assert any("ghost" in w for w in g.warnings)
 
 
+def test_appliance_prefix_creates_valid_leaf():
+    rec = SimpleNamespace(
+        sheet_name="iot", machine="au-plug-3", site="welland", row_number=1,
+        extra={"Controls": "appliance: bar heater", "Physical Location": "Lounge"},
+    )
+    g = PowerGraph()
+    add_controls_edges(g, [rec], [], _site())
+    appl = [nid for nid, n in g.nodes.items() if n.category == "appliance"]
+    assert len(appl) == 1
+    assert g.nodes[appl[0]].label == "bar heater"
+    assert appl[0] in g.children_of("au-plug-3")
+    assert g.nodes[appl[0]].location == ("Lounge",)  # inherits controller location
+    assert not any("matches no known" in w for w in g.warnings)
+
+
 def test_host_with_bmc_substring_not_treated_as_bmc():
     # A first label that merely CONTAINS 'bmc' (e.g. 'webmc') is not a BMC;
     # a prefix match avoids a self-loop (hostname == machine_name) that would

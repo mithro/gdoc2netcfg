@@ -10,7 +10,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from gdoc2netcfg.utils.controls import parse_controls_cell, strip_interface_prefix
+from gdoc2netcfg.utils.controls import (
+    appliance_name,
+    parse_controls_cell,
+    strip_interface_prefix,
+)
 from gdoc2netcfg.utils.location import (
     location_key,
     natural_sort_key,
@@ -29,7 +33,7 @@ def _record_location(record) -> str:
     return ""
 
 CATEGORIES = (
-    "host", "tasmota", "zigbee", "poe", "bmc",
+    "host", "tasmota", "zigbee", "poe", "bmc", "appliance",
     "ups", "mains", "busbar", "strip", "unresolved",
 )
 
@@ -153,6 +157,17 @@ def add_controls_edges(graph: PowerGraph, records, hosts, site) -> None:
         if not r.machine:
             continue
         for raw in parse_controls_cell(r.extra.get("Controls", "")):
+            appl = appliance_name(raw)
+            if appl is not None:
+                # A non-network load (heater/AC/monitors): a valid leaf with no
+                # sheet row, inheriting the controller's location.
+                appl_id = f"appliance:{appl}"
+                graph.add_node(PowerNode(
+                    appl_id, "appliance", appl,
+                    location=parse_location_path(_record_location(r)),
+                ))
+                graph.add_edge(r.machine, appl_id)
+                continue
             target = resolver.resolve(raw)
             if target is None:
                 target = raw

@@ -551,7 +551,7 @@ def validate_controls(
     data-entry error that would otherwise surface only as a silent gap.
     """
     from gdoc2netcfg.supplements.power_topology import NameResolver
-    from gdoc2netcfg.utils.controls import parse_controls_cell
+    from gdoc2netcfg.utils.controls import appliance_name, parse_controls_cell
 
     result = ValidationResult()
     node_ids = {r.machine for r in records if getattr(r, "machine", "")}
@@ -562,6 +562,8 @@ def validate_controls(
 
     for r in records:
         for raw in parse_controls_cell(r.extra.get("Controls", "")):
+            if appliance_name(raw) is not None:
+                continue  # a declared non-network appliance load; always valid
             if resolver.resolve(raw) is None:
                 result.add(ConstraintViolation(
                     severity=Severity.ERROR,

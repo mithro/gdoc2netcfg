@@ -178,6 +178,19 @@ def test_render_multi_feed_flags_each_edge_independently():
     assert render_tree(g, "welland").count("⚠ loc=Garage") == 2
 
 
+def test_render_sublevel_is_not_a_cross_location():
+    # A child in a SUB-location of its parent's location is the same branch,
+    # not a divergence — no flag (e.g. a plug in the rack feeding the top shelf).
+    g = PowerGraph()
+    g.add_node(PowerNode("plug", "tasmota", "plug",
+                         location=("Back Shed", "Xmas Tree Rack")))
+    g.add_node(PowerNode("sw", "host", "sw",
+                         location=("Back Shed", "Xmas Tree Rack", "Top")))
+    g.add_edge("plug", "sw")
+    out = render_tree(g, "welland")
+    assert "⚠ loc=" not in out
+
+
 def test_render_unlocated_node_flagged_and_bucketed():
     # Review Focus #2: a node with no location is placed + flagged, not lost.
     g = PowerGraph()

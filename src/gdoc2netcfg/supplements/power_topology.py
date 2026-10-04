@@ -399,6 +399,18 @@ def _loc_display(path: tuple[str, ...]) -> str:
     return " - ".join(path)
 
 
+def _same_branch(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
+    """True if one location path is a prefix of the other (same branch).
+
+    A sub-location (``Rack`` vs ``Rack - Top``) is not a divergence, so it is
+    not flagged; only paths that differ at a shared level are cross-location.
+    """
+    ka = [location_key(s) for s in a]
+    kb = [location_key(s) for s in b]
+    n = min(len(ka), len(kb))
+    return ka[:n] == kb[:n]
+
+
 def _insert_root(tree: dict, path: tuple[str, ...], nid: str) -> None:
     """Insert a root id into the nested location tree under `path`."""
     node = tree
@@ -419,21 +431,20 @@ def render_tree(graph: PowerGraph, site_name: str) -> str:
     """
     lines: list[str] = [f"mains: meter-{site_name}"]
 
-    def walk(nid: str, parent_key: str, prefix: str, is_last: bool) -> None:
+    def walk(nid: str, parent_path: tuple[str, ...], prefix: str, is_last: bool) -> None:
         n = graph.nodes[nid]
         suffix = ""
         if not n.location:
             suffix = "  ⚠ loc unknown"
-        elif location_key(_loc_display(n.location)) != parent_key:
+        elif not _same_branch(n.location, parent_path):
             suffix = f"  ⚠ loc={_loc_display(n.location)}"
         connector = "└─ " if is_last else "├─ "
         lines.append(f"{prefix}{connector}{_label(graph, nid)}{suffix}")
         child_prefix = prefix + ("   " if is_last else "│  ")
-        my_key = location_key(_loc_display(n.location))
         kids = sorted(graph.children_of(nid),
                       key=lambda c: natural_sort_key(graph.nodes[c].label))
         for i, child in enumerate(kids):
-            walk(child, my_key, child_prefix, i == len(kids) - 1)
+            walk(child, n.location, child_prefix, i == len(kids) - 1)
 
     tree: dict = {}
     roots = sorted(graph.roots(),
@@ -448,8 +459,7 @@ def render_tree(graph: PowerGraph, site_name: str) -> str:
             lines.append(f"{indent}[{name}]")
             render_locs(node["sub"][name], depth + 1)
         for r in node.get("roots", []):
-            key = location_key(_loc_display(graph.nodes[r].location))
-            walk(r, key, indent, True)
+            walk(r, graph.nodes[r].location, indent, True)
 
     render_locs(tree, 1)
     return "\n".join(lines)

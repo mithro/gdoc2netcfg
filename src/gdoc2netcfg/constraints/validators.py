@@ -490,6 +490,41 @@ def validate_vlan_consistency(
     return result
 
 
+def validate_controls(
+    records: list[DeviceRecord],
+    hosts: list[Host],
+    site: Site,
+) -> ValidationResult:
+    """Every Controls target must resolve to a known node (ERROR, sheet contract).
+
+    The power topology treats an IoT/Zigbee ``Controls`` cell as power-delivery
+    edges; a value that names no host, plug, or declared infra node is a
+    data-entry error that would otherwise surface only as a silent gap.
+    """
+    from gdoc2netcfg.supplements.power_topology import NameResolver
+    from gdoc2netcfg.utils.controls import parse_controls_cell
+
+    result = ValidationResult()
+    node_ids = {r.machine for r in records if getattr(r, "machine", "")}
+    for h in hosts:
+        node_ids.add(h.machine_name)
+        node_ids.add(h.hostname)
+    resolver = NameResolver(node_ids, site.domain)
+
+    for r in records:
+        for raw in parse_controls_cell(r.extra.get("Controls", "")):
+            if resolver.resolve(raw) is None:
+                result.add(ConstraintViolation(
+                    severity=Severity.ERROR,
+                    code="controls_unresolved",
+                    message=(f"Controls target {raw!r} (from {r.machine!r}) "
+                             f"matches no known host/plug/infra node"),
+                    record_id=f"{r.sheet_name}:{r.row_number}",
+                    field="Controls",
+                ))
+    return result
+
+
 def validate_all(
     records: list[DeviceRecord],
     hosts: list[Host],
@@ -507,6 +542,7 @@ def validate_all(
         validate_vlan_consistency(records, inventory.site),
         validate_record_constraints(hosts, inventory.site),
         validate_cross_record_constraints(inventory),
+        validate_controls(records, hosts, inventory.site),
     ]:
         for violation in result.violations:
             combined.add(violation)

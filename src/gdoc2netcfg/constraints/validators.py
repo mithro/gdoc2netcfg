@@ -490,6 +490,55 @@ def validate_vlan_consistency(
     return result
 
 
+_LOCATION_KEYS = ("Physical Location", "Location")
+
+
+def _record_location(record: DeviceRecord) -> str:
+    for key in _LOCATION_KEYS:
+        val = record.extra.get(key)
+        if val:
+            return val
+    return ""
+
+
+def validate_locations(records: list[DeviceRecord]) -> ValidationResult:
+    """Confusable location spellings are an ERROR to reconcile (sheet contract).
+
+    Two cells that normalise to one key but differ in raw form (e.g.
+    ``Sound Proof Rack`` vs ``Soundproof Rack``) name one place two ways; the
+    location hierarchy cannot group them, so the fix is to make them identical.
+    Detection only — the raw values are never silently merged.
+    """
+    from gdoc2netcfg.utils.location import location_key
+
+    result = ValidationResult()
+    by_key: dict[str, set[str]] = {}
+    first_seen: dict[str, DeviceRecord] = {}
+    for r in records:
+        loc = _record_location(r)
+        if not loc:
+            continue
+        key = location_key(loc)
+        if not key:
+            continue
+        by_key.setdefault(key, set()).add(loc)
+        first_seen.setdefault(key, r)
+
+    for key, raws in by_key.items():
+        if len(raws) > 1:
+            r = first_seen[key]
+            result.add(ConstraintViolation(
+                severity=Severity.ERROR,
+                code="location_confusable",
+                message=("Confusable location spellings for one place: "
+                         + ", ".join(sorted(repr(x) for x in raws))
+                         + " — make them identical"),
+                record_id=f"{r.sheet_name}:{r.row_number}",
+                field="Location",
+            ))
+    return result
+
+
 def validate_controls(
     records: list[DeviceRecord],
     hosts: list[Host],
@@ -543,6 +592,7 @@ def validate_all(
         validate_record_constraints(hosts, inventory.site),
         validate_cross_record_constraints(inventory),
         validate_controls(records, hosts, inventory.site),
+        validate_locations(records),
     ]:
         for violation in result.violations:
             combined.add(violation)

@@ -25,7 +25,7 @@ def _record_location(record) -> str:
     return ""
 
 CATEGORIES = (
-    "host", "tasmota", "zigbee", "poe",
+    "host", "tasmota", "zigbee", "poe", "bmc",
     "ups", "mains", "busbar", "strip", "unresolved",
 )
 
@@ -159,6 +159,33 @@ def add_controls_edges(graph: PowerGraph, records, hosts, site) -> None:
             elif target not in graph.nodes:
                 graph.add_node(PowerNode(target, "host", target))
             graph.add_edge(r.machine, target)
+
+
+def _is_bmc_host(host) -> bool:
+    """A BMC host is one whose hostname's first label contains ``bmc``."""
+    return "bmc" in host.hostname.split(".")[0].lower()
+
+
+def add_bmc_edges(graph: PowerGraph, hosts) -> None:
+    """A BMC can power-cycle its host: edge ``bmc.<host> -> <host>``.
+
+    The BMC inherits its parent host's location. If the parent host has no
+    node (dropped/absent), the BMC node is still added and a warning recorded,
+    but no dangling edge is created.
+    """
+    for h in hosts:
+        if not _is_bmc_host(h):
+            continue
+        parent = h.machine_name
+        loc = graph.nodes[parent].location if parent in graph.nodes else ()
+        graph.add_node(PowerNode(h.hostname, "bmc", h.hostname, location=loc))
+        if parent in graph.nodes:
+            graph.add_edge(h.hostname, parent)
+        else:
+            graph.warnings.append(
+                f"BMC {h.hostname!r} has no node for its host {parent!r}; "
+                f"power-control edge omitted"
+            )
 
 
 _ADMIN_ON, _ADMIN_OFF = 1, 2
@@ -375,6 +402,7 @@ def build_power_graph(records, hosts, bridge, site) -> PowerGraph:
     """Assemble the full power graph for one site and run integrity checks."""
     graph = PowerGraph()
     add_controls_edges(graph, records, hosts, site)
+    add_bmc_edges(graph, hosts)
     node_ids = set(graph.nodes)
     for h in hosts:
         node_ids.add(h.machine_name)

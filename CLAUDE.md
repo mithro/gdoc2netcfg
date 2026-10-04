@@ -51,6 +51,9 @@ uv run gdoc2netcfg wifi show-login --all --json       # Same, for every WiFi-she
 uv run gdoc2netcfg zigbee scan --force     # Scan Zigbee2MQTT sites via MQTT
 uv run gdoc2netcfg zigbee show             # Show cached Zigbee device data
 uv run gdoc2netcfg zigbee update-sheet --dry-run  # Preview Zigbee sheet updates
+uv run gdoc2netcfg rpi-hardware scan --force  # Probe every Pi: HAT/bonnet, PoE source, FPGA board
+uv run gdoc2netcfg rpi-hardware show          # Show cached Pi hardware identity
+uv run gdoc2netcfg rpi-hardware update-sheet --dry-run  # Preview the RPi Hardware tab
 uv run gdoc2netcfg reachability publish --force    # One-shot MQTT publish
 uv run gdoc2netcfg reachability publish --daemon   # MQTT daemon (5min interval)
 uv run scripts/ha-create-reachability-dashboard.py # Generate & deploy HA dashboard

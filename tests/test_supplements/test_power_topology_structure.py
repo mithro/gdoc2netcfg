@@ -48,7 +48,8 @@ def test_bmc_powers_its_host():
     g = PowerGraph()
     g.add_node(PowerNode("big-storage", "host", "big-storage",
                          location=("Server Room",)))
-    bmc = SimpleNamespace(hostname="bmc.big-storage", machine_name="big-storage")
+    bmc = SimpleNamespace(hostname="bmc.big-storage", machine_name="big-storage",
+                          is_bmc=True)
     add_bmc_edges(g, [bmc])
     assert g.nodes["bmc.big-storage"].category == "bmc"
     assert "bmc.big-storage" in g.parents_of("big-storage")
@@ -58,7 +59,8 @@ def test_bmc_powers_its_host():
 
 def test_bmc_without_parent_node_warns_no_edge():
     g = PowerGraph()
-    add_bmc_edges(g, [SimpleNamespace(hostname="bmc.ghost", machine_name="ghost")])
+    add_bmc_edges(g, [SimpleNamespace(hostname="bmc.ghost", machine_name="ghost",
+                                      is_bmc=True)])
     assert "bmc.ghost" in g.nodes
     assert g.children_of("bmc.ghost") == set()
     assert any("ghost" in w for w in g.warnings)
@@ -79,13 +81,23 @@ def test_appliance_prefix_creates_valid_leaf():
     assert not any("matches no known" in w for w in g.warnings)
 
 
-def test_host_with_bmc_substring_not_treated_as_bmc():
-    # A first label that merely CONTAINS 'bmc' (e.g. 'webmc') is not a BMC;
-    # a prefix match avoids a self-loop (hostname == machine_name) that would
-    # otherwise raise PowerCycleError and break the whole power command.
+def test_bmc_named_host_without_flag_is_not_a_bmc():
+    # BMC-ness comes from host_builder's is_bmc flag (a derived bmc.<parent>
+    # host), NOT from the name. A standalone device whose own name starts with
+    # 'bmc' — e.g. 'bmc-panel' on the Network sheet, where hostname ==
+    # machine_name — must NOT be treated as a BMC: a name-based test would make
+    # add_bmc_edges create a self-loop (x -> x), which check_acyclic turns into
+    # a PowerCycleError that makes the whole `power` command refuse. 'webmc'
+    # (name merely contains 'bmc') must likewise stay a plain host.
     g = PowerGraph()
+    g.add_node(PowerNode("bmc-panel", "host", "bmc-panel"))
     g.add_node(PowerNode("webmc", "host", "webmc"))
-    add_bmc_edges(g, [SimpleNamespace(hostname="webmc", machine_name="webmc")])
+    add_bmc_edges(g, [
+        SimpleNamespace(hostname="bmc-panel", machine_name="bmc-panel", is_bmc=False),
+        SimpleNamespace(hostname="webmc", machine_name="webmc", is_bmc=False),
+    ])
+    assert g.nodes["bmc-panel"].category == "host"
+    assert "bmc-panel" not in g.children_of("bmc-panel")  # no self-loop
     assert g.nodes["webmc"].category == "host"
     assert "webmc" not in g.children_of("webmc")
 

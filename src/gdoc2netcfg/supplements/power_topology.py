@@ -181,14 +181,17 @@ def add_controls_edges(graph: PowerGraph, records, hosts, site) -> None:
 
 
 def _is_bmc_host(host) -> bool:
-    """A BMC host is one whose hostname's first label *starts with* ``bmc``.
+    """A BMC host is one host_builder derived from an ``interface="bmc"`` row.
 
-    A prefix (not substring) test: real BMC hosts are ``bmc.<host>`` /
-    ``bmc-alt.<host>`` etc. A substring test would misclassify a host like
-    ``webmc`` whose hostname equals its machine name, creating a self-loop
-    (``add_edge(x, x)``) that ``check_acyclic`` would reject.
+    Use the explicit ``is_bmc`` flag, never the hostname shape. A name-based
+    test (prefix or substring) misclassifies a standalone device whose own name
+    starts with ``bmc`` — e.g. a Network-sheet host ``bmc-panel`` where
+    ``hostname == machine_name`` — producing a self-loop (``add_edge(x, x)``)
+    that ``check_acyclic`` turns into a ``PowerCycleError``, which makes the
+    whole ``power`` command refuse. It also double-models an IoT device named
+    ``bmc-x`` (``bmc-x.iot -> bmc-x``). The flag has neither failure mode.
     """
-    return host.hostname.split(".")[0].lower().startswith("bmc")
+    return getattr(host, "is_bmc", False)
 
 
 def add_bmc_edges(graph: PowerGraph, hosts) -> None:

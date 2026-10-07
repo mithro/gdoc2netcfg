@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    import threading
+
     from gdoc2netcfg.models.host import Host
 
 
@@ -381,6 +383,7 @@ def check_all_hosts_reachability(
     hosts: list[Host],
     verbose: bool = False,
     max_workers: int = 64,
+    stop_event: threading.Event | None = None,
 ) -> dict[str, HostReachability]:
     """Ping all IPs for every host in parallel and return reachability state.
 
@@ -392,6 +395,9 @@ def check_all_hosts_reachability(
         hosts: Host objects with IPs to check.
         verbose: Print progress to stderr.
         max_workers: Maximum concurrent ping subprocesses.
+        stop_event: If set during the sweep, stop collecting results and
+            return what has been gathered so far without blocking on the
+            remaining pings.
 
     Returns:
         Mapping of hostname to HostReachability.
@@ -428,7 +434,9 @@ def check_all_hosts_reachability(
 
         print(file=sys.stderr)
 
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+    pool = ThreadPoolExecutor(max_workers=max_workers)
+    aborted = False
+    try:
         # Submit all pings up front, deduplicating IPs across interfaces.
         host_futures: list[
             tuple[Host, list[tuple[int, str, Future[PingResult]]]]
@@ -449,6 +457,10 @@ def check_all_hosts_reachability(
         # while remaining hosts continue pinging in the background.
         # Prints each host as soon as its pings complete.
         for host, ip_futures in host_futures:
+            if stop_event is not None and stop_event.is_set():
+                aborted = True
+                break
+
             active_ips: list[str] = []
             vi_count = len(host.virtual_interfaces)
             iface_pings: list[list[tuple[str, PingResult]]] = [
@@ -483,6 +495,10 @@ def check_all_hosts_reachability(
                     prefix=prefix,
                     use_color=color,
                 )
+    finally:
+        # On abort, cancel queued pings and don't block draining the
+        # in-flight ones — systemd's cgroup SIGTERM reaps the ping children.
+        pool.shutdown(wait=not aborted, cancel_futures=aborted)
 
     if verbose:
         print(file=sys.stderr)

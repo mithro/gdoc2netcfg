@@ -397,6 +397,7 @@ class Host:
     machine_name: str
     hostname: str
     sheet_type: str = "Network"
+    is_bmc: bool = False  # derived from an interface="bmc" row (a bmc.<parent> host)
     interfaces: list[NetworkInterface] = field(default_factory=list)
     sshfp_records: list[str] = field(default_factory=list)
     ssh_host_keys: list[str] = field(default_factory=list)

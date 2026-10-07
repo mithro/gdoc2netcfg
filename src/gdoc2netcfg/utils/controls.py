@@ -31,6 +31,22 @@ def parse_controls_cell(value: str) -> tuple[str, ...]:
     return tuple(c.strip() for c in re.split(r"[,\r\n]", value or "") if c.strip())
 
 
+_APPLIANCE_PREFIX = "appliance:"
+
+
+def appliance_name(raw: str) -> str | None:
+    """Return the appliance name if a Controls value is an ``appliance:`` target.
+
+    A plug can control a non-network load (a heater, AC, monitors) that has no
+    sheet row. ``"appliance: bar heater"`` -> ``"bar heater"``; a non-appliance
+    value -> ``None``. Case-insensitive on the prefix.
+    """
+    s = raw.strip()
+    if s.lower().startswith(_APPLIANCE_PREFIX):
+        return s[len(_APPLIANCE_PREFIX):].strip() or None
+    return None
+
+
 def strip_interface_prefix(desc: str) -> tuple[str, str]:
     """Split a port description into ``(interface, rest)``.
 

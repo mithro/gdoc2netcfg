@@ -233,6 +233,7 @@ def build_hosts(records: list[DeviceRecord], site: Site) -> list[Host]:
             machine_name=group[0].machine.lower(),
             hostname=hostname,
             sheet_type=sheet_type,
+            is_bmc=is_bmc_host,
             interfaces=interfaces,
             extra=extra,
             alt_names=alt_names,

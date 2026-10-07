@@ -3336,20 +3336,54 @@ def _power_graph(args: argparse.Namespace):
     graph = build_power_graph(records, hosts, bridge, config.site)
     for w in graph.warnings:
         print(f"warning: {w}", file=sys.stderr)
-    return graph
+    return graph, config.site.name
+
+
+def _power_graph_or_refuse(args: argparse.Namespace):
+    """Build the graph, or return None after refusing on a data violation.
+
+    A cycle (``PowerCycleError``) leaves no renderable graph, so it always
+    refuses (``--best-effort`` cannot help). Stale-switch violations are
+    bypassable with ``--best-effort``. All warnings are printed by
+    ``_power_graph`` already; this adds the refusal summary.
+    """
+    from gdoc2netcfg.supplements.power_topology import PowerCycleError
+
+    try:
+        graph, site_name = _power_graph(args)
+    except PowerCycleError as e:
+        print(f"error: {e}", file=sys.stderr)
+        print("error: refusing — the power graph has a cycle; fix the data",
+              file=sys.stderr)
+        return None
+
+    violations = [w for w in graph.warnings if "stale scan history" in w]
+    if violations and not args.best_effort:
+        print(f"error: refusing to render on {len(violations)} data "
+              f"violation(s); fix the data or pass --best-effort",
+              file=sys.stderr)
+        return None
+    return graph, site_name
 
 
 def cmd_power_tree(args: argparse.Namespace) -> int:
     from gdoc2netcfg.supplements.power_topology import render_tree
 
-    print(render_tree(_power_graph(args)))
+    result = _power_graph_or_refuse(args)
+    if result is None:
+        return 1
+    graph, site_name = result
+    print(render_tree(graph, site_name))
     return 0
 
 
 def cmd_power_downstream(args: argparse.Namespace) -> int:
     from gdoc2netcfg.supplements.power_topology import downstream
 
-    graph = _power_graph(args)
+    result = _power_graph_or_refuse(args)
+    if result is None:
+        return 1
+    graph, _ = result
     if args.node not in graph.nodes:
         print(f"error: {args.node!r} is not a node in the power graph",
               file=sys.stderr)
@@ -3362,7 +3396,10 @@ def cmd_power_downstream(args: argparse.Namespace) -> int:
 def cmd_power_upstream(args: argparse.Namespace) -> int:
     from gdoc2netcfg.supplements.power_topology import render_upstream
 
-    graph = _power_graph(args)
+    result = _power_graph_or_refuse(args)
+    if result is None:
+        return 1
+    graph, _ = result
     if args.host not in graph.nodes:
         print(f"error: {args.host!r} is not a node in the power graph",
               file=sys.stderr)
@@ -3770,7 +3807,9 @@ def main(argv: list[str] | None = None) -> int:
         "power", help="Power-dependency topology (read-only)",
     )
     power_subparsers = power_parser.add_subparsers(dest="power_command")
-    power_subparsers.add_parser("tree", help="Print the power hierarchy as a tree")
+    power_tree = power_subparsers.add_parser(
+        "tree", help="Print the power hierarchy as a tree",
+    )
     power_down = power_subparsers.add_parser(
         "downstream", help="What loses power if a node is toggled off",
     )
@@ -3779,6 +3818,11 @@ def main(argv: list[str] | None = None) -> int:
         "upstream", help="What controls power to a host",
     )
     power_up.add_argument("host", help="Host machine name")
+    for p in (power_tree, power_down, power_up):
+        p.add_argument(
+            "--best-effort", action="store_true",
+            help="Render despite stale-switch/data violations (default: refuse)",
+        )
 
     args = parser.parse_args(argv)
 

@@ -10,10 +10,30 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from gdoc2netcfg.utils.controls import parse_controls_cell, strip_interface_prefix
+from gdoc2netcfg.utils.controls import (
+    appliance_name,
+    parse_controls_cell,
+    strip_interface_prefix,
+)
+from gdoc2netcfg.utils.location import (
+    location_key,
+    natural_sort_key,
+    parse_location_path,
+)
+
+_LOCATION_KEYS = ("Physical Location", "Location")
+
+
+def _record_location(record) -> str:
+    """Return a record's location cell (IoT ``Physical Location`` / Network ``Location``)."""
+    for key in _LOCATION_KEYS:
+        val = record.extra.get(key)
+        if val:
+            return val
+    return ""
 
 CATEGORIES = (
-    "host", "tasmota", "zigbee", "poe",
+    "host", "tasmota", "zigbee", "poe", "bmc", "appliance",
     "ups", "mains", "busbar", "strip", "unresolved",
 )
 
@@ -37,6 +57,8 @@ class PowerNode:
     id: str        # canonical id: machine name, or "switch ifname" for a PoE port
     category: str  # one of CATEGORIES
     label: str     # display label
+    location: tuple[str, ...] = ()  # hierarchy path (e.g. ("Back Shed", "Rack"))
+    note: str = ""  # descriptive annotation (e.g. "monitored by rpi4-ups")
 
 
 @dataclass
@@ -122,12 +144,30 @@ def add_controls_edges(graph: PowerGraph, records, hosts, site) -> None:
     for r in in_site:
         if not r.machine:
             continue
-        graph.add_node(PowerNode(r.machine, _node_category(r), r.machine))
+        # Only infra nodes (ups/mains/busbar/strip) carry their Human Name as a
+        # descriptive note; a plug/host Human Name would just clutter the label.
+        note = r.extra.get("Human Name", "") if infra_category(r.machine) else ""
+        graph.add_node(PowerNode(
+            r.machine, _node_category(r), r.machine,
+            location=parse_location_path(_record_location(r)),
+            note=note,
+        ))
 
     for r in in_site:
         if not r.machine:
             continue
         for raw in parse_controls_cell(r.extra.get("Controls", "")):
+            appl = appliance_name(raw)
+            if appl is not None:
+                # A non-network load (heater/AC/monitors): a valid leaf with no
+                # sheet row, inheriting the controller's location.
+                appl_id = f"appliance:{appl}"
+                graph.add_node(PowerNode(
+                    appl_id, "appliance", appl,
+                    location=parse_location_path(_record_location(r)),
+                ))
+                graph.add_edge(r.machine, appl_id)
+                continue
             target = resolver.resolve(raw)
             if target is None:
                 target = raw
@@ -138,6 +178,42 @@ def add_controls_edges(graph: PowerGraph, records, hosts, site) -> None:
             elif target not in graph.nodes:
                 graph.add_node(PowerNode(target, "host", target))
             graph.add_edge(r.machine, target)
+
+
+def _is_bmc_host(host) -> bool:
+    """A BMC host is one host_builder derived from an ``interface="bmc"`` row.
+
+    Use the explicit ``is_bmc`` flag, never the hostname shape. A name-based
+    test (prefix or substring) misclassifies a standalone device whose own name
+    starts with ``bmc`` — e.g. a Network-sheet host ``bmc-panel`` where
+    ``hostname == machine_name`` — producing a self-loop (``add_edge(x, x)``)
+    that ``check_acyclic`` turns into a ``PowerCycleError``, which makes the
+    whole ``power`` command refuse. It also double-models an IoT device named
+    ``bmc-x`` (``bmc-x.iot -> bmc-x``). The flag has neither failure mode.
+    """
+    return getattr(host, "is_bmc", False)
+
+
+def add_bmc_edges(graph: PowerGraph, hosts) -> None:
+    """A BMC can power-cycle its host: edge ``bmc.<host> -> <host>``.
+
+    The BMC inherits its parent host's location. If the parent host has no
+    node (dropped/absent), the BMC node is still added and a warning recorded,
+    but no dangling edge is created.
+    """
+    for h in hosts:
+        if not _is_bmc_host(h):
+            continue
+        parent = h.machine_name
+        loc = graph.nodes[parent].location if parent in graph.nodes else ()
+        graph.add_node(PowerNode(h.hostname, "bmc", h.hostname, location=loc))
+        if parent in graph.nodes:
+            graph.add_edge(h.hostname, parent)
+        else:
+            graph.warnings.append(
+                f"BMC {h.hostname!r} has no node for its host {parent!r}; "
+                f"power-control edge omitted"
+            )
 
 
 _ADMIN_ON, _ADMIN_OFF = 1, 2
@@ -183,14 +259,14 @@ def add_poe_edges(graph: PowerGraph, bridge, resolver: NameResolver) -> None:
     for switch, doc in sorted(bridge.items()):
         switch_id = _match_switch_node(graph, switch)
         if switch_id is None:
-            # Not referenced by any Controls cell — still a real PoE source.
-            # Never silently drop it: add the switch as a node and warn.
-            switch_id = switch
-            graph.add_node(PowerNode(switch, "host", switch))
+            # A bridge switch with no node in the current inventory is stale
+            # scan history (the bridge scan never tombstones a vanished switch).
+            # Exclude its PoE subtree and surface it as a violation.
             graph.warnings.append(
-                f"bridge switch {switch!r} not referenced by any Controls cell; "
-                f"including its PoE subtree as a root"
+                f"bridge switch {switch!r} is not in current inventory — "
+                f"stale scan history; its PoE subtree is excluded"
             )
+            continue
         names = dict(doc.get("port_names", ()))
         aliases = {p: a for p, a in doc.get("port_aliases", ())}
         lldp = {lp: sn for lp, sn, *_ in doc.get("lldp_neighbors", ())}
@@ -318,27 +394,77 @@ def upstream_levels(graph: PowerGraph, node_id: str) -> list[list[str]]:
 
 def _label(graph: PowerGraph, nid: str) -> str:
     n = graph.nodes[nid]
-    return f"{n.category}: {n.label}"
+    base = f"{n.category}: {n.label}"
+    return f"{base} ({n.note})" if n.note else base
 
 
-def render_tree(graph: PowerGraph) -> str:
-    """ASCII tree of the power hierarchy (roots at top, children indented)."""
-    lines: list[str] = []
+def _loc_display(path: tuple[str, ...]) -> str:
+    return " - ".join(path)
 
-    def walk(nid: str, prefix: str, is_root: bool, is_last: bool) -> None:
-        if is_root:
-            lines.append(_label(graph, nid))
-            child_prefix = ""
-        else:
-            connector = "└─ " if is_last else "├─ "
-            lines.append(f"{prefix}{connector}{_label(graph, nid)}")
-            child_prefix = prefix + ("   " if is_last else "│  ")
-        kids = sorted(graph.children_of(nid))
+
+def _same_branch(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
+    """True if one location path is a prefix of the other (same branch).
+
+    A sub-location (``Rack`` vs ``Rack - Top``) is not a divergence, so it is
+    not flagged; only paths that differ at a shared level are cross-location.
+    """
+    ka = [location_key(s) for s in a]
+    kb = [location_key(s) for s in b]
+    n = min(len(ka), len(kb))
+    return ka[:n] == kb[:n]
+
+
+def _insert_root(tree: dict, path: tuple[str, ...], nid: str) -> None:
+    """Insert a root id into the nested location tree under `path`."""
+    node = tree
+    for seg in path:
+        node = node.setdefault("sub", {}).setdefault(seg, {})
+    node.setdefault("roots", []).append(nid)
+
+
+def render_tree(graph: PowerGraph, site_name: str) -> str:
+    """Meter-rooted, location-grouped ASCII tree.
+
+    Line 1 is the synthetic site meter. Power roots are grouped under a
+    nested location tree keyed by each root's location path; each root's
+    power subtree is walked via child edges, siblings natural-sorted. A
+    child whose location diverges from its parent's is flagged, as is a
+    placed node with no location. Meter/location lines are presentation
+    only — no graph nodes or edges are added.
+    """
+    lines: list[str] = [f"mains: meter-{site_name}"]
+
+    def walk(nid: str, parent_path: tuple[str, ...], prefix: str, is_last: bool) -> None:
+        n = graph.nodes[nid]
+        suffix = ""
+        if not n.location:
+            suffix = "  ⚠ loc unknown"
+        elif not _same_branch(n.location, parent_path):
+            suffix = f"  ⚠ loc={_loc_display(n.location)}"
+        connector = "└─ " if is_last else "├─ "
+        lines.append(f"{prefix}{connector}{_label(graph, nid)}{suffix}")
+        child_prefix = prefix + ("   " if is_last else "│  ")
+        kids = sorted(graph.children_of(nid),
+                      key=lambda c: natural_sort_key(graph.nodes[c].label))
         for i, child in enumerate(kids):
-            walk(child, child_prefix, False, i == len(kids) - 1)
+            walk(child, n.location, child_prefix, i == len(kids) - 1)
 
-    for root in graph.roots():
-        walk(root, "", True, True)
+    tree: dict = {}
+    roots = sorted(graph.roots(),
+                   key=lambda r: natural_sort_key(graph.nodes[r].label))
+    for r in roots:
+        path = graph.nodes[r].location or ("[unknown location]",)
+        _insert_root(tree, path, r)
+
+    def render_locs(node: dict, depth: int) -> None:
+        indent = "   " * depth
+        for name in sorted(node.get("sub", {}), key=natural_sort_key):
+            lines.append(f"{indent}[{name}]")
+            render_locs(node["sub"][name], depth + 1)
+        for r in node.get("roots", []):
+            walk(r, graph.nodes[r].location, indent, True)
+
+    render_locs(tree, 1)
     return "\n".join(lines)
 
 
@@ -354,6 +480,7 @@ def build_power_graph(records, hosts, bridge, site) -> PowerGraph:
     """Assemble the full power graph for one site and run integrity checks."""
     graph = PowerGraph()
     add_controls_edges(graph, records, hosts, site)
+    add_bmc_edges(graph, hosts)
     node_ids = set(graph.nodes)
     for h in hosts:
         node_ids.add(h.machine_name)

@@ -490,6 +490,98 @@ def validate_vlan_consistency(
     return result
 
 
+_LOCATION_KEYS = ("Physical Location", "Location")
+
+
+def _record_location(record: DeviceRecord) -> str:
+    for key in _LOCATION_KEYS:
+        val = record.extra.get(key)
+        if val:
+            return val
+    return ""
+
+
+def validate_locations(records: list[DeviceRecord]) -> ValidationResult:
+    """Confusable location spellings are an ERROR to reconcile (sheet contract).
+
+    Two cells that normalise to one key but differ in raw form (e.g.
+    ``Sound Proof Rack`` vs ``Soundproof Rack``) name one place two ways; the
+    location hierarchy cannot group them, so the fix is to make them identical.
+    Detection only — the raw values are never silently merged.
+    """
+    from gdoc2netcfg.utils.location import location_key, parse_location_path
+
+    result = ValidationResult()
+    by_key: dict[str, set[str]] = {}
+    first_seen: dict[str, DeviceRecord] = {}
+    for r in records:
+        loc = _record_location(r)
+        if not loc:
+            continue
+        key = location_key(loc)
+        if not key:
+            continue
+        # Compare the CANONICAL hierarchy path the renderer actually groups by
+        # (parse_location_path strips each segment), not the raw cell — else a
+        # value differing only in leading/trailing/separator whitespace is
+        # flagged as confusable and blocks generate, while the tree groups them
+        # as one. Only genuinely distinct parsed paths under a shared key remain.
+        canon = " - ".join(parse_location_path(loc))
+        by_key.setdefault(key, set()).add(canon)
+        first_seen.setdefault(key, r)
+
+    for key, raws in by_key.items():
+        if len(raws) > 1:
+            r = first_seen[key]
+            result.add(ConstraintViolation(
+                severity=Severity.ERROR,
+                code="location_confusable",
+                message=("Confusable location spellings for one place: "
+                         + ", ".join(sorted(repr(x) for x in raws))
+                         + " — make them identical"),
+                record_id=f"{r.sheet_name}:{r.row_number}",
+                field="Location",
+            ))
+    return result
+
+
+def validate_controls(
+    records: list[DeviceRecord],
+    hosts: list[Host],
+    site: Site,
+) -> ValidationResult:
+    """Every Controls target must resolve to a known node (ERROR, sheet contract).
+
+    The power topology treats an IoT/Zigbee ``Controls`` cell as power-delivery
+    edges; a value that names no host, plug, or declared infra node is a
+    data-entry error that would otherwise surface only as a silent gap.
+    """
+    from gdoc2netcfg.supplements.power_topology import NameResolver
+    from gdoc2netcfg.utils.controls import appliance_name, parse_controls_cell
+
+    result = ValidationResult()
+    node_ids = {r.machine for r in records if getattr(r, "machine", "")}
+    for h in hosts:
+        node_ids.add(h.machine_name)
+        node_ids.add(h.hostname)
+    resolver = NameResolver(node_ids, site.domain)
+
+    for r in records:
+        for raw in parse_controls_cell(r.extra.get("Controls", "")):
+            if appliance_name(raw) is not None:
+                continue  # a declared non-network appliance load; always valid
+            if resolver.resolve(raw) is None:
+                result.add(ConstraintViolation(
+                    severity=Severity.ERROR,
+                    code="controls_unresolved",
+                    message=(f"Controls target {raw!r} (from {r.machine!r}) "
+                             f"matches no known host/plug/infra node"),
+                    record_id=f"{r.sheet_name}:{r.row_number}",
+                    field="Controls",
+                ))
+    return result
+
+
 def validate_all(
     records: list[DeviceRecord],
     hosts: list[Host],
@@ -507,6 +599,8 @@ def validate_all(
         validate_vlan_consistency(records, inventory.site),
         validate_record_constraints(hosts, inventory.site),
         validate_cross_record_constraints(inventory),
+        validate_controls(records, hosts, inventory.site),
+        validate_locations(records),
     ]:
         for violation in result.violations:
             combined.add(violation)

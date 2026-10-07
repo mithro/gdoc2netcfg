@@ -85,3 +85,35 @@ def test_power_upstream_unknown_node_exit_1(capsys):
         for p in ctx:
             p.stop()
     assert "nonexistent" in capsys.readouterr().err
+
+
+def _stale_bridge():
+    return {"sw-ghost": {"port_names": [(1, "1/0/1")],
+                         "poe_status": [(1, 1, 3)],
+                         "lldp_neighbors": [(1, "desktop", "x", "y", None)]}}
+
+
+def test_power_tree_refuses_on_stale_switch(capsys):
+    recs = [_rec("au-plug-4", "desktop")]
+    ctx = _patchers(recs, bridge=_stale_bridge())
+    for p in ctx:
+        p.start()
+    try:
+        assert main(["power", "tree"]) == 1
+    finally:
+        for p in ctx:
+            p.stop()
+    assert "stale" in capsys.readouterr().err.lower()
+
+
+def test_power_tree_best_effort_renders_anyway(capsys):
+    recs = [_rec("au-plug-4", "desktop")]
+    ctx = _patchers(recs, bridge=_stale_bridge())
+    for p in ctx:
+        p.start()
+    try:
+        assert main(["power", "tree", "--best-effort"]) == 0
+    finally:
+        for p in ctx:
+            p.stop()
+    assert "mains: meter-welland" in capsys.readouterr().out

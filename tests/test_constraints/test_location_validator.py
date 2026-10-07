@@ -33,3 +33,16 @@ def test_network_location_column_also_checked():
         _rec("b", "server  room", key="Location", sheet="network", row=2),
     ]
     assert any(v.code == "location_confusable" for v in validate_locations(recs).violations)
+
+
+def test_trailing_whitespace_is_not_confusable():
+    # Leading/trailing whitespace parses to the SAME location path (the renderer
+    # strips it), so it must NOT be an ERROR that blocks generate.
+    recs = [_rec("a", "Back Shed"), _rec("b", "Back Shed ", row=2)]
+    assert validate_locations(recs).violations == []
+
+
+def test_separator_spacing_is_not_confusable():
+    # Extra spaces around the ' - ' separator parse to the same path too.
+    recs = [_rec("a", "Back Shed - Rack"), _rec("b", "Back Shed -  Rack", row=2)]
+    assert validate_locations(recs).violations == []

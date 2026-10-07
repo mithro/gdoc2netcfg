@@ -509,7 +509,7 @@ def validate_locations(records: list[DeviceRecord]) -> ValidationResult:
     location hierarchy cannot group them, so the fix is to make them identical.
     Detection only — the raw values are never silently merged.
     """
-    from gdoc2netcfg.utils.location import location_key
+    from gdoc2netcfg.utils.location import location_key, parse_location_path
 
     result = ValidationResult()
     by_key: dict[str, set[str]] = {}
@@ -521,7 +521,13 @@ def validate_locations(records: list[DeviceRecord]) -> ValidationResult:
         key = location_key(loc)
         if not key:
             continue
-        by_key.setdefault(key, set()).add(loc)
+        # Compare the CANONICAL hierarchy path the renderer actually groups by
+        # (parse_location_path strips each segment), not the raw cell — else a
+        # value differing only in leading/trailing/separator whitespace is
+        # flagged as confusable and blocks generate, while the tree groups them
+        # as one. Only genuinely distinct parsed paths under a shared key remain.
+        canon = " - ".join(parse_location_path(loc))
+        by_key.setdefault(key, set()).add(canon)
         first_seen.setdefault(key, r)
 
     for key, raws in by_key.items():

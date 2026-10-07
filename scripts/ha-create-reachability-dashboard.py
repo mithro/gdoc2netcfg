@@ -26,6 +26,7 @@ from pathlib import Path
 
 from gdoc2netcfg.config import load_config
 from gdoc2netcfg.models.addressing import IPv6Address
+from gdoc2netcfg.utils.controls import strip_interface_prefix
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -209,20 +210,6 @@ def _build_controls_map(
         r"^sensor\.(.+)_port_(\d+)_description$",
     )
 
-    # Regex to strip interface-name prefixes from port descriptions.
-    _iface_pfx_re = re.compile(
-        r"^(?:"
-        r"eth\d+|eth-\w+"               # eth0, eth9, eth-local, eth-uplink
-        r"|eno\d+|enp\w+|en\d+"         # eno1, enp3s0, en1
-        r"|lan\d*"                       # lan, lan0
-        r"|(?:10|25|40|100)g\d+"         # 10g1, 25g1, 40g1, 100g1
-        r"|oob\d+"                       # oob1, oob2
-        r"|gi\d+|te\d+|xe\d+|fo\d+"     # gi27, te1 (Cisco/Juniper)
-        r"|lag\d*"                       # lag, lag1
-        r"|\d+(?:/[\w]+)+"              # 1/0/49, 1/xg51 (slot/port)
-        r")\.",                          # followed by dot
-    )
-
     # Reverse lookup: map all known host identifiers to machine_name
     # so port descriptions like "bmc.big-storage" (hostname) match
     # machine_name "big-storage".
@@ -248,9 +235,7 @@ def _build_controls_map(
         if not desc:
             continue
 
-        m2 = _iface_pfx_re.match(desc)
-        iface_name = desc[: m2.end() - 1] if m2 else ""  # strip trailing dot
-        stripped = desc[m2.end():] if m2 else desc
+        iface_name, stripped = strip_interface_prefix(desc)
 
         # Resolve to machine_name via reverse lookup
         machine = name_to_machine.get(stripped)

@@ -36,7 +36,7 @@ class TestLoadConfig:
         # Reserved settings keys must not leak into the sheet-URL list,
         # and the example's [sheets] creds must parse into SheetsConfig.
         assert set(sheet_names) == {
-            "network", "iot", "vlan_allocations", "sites", "wifi"}
+            "network", "iot", "vlan_allocations", "sites", "wifi", "zigbee"}
         assert config.sheets_config.credentials_file == ""
         assert config.sheets_config.token_cache == ".cache/google_oauth_token.json"
 

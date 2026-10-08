@@ -40,11 +40,13 @@ def is_record_for_site(record: DeviceRecord, site: Site) -> bool:
 
     Rules:
     - If the record's site field is empty, it applies to all sites.
+    - If the record's site field is "roam", it applies to all sites (served
+      at both welland and monarto) — the explicit form of "both sites".
     - If the record's site field matches the site name (case-insensitive),
       it applies.
     - Otherwise, the record belongs to a different site and is skipped.
     """
-    if not record.site:
+    if not record.site or record.site.lower() == "roam":
         return True
     return record.site.lower() == site.name.lower()
 

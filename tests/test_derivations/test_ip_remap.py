@@ -106,9 +106,30 @@ class TestIsRecordForSite:
         site = _site("welland", site_octet=1)
         assert is_record_for_site(_record("10.2.10.1", site="monarto"), site) is False
 
+    def test_roam_served_at_welland(self):
+        """A roam record is served wherever the pipeline runs (both sites)."""
+        site = _site("welland", site_octet=1)
+        assert is_record_for_site(_record("10.X.20.5", site="roam"), site) is True
+
+    def test_roam_served_at_monarto(self):
+        site = _site("monarto", site_octet=2)
+        assert is_record_for_site(_record("10.X.20.5", site="roam"), site) is True
+
+    def test_roam_is_case_insensitive(self):
+        site = _site("monarto", site_octet=2)
+        assert is_record_for_site(_record("10.X.20.5", site="Roam"), site) is True
+
 
 class TestFilterAndResolveRecords:
     """Integration: filter by site and resolve X placeholders."""
+
+    def test_roam_record_resolves_octet_per_site(self):
+        """A roam record survives the filter AND its 10.X octet substitutes."""
+        site = _site("monarto", site_octet=2)
+        records = [_record("10.X.20.5", site="roam", machine="laptop1")]
+        result = filter_and_resolve_records(records, site)
+        assert len(result) == 1
+        assert result[0].ip == "10.2.20.5"
 
     def test_multi_site_record_resolved(self):
         """Record with X and no site → resolved for monarto."""

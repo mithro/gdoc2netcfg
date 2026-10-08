@@ -144,7 +144,7 @@ def _enrich_all_sites_from_sheet(config, csv_data: list[tuple[str, str]]) -> Non
 
     No TOML fallback.  If a Sites sheet is configured under [sheets] but is
     unavailable or empty, that is a hard error — an empty all_sites would
-    silently disable site validation (see ip_remap._validate_site_values).
+    silently disable site validation (see constraints.validators.validate_sites).
     If no Sites sheet is configured at all, all_sites is left empty and site
     validation is simply skipped (the historical optional behaviour).
     """

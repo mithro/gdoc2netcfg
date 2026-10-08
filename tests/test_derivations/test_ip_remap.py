@@ -1,7 +1,5 @@
 """Tests for IPv4 site remapping: X-placeholder resolution and site filtering."""
 
-import pytest
-
 from gdoc2netcfg.derivations.ip_remap import (
     filter_and_resolve_records,
     is_record_for_site,
@@ -226,7 +224,10 @@ class TestFilterAndResolveRecords:
 
 
 class TestSiteValidation:
-    """Validate that site column values are recognized site names."""
+    """Site filtering by the Site column. Recognising/rejecting unknown Site
+    values is no longer done here (it crashed the run); that is now the
+    graceful ``validate_sites`` ERROR — see test_constraints/test_site_validator.
+    """
 
     def _site_with_all(self, name: str = "welland", site_octet: int = 1) -> Site:
         return Site(
@@ -236,12 +237,13 @@ class TestSiteValidation:
             all_sites=("welland", "monarto", "ps1"),
         )
 
-    def test_invalid_site_raises(self):
-        """A site value not in all_sites raises ValueError."""
+    def test_unrecognised_site_is_filtered_not_raised(self):
+        """An unknown Site value no longer raises — it simply fails to match
+        the current site and is dropped (the validator reports it separately)."""
         site = self._site_with_all()
         records = [_record("10.X.90.1", site="Back Shed", machine="au-plug-28")]
-        with pytest.raises(ValueError, match="invalid site value 'Back Shed'"):
-            filter_and_resolve_records(records, site)
+        result = filter_and_resolve_records(records, site)
+        assert result == []
 
     def test_valid_other_site_filtered_not_rejected(self):
         """A valid site name for another site is filtered out, not rejected."""
@@ -281,19 +283,10 @@ class TestSiteValidation:
         assert len(result) == 0  # Filtered out but not rejected
 
     def test_section_header_without_machine_skipped(self):
-        """Rows without a machine name (section headers) skip validation."""
+        """Rows without a machine name (section headers) are filtered out."""
         site = self._site_with_all()
         records = [_record("", site="Build Farm", machine="")]
-        # Should not raise — no machine means it's a section header
+        # No machine (section header); an unknown Site here is not matched and
+        # the row is dropped — and validate_sites skips machine-less rows too.
         result = filter_and_resolve_records(records, site)
         assert len(result) == 0
-
-    def test_error_message_includes_context(self):
-        """Error message includes sheet, row, machine, and valid sites."""
-        site = self._site_with_all()
-        records = [DeviceRecord(
-            sheet_name="iot", row_number=42,
-            machine="au-plug-28", ip="10.X.90.78", site="Back Shed",
-        )]
-        with pytest.raises(ValueError, match=r"iot row 42.*au-plug-28.*welland, monarto, ps1"):
-            filter_and_resolve_records(records, site)

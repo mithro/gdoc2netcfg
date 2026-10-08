@@ -61,3 +61,20 @@ def test_roam_with_site_literal_ip_is_flagged():
 def test_existing_value_preserved_as_low_confidence_when_no_live_evidence():
     p = classify_site(ev(current_site="welland"))
     assert p.suggested == "welland" and p.confidence == "low"
+
+
+def test_discovery_db_opened_read_only(monkeypatch):
+    # The proposal is read-only: it must open discovery.db with read_only=True
+    # (mode=ro), or a non-root run fails on the root-owned prod DB and a root
+    # run takes write locks on the DB the reachability daemon is writing.
+    import gdoc2netcfg.storage.discovery_db as dmod
+
+    calls = {}
+
+    class _Rec:
+        def __init__(self, path, *, read_only=False):
+            calls["path"], calls["read_only"] = path, read_only
+
+    monkeypatch.setattr(dmod, "DiscoveryDB", _Rec)
+    site_populate._open_readonly("some/discovery.db")
+    assert calls == {"path": "some/discovery.db", "read_only": True}

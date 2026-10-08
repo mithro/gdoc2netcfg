@@ -75,6 +75,18 @@ def classify_site(ev: SiteEvidence) -> SiteProposal:
 # ---------------------------------------------------------------------------
 
 
+def _open_readonly(path):
+    """Open a discovery.db read-only (mode=ro).
+
+    The proposal only reads: read_only keeps a non-root run working against
+    the root-owned prod DB and never takes write locks on the live DB the
+    reachability daemon is writing.
+    """
+    from gdoc2netcfg.storage.discovery_db import DiscoveryDB
+
+    return DiscoveryDB(path, read_only=True)
+
+
 def _reachable_hostnames(db) -> set[str]:
     """Short machine names that answered a ping in the latest reachability scan.
 
@@ -152,7 +164,6 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
 
     from gdoc2netcfg.config import load_config
-    from gdoc2netcfg.storage.discovery_db import DiscoveryDB
 
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--config", default=None,
@@ -176,11 +187,11 @@ def main(argv: list[str] | None = None) -> int:
 
     config = load_config(args.config)
     roam_octets = _roam_third_octets(config.site, args.roam_vlan)
-    with DiscoveryDB(config.cache.discovery_db_path) as wdb:
+    with _open_readonly(config.cache.discovery_db_path) as wdb:
         welland_up = _reachable_hostnames(wdb)
     monarto_up: set[str] = set()
     if args.monarto_db:
-        with DiscoveryDB(args.monarto_db) as mdb:
+        with _open_readonly(args.monarto_db) as mdb:
             monarto_up = _reachable_hostnames(mdb)
 
     counts: dict[str, int] = {}

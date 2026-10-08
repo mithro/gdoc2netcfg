@@ -63,6 +63,66 @@ def test_existing_value_preserved_as_low_confidence_when_no_live_evidence():
     assert p.suggested == "welland" and p.confidence == "low"
 
 
+def test_roam_octets_from_vlan_csv(tmp_path):
+    p = tmp_path / "vlan_allocations.csv"
+    p.write_text(
+        "VLAN ID,VLAN Name,Subnet,Mask,CIDR,,,Colour,Notes\n"
+        "10,int,10.X.10.X,255.255.255.0,/24,,,Grey,infra\n"
+        "20,roam,10.X.20.X,255.255.255.0,/24,,,Purple,WiFi and wired hosts\n"
+    )
+    assert site_populate._roam_octets_from_csv(p, "roam") == {20}
+
+
+def test_roam_octets_from_real_header(tmp_path):
+    # The live VLAN Allocations CSV labels the subnet column "IP Range".
+    p = tmp_path / "vlan_allocations.csv"
+    p.write_text(
+        "VLAN,Name,IP Range,Netmask,CIDR,,,Color,For\n"
+        "10,int,10.X.10.X,255.255.248.0,/21,,,Blue,Internal wired hosts\n"
+        "20,roam,10.X.20.X,255.255.255.0,/24,,,Purple,WiFi and wired hosts\n"
+    )
+    assert site_populate._roam_octets_from_csv(p, "roam") == {20}
+
+
+def test_roam_octets_absent_vlan_is_empty(tmp_path):
+    p = tmp_path / "vlan_allocations.csv"
+    p.write_text("VLAN ID,VLAN Name,Subnet\n10,int,10.X.10.X\n")
+    assert site_populate._roam_octets_from_csv(p, "roam") == set()
+
+
+def test_norm_mac():
+    assert site_populate._norm_mac("aa:bb:cc:dd:ee:ff") == "AA:BB:CC:DD:EE:FF"
+    assert site_populate._norm_mac("AA-BB-CC-DD-EE-FF") == "AA:BB:CC:DD:EE:FF"
+    assert site_populate._norm_mac("  aa:bb:cc:dd:ee:ff ") == "AA:BB:CC:DD:EE:FF"
+    assert site_populate._norm_mac("none") is None
+    assert site_populate._norm_mac("") is None
+
+
+def test_base_machine_strips_aggregate_suffix():
+    assert site_populate._base_machine("desktop - 12") == "desktop"
+    assert site_populate._base_machine("big-storage - 15") == "big-storage"
+    assert site_populate._base_machine("power9-a - 17") == "power9-a"
+    assert site_populate._base_machine("desktop") == "desktop"
+    assert site_populate._base_machine("left.nvmeof") == "left.nvmeof"
+
+
+def test_residual_site_welland_rules():
+    for m in ("sw-bb-100g", "ports.sw-bb-25g", "sw-netgear-m4300-16x-poe-s1",
+              "sw-netgear-poe-micro1", "power9-a", "power9-b", "desktop",
+              "left.nvmeof", "right.nvmeof", "hifive-unmatched-1", "dell-c410x-2"):
+        assert site_populate._residual_site(m) == "welland", m
+
+
+def test_residual_site_carl_is_roam():
+    for m in ("carl-laptop", "carl-twist", "carlfk-x1c", "carlfk-gw"):
+        assert site_populate._residual_site(m) == "roam", m
+
+
+def test_residual_site_unknown_stays_none():
+    for m in ("gpu", "yamaha-receiver", "puck01", "big-storage", "opener1"):
+        assert site_populate._residual_site(m) is None, m
+
+
 def test_discovery_db_opened_read_only(monkeypatch):
     # The proposal is read-only: it must open discovery.db with read_only=True
     # (mode=ro), or a non-root run fails on the root-owned prod DB and a root

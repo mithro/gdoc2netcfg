@@ -373,6 +373,19 @@ class TestDeriveSSHFP:
         with pytest.raises(ValueError, match="Unknown SSH key type"):
             derive_sshfp_from_host_keys([f"host unknown-type {blob}"])
 
+    def test_mldsa_hybrid_key_has_no_sshfp_record(self):
+        """OpenSSH 10.6's PQ hybrid host key has no SSHFP algorithm (#70)."""
+        blob = base64.b64encode(b"mldsa-key-data").decode()
+        keys = [
+            f"ten64 ssh-mldsa44-ed25519 {blob}",
+            f"ten64 ssh-ed25519 {_ED25519_B64}",
+        ]
+        records = derive_sshfp_from_host_keys(keys)
+
+        # Only the ed25519 key yields records; the hybrid key yields none.
+        assert len(records) == 2
+        assert all("SSHFP 4" in r for r in records)
+
     def test_dss_key_uses_algo_2(self):
         blob = base64.b64encode(b"dss-key-data").decode()
         keys = [f"host ssh-dss {blob}"]
@@ -392,6 +405,25 @@ class TestEnrichHostsWithSSHHostKeys:
         assert hosts[0].ssh_host_keys == [
             f"server ssh-ed25519 {_ED25519_B64}",
         ]
+        assert len(hosts[0].sshfp_records) == 2
+        assert all("SSHFP 4" in r for r in hosts[0].sshfp_records)
+
+    def test_mldsa_hybrid_key_kept_without_sshfp(self):
+        """A host offering ssh-mldsa44-ed25519 still enriches (#70).
+
+        The key stays in ssh_host_keys (known_hosts uses it); only the
+        SSHFP derivation leaves it out, as SSHFP has no algorithm for it.
+        """
+        blob = base64.b64encode(b"mldsa-key-data").decode()
+        hosts = [_make_host("ten64", "10.2.10.1")]
+        keys = [
+            f"ten64 ssh-ed25519 {_ED25519_B64}",
+            f"ten64 ssh-mldsa44-ed25519 {blob}",
+        ]
+
+        enrich_hosts_with_ssh_host_keys(hosts, {"ten64": keys})
+
+        assert hosts[0].ssh_host_keys == keys
         assert len(hosts[0].sshfp_records) == 2
         assert all("SSHFP 4" in r for r in hosts[0].sshfp_records)
 

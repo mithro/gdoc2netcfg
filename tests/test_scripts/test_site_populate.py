@@ -76,5 +76,7 @@ def test_discovery_db_opened_read_only(monkeypatch):
             calls["path"], calls["read_only"] = path, read_only
 
     monkeypatch.setattr(dmod, "DiscoveryDB", _Rec)
+    # A string path (e.g. argparse --monarto-db) must be coerced to Path, or
+    # BaseDatabase._connect_read_only's db_path.exists() raises AttributeError.
     site_populate._open_readonly("some/discovery.db")
-    assert calls == {"path": "some/discovery.db", "read_only": True}
+    assert calls == {"path": Path("some/discovery.db"), "read_only": True}

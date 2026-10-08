@@ -109,7 +109,14 @@ def test_base_machine_strips_aggregate_suffix():
 def test_residual_site_welland_rules():
     for m in ("sw-bb-100g", "ports.sw-bb-25g", "sw-netgear-m4300-16x-poe-s1",
               "sw-netgear-poe-micro1", "power9-a", "power9-b", "desktop",
-              "left.nvmeof", "right.nvmeof", "hifive-unmatched-1", "dell-c410x-2"):
+              "left.nvmeof", "right.nvmeof", "hifive-unmatched-1", "dell-c410x-2",
+              # Tim's 2026-10-08 second batch: AV, power, fritz-box, remaining
+              # netgear switches, and gpu are all welland.
+              "samsung-tv", "yamaha-receiver", "bluray-player",
+              "hp-power", "ups-rack", "ups-test", "tplink-powerline",
+              "fritz-box-7390-1", "fritz-box-7270-1",
+              "sw-netgear-gsm7252ps-s3", "sw-netgear-s3300-2",
+              "sw-netgear-gs110emx-dev", "gpu"):
         assert site_populate._residual_site(m) == "welland", m
 
 
@@ -118,8 +125,23 @@ def test_residual_site_carl_is_roam():
         assert site_populate._residual_site(m) == "roam", m
 
 
+def test_residual_site_pixel_is_roam():
+    # All pixel phones roam (Tim 2026-10-08); case-insensitive (sheet mixes
+    # "pixel6" and "Pixel-3a-XL").
+    for m in ("pixel6", "pixel-7-pro", "pixel-3a-xl", "Pixel-3a-XL"):
+        assert site_populate._residual_site(m) == "roam", m
+
+
+def test_residual_site_kindle_dash_encodes_site_in_name():
+    assert site_populate._residual_site("kindle-welland-dash") == "welland"
+    assert site_populate._residual_site("kindle-monarto-dash") == "monarto"
+
+
 def test_residual_site_unknown_stays_none():
-    for m in ("gpu", "yamaha-receiver", "puck01", "big-storage", "opener1"):
+    # Still unruled after the second batch: build-farm compute, home-automation
+    # IoT, and non-pixel personal devices.
+    for m in ("hls-fpga-node-2", "opi1pc-a", "qnap", "puck01", "big-storage",
+              "opener1", "light3", "mac-mini", "sager-chromeosflex"):
         assert site_populate._residual_site(m) is None, m
 
 

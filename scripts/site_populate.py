@@ -86,20 +86,32 @@ def _base_machine(machine: str) -> str:
 
 
 def _residual_site(machine: str) -> str | None:
-    """Tim's residual placement rules (2026-10-08) for rows with no live signal.
+    """Tim's residual placement rules for rows with no live signal.
 
-    welland: backbone (sw-bb-*) + their ports, m4300 + poe-micro switches, and
-    the named build-farm hosts (power9*, desktop, *nvmeof, hifive-unmatched*,
-    dell-c410x*). roam: carl's machines. Everything else stays undetermined.
+    welland (2026-10-08, batch 1): backbone (sw-bb-*) + their ports, m4300 +
+    poe-micro switches, and the named build-farm hosts (power9*, desktop,
+    *nvmeof, hifive-unmatched*, dell-c410x*).
+    welland (batch 2): all remaining netgear switches (sw-netgear-*), AV
+    (samsung-tv/yamaha-receiver/bluray-player), power (hp-power/ups-*/
+    tplink-powerline), fritz-box-*, and gpu*.
+    roam: carl's machines; all pixel phones.
+    kindle-<site>-dash encodes its site in the name.
+    Everything else stays undetermined (returns None).
     """
     m = machine.lower()
-    if (m.startswith("sw-bb-") or m.startswith("ports.sw-bb-")
-            or m.startswith("sw-netgear-m4300")
-            or m.startswith("sw-netgear-poe-micro")
-            or m.startswith("power9") or m == "desktop" or "nvmeof" in m
-            or m.startswith("hifive-unmatched") or m.startswith("dell-c410x")):
+    if m.startswith("kindle-welland"):
         return "welland"
-    if m.startswith("carl"):
+    if m.startswith("kindle-monarto"):
+        return "monarto"
+    if (m.startswith("sw-bb-") or m.startswith("ports.sw-bb-")
+            or m.startswith("sw-netgear-")
+            or m.startswith("power9") or m == "desktop" or "nvmeof" in m
+            or m.startswith("hifive-unmatched") or m.startswith("dell-c410x")
+            or m in ("samsung-tv", "yamaha-receiver", "bluray-player")
+            or m in ("hp-power", "ups-rack", "ups-test", "tplink-powerline")
+            or m.startswith("fritz-box") or m.startswith("gpu")):
+        return "welland"
+    if m.startswith("carl") or m.startswith("pixel"):
         return "roam"
     return None
 
@@ -387,7 +399,16 @@ def main(argv: list[str] | None = None) -> int:
             elif (current and current != current.lower()
                   and current.lower() in _VALID_SITES):
                 desired = current.lower()
-            if desired and desired != current and site_col0 is not None:
+            # The wifi tab's Site column is vertically merged per host block
+            # (wifi-sheet-format.py), so only a block's ANCHOR row exports a
+            # value; covered rows read blank on the CSV and the parser's
+            # carry-forward inherits the anchor's Site at pipeline time. Every
+            # wifi anchor already carries a Site, so a "blank" wifi cell here is
+            # always a covered row — writing it targets a merged cell (futile)
+            # and could stamp a value that disagrees with its anchor. Never
+            # write wifi; it is populated in-pipeline, not on the sheet.
+            if (desired and desired != current and site_col0 is not None
+                    and sheet != "wifi"):
                 writes.append({"sheet": sheet, "gid": _SHEET_GID[sheet],
                                "row": row_no, "col1": site_col0 + 1,
                                "value": desired, "current": current})

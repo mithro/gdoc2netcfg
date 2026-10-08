@@ -62,6 +62,8 @@ Always use `uv run` to execute Python commands. Never use bare `python` or `pip`
 
 Make small, discrete commits as you work. Each logical unit of change (adding a helper function, wiring a parameter through the call chain, adding tests, updating docs) should be its own commit. Don't batch all changes into a single commit at the end.
 
+CI (`.github/workflows/ci.yml`) runs on every branch push, tag push and pull request, so `git push -u origin <branch>` gives a non-main branch a lint+test run; watch it with `gh run watch --exit-status $(gh run list --branch <branch> --event push -L1 --json databaseId -q '.[0].databaseId')` (a bare `gh run watch` prompts once a PR adds a second run). `gh workflow run CI --ref <branch>` starts a run on demand.
+
 ### Fail Loud, Never Fabricate
 
 **Never make up data.** If a value can't be resolved, computed, or looked up — raise an error. Don't generate synthetic placeholders, fallback names, or default values that hide the problem. Examples of things to never do:

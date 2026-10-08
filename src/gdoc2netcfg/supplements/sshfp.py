@@ -31,6 +31,14 @@ _KEY_TYPE_TO_SSHFP_ALGO: dict[str, int] = {
     "ssh-ed25519": 4,
 }
 
+# Valid host key types with no SSHFP algorithm number in the IANA registry,
+# so they get no SSHFP record.  The raw key is still kept (known_hosts).
+# A type in neither table is unexplained and still raises.
+_KEY_TYPES_WITHOUT_SSHFP: frozenset[str] = frozenset({
+    # OpenSSH 10.6's post-quantum hybrid host key (ML-DSA-44 + Ed25519).
+    "ssh-mldsa44-ed25519",
+})
+
 
 class SSHKeyscanError(Exception):
     """Error during SSH host key scanning."""
@@ -150,6 +158,9 @@ def derive_sshfp_from_host_keys(keys: list[str]) -> list[str]:
 
     Produces both SHA-1 (fp_type=1) and SHA-256 (fp_type=2) fingerprints
     for each key, matching what ssh-keyscan -D would produce.
+
+    Key types in ``_KEY_TYPES_WITHOUT_SSHFP`` produce no records; any
+    other type missing from ``_KEY_TYPE_TO_SSHFP_ALGO`` raises.
     """
     records: list[str] = []
 
@@ -162,11 +173,16 @@ def derive_sshfp_from_host_keys(keys: list[str]) -> list[str]:
             )
         hostname, key_type, b64_key = parts[0], parts[1], parts[2]
 
+        if key_type in _KEY_TYPES_WITHOUT_SSHFP:
+            continue
+
         algo = _KEY_TYPE_TO_SSHFP_ALGO.get(key_type)
         if algo is None:
             raise ValueError(
                 f"Unknown SSH key type {key_type!r} in host key line for "
-                f"{hostname!r} (known types: {sorted(_KEY_TYPE_TO_SSHFP_ALGO)})"
+                f"{hostname!r} (known types: {sorted(_KEY_TYPE_TO_SSHFP_ALGO)};"
+                f" types with no SSHFP algorithm:"
+                f" {sorted(_KEY_TYPES_WITHOUT_SSHFP)})"
             )
 
         key_blob = base64.b64decode(b64_key)

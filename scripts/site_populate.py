@@ -94,7 +94,14 @@ def _residual_site(machine: str) -> str | None:
     welland (batch 2): all remaining netgear switches (sw-netgear-*), AV
     (samsung-tv/yamaha-receiver/bluray-player), power (hp-power/ups-*/
     tplink-powerline), fritz-box-*, and gpu*.
-    roam: carl's machines; all pixel phones.
+    welland (batch 3, "land it, I'll inspect"): the remaining rows with no
+    live signal at EITHER site (both discovery.dbs checked) — the welland
+    build-farm/compute cluster (rpi5*, opi1pc-*, moboco, qnap, wlan0, ty-wr,
+    hls-fpga-*, ten11/12/70/97, enx*, rpi-sdr-*, sdr-mqtt) and welland
+    home-automation IoT (light*, switch-*, bathroom*, kitchen*, bedroom,
+    rack-light, opener*, spray, neocharge*, geekmagic*, bridge-433-*,
+    mac-mini). Placed welland for Tim to correct on the sheet.
+    roam: carl's machines; all pixel phones; sager-chromeosflex (laptop).
     kindle-<site>-dash encodes its site in the name.
     Everything else stays undetermined (returns None).
     """
@@ -109,9 +116,23 @@ def _residual_site(machine: str) -> str | None:
             or m.startswith("hifive-unmatched") or m.startswith("dell-c410x")
             or m in ("samsung-tv", "yamaha-receiver", "bluray-player")
             or m in ("hp-power", "ups-rack", "ups-test", "tplink-powerline")
-            or m.startswith("fritz-box") or m.startswith("gpu")):
+            or m.startswith("fritz-box") or m.startswith("gpu")
+            # batch 3: welland build-farm / compute
+            or m.startswith("rpi5") or m.startswith("opi1pc")
+            or m in ("moboco", "qnap", "wlan0", "ty-wr", "mac-mini")
+            or m.startswith("hls-fpga") or m in ("ten11", "ten12", "ten70",
+                                                 "ten97")
+            or m.startswith("enx") or m.startswith("rpi-sdr")
+            or m == "sdr-mqtt"
+            # batch 3: welland home-automation IoT
+            or m.startswith("light") or m.startswith("switch-")
+            or m.startswith("bathroom") or m.startswith("kitchen")
+            or m in ("bedroom", "rack-light", "spray")
+            or m.startswith("opener") or m.startswith("neocharge")
+            or m.startswith("geekmagic") or m.startswith("bridge-433")):
         return "welland"
-    if m.startswith("carl") or m.startswith("pixel"):
+    if (m.startswith("carl") or m.startswith("pixel")
+            or m.startswith("sager")):
         return "roam"
     return None
 

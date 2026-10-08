@@ -12,6 +12,7 @@ and is exercised during the rollout, not in CI.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 @dataclass
@@ -84,7 +85,7 @@ def _open_readonly(path):
     """
     from gdoc2netcfg.storage.discovery_db import DiscoveryDB
 
-    return DiscoveryDB(path, read_only=True)
+    return DiscoveryDB(Path(path), read_only=True)
 
 
 def _reachable_hostnames(db) -> set[str]:

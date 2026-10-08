@@ -1,10 +1,14 @@
 name: CI
 
+# Every branch push, every tag push, every pull request, and on demand
+# (`gh workflow run CI --ref <branch>`). A branch with an open PR runs
+# twice (push + pull_request); that is accepted.
 on:
+  workflow_dispatch:
   push:
-    branches: [main]
+    branches: ["**"]
+    tags: ["**"]
   pull_request:
-    branches: [main]
 
 # Read-only: CI only needs to check out and test the code.
 permissions:

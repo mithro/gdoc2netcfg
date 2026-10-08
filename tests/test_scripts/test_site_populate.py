@@ -125,10 +125,11 @@ def test_residual_site_carl_is_roam():
         assert site_populate._residual_site(m) == "roam", m
 
 
-def test_residual_site_pixel_is_roam():
+def test_residual_site_pixel_or_sager_is_roam():
     # All pixel phones roam (Tim 2026-10-08); case-insensitive (sheet mixes
-    # "pixel6" and "Pixel-3a-XL").
-    for m in ("pixel6", "pixel-7-pro", "pixel-3a-xl", "Pixel-3a-XL"):
+    # "pixel6" and "Pixel-3a-XL"). sager-chromeosflex is a laptop -> roam.
+    for m in ("pixel6", "pixel-7-pro", "pixel-3a-xl", "Pixel-3a-XL",
+              "sager-chromeosflex"):
         assert site_populate._residual_site(m) == "roam", m
 
 
@@ -137,11 +138,25 @@ def test_residual_site_kindle_dash_encodes_site_in_name():
     assert site_populate._residual_site("kindle-monarto-dash") == "monarto"
 
 
+def test_residual_site_batch3_remaining_are_welland():
+    # Tim 2026-10-08 batch 3: "land the site values, I'll inspect". The rows
+    # with no live signal at EITHER site (verified against both discovery.dbs)
+    # are the welland build-farm/compute cluster and welland home-automation
+    # IoT — placed welland, for Tim to correct any on the sheet.
+    for m in ("rpi5-sqrl", "rpi5", "opi1pc-a", "opi1pc-f", "moboco", "qnap",
+              "wlan0", "ty-wr", "hls-fpga-node-2", "ten11", "ten12", "ten70",
+              "ten97", "enx14", "enx18", "rpi-sdr-rtlsdr-v4", "sdr-mqtt",
+              "light3", "light-adapter-5", "switch-walkin", "switch-office",
+              "bathroom-heat", "kitchen-light", "bedroom", "rack-light",
+              "opener1", "opener2", "spray", "neocharge-p7-2449",
+              "geekmagic-ultra-1", "bridge-433-3", "mac-mini"):
+        assert site_populate._residual_site(m) == "welland", m
+
+
 def test_residual_site_unknown_stays_none():
-    # Still unruled after the second batch: build-farm compute, home-automation
-    # IoT, and non-pixel personal devices.
-    for m in ("hls-fpga-node-2", "opi1pc-a", "qnap", "puck01", "big-storage",
-              "opener1", "light3", "mac-mini", "sager-chromeosflex"):
+    # Still genuinely unruled: wifi anchors (handled by evidence, not residual)
+    # and names matching no rule at all.
+    for m in ("puck01", "big-storage", "no-such-device-xyz"):
         assert site_populate._residual_site(m) is None, m
 
 

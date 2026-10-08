@@ -577,7 +577,7 @@ def validate_sites(records: list[DeviceRecord], site: Site) -> ValidationResult:
                 severity=Severity.ERROR, code="site_missing",
                 message="device row has no Site value",
                 record_id=f"{r.sheet_name}:{r.row_number}", field="Site"))
-        elif site.all_sites and r.site.lower() not in site.all_sites:
+        elif r.site.lower() not in site.all_sites:
             result.add(ConstraintViolation(
                 severity=Severity.ERROR, code="site_unknown",
                 message=(f"Site {r.site!r} is not a known site; valid: "

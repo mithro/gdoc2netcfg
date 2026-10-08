@@ -51,50 +51,22 @@ def is_record_for_site(record: DeviceRecord, site: Site) -> bool:
     return record.site.lower() == site.name.lower()
 
 
-def _validate_site_values(
-    records: list[DeviceRecord], site: Site,
-) -> None:
-    """Validate that all non-empty site column values are known site names.
-
-    Raises ValueError if any record has an unrecognized site value.
-    This catches spreadsheet columns (like "Location") being accidentally
-    mapped to the site field with values like "Back Shed" that would
-    silently drop records during site filtering.
-
-    Records without a machine name (section headers, empty rows) are
-    skipped — they won't become hosts and often carry section labels
-    like "Build Farm" in the Site column.
-    """
-    if not site.all_sites:
-        return
-    for record in records:
-        if not record.site or not record.machine:
-            continue
-        if record.site.lower() not in site.all_sites:
-            raise ValueError(
-                f"{record.sheet_name} row {record.row_number}: "
-                f"invalid site value {record.site!r} "
-                f"(machine={record.machine!r}). "
-                f"Valid sites: {', '.join(site.all_sites)}. "
-                f"If a CSV column is being misidentified as the Site column, "
-                f"rename it so it doesn't match 'Site'."
-            )
-
-
 def filter_and_resolve_records(
     records: list[DeviceRecord], site: Site,
 ) -> list[DeviceRecord]:
     """Filter records for the current site and resolve 'X' in IPs.
 
-    Three-step process:
-    1. Validate that all site column values are recognized site names.
-    2. Drop records whose site column doesn't match (when non-empty).
-    3. Replace 'X' in second octet with site_octet for multi-site records.
+    Two-step process:
+    1. Drop records whose site column doesn't match (when non-empty).
+    2. Replace 'X' in second octet with site_octet for multi-site records.
 
     Returns a new list of DeviceRecord objects with resolved IPs.
-    Raises ValueError if any record has an unrecognized site value.
+
+    Unrecognised / missing Site values are no longer raised here — that is now
+    a graceful ERROR from ``constraints.validators.validate_sites``
+    (site_missing / site_unknown), which gates generate the same way other
+    sheet-contract violations do, instead of crashing the run and the daemon.
     """
-    _validate_site_values(records, site)
     result: list[DeviceRecord] = []
     for record in records:
         if not is_record_for_site(record, site):

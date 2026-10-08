@@ -545,6 +545,47 @@ def validate_locations(records: list[DeviceRecord]) -> ValidationResult:
     return result
 
 
+def validate_sites(records: list[DeviceRecord], site: Site) -> ValidationResult:
+    """Every device row must carry a Site value known to the Sites sheet.
+
+    A blank Site (site_missing) or a value not in the Sites sheet
+    (site_unknown) is an ERROR, the same as other sheet-contract problems —
+    the graceful replacement for the former hard ValueError in ip_remap, which
+    crashed the whole run (and the daemon) on the first bad cell. Rows without
+    a machine name (spacers/section headers) are skipped: they never become
+    hosts and often carry section labels in the Site column.
+
+    Runs on the UNFILTERED record set (every sheet, every site), because an
+    unrecognised value is dropped by per-site filtering at *every* site — so
+    only a pre-filter check catches it before it silently vanishes.
+
+    Gated on ``site.all_sites`` (the Sites sheet): with no Sites sheet
+    configured, all_sites is empty and site validation is skipped entirely —
+    the documented historical opt-out (see cli.main._enrich_all_sites_from_sheet
+    and the former ip_remap guard). Production always has a non-empty Sites
+    sheet (an empty configured one is already a hard error), so the mandatory
+    Site rule is in full force there.
+    """
+    result = ValidationResult()
+    if not site.all_sites:
+        return result
+    for r in records:
+        if not getattr(r, "machine", ""):
+            continue
+        if not r.site:
+            result.add(ConstraintViolation(
+                severity=Severity.ERROR, code="site_missing",
+                message="device row has no Site value",
+                record_id=f"{r.sheet_name}:{r.row_number}", field="Site"))
+        elif site.all_sites and r.site.lower() not in site.all_sites:
+            result.add(ConstraintViolation(
+                severity=Severity.ERROR, code="site_unknown",
+                message=(f"Site {r.site!r} is not a known site; valid: "
+                         + ", ".join(site.all_sites)),
+                record_id=f"{r.sheet_name}:{r.row_number}", field="Site"))
+    return result
+
+
 def validate_controls(
     records: list[DeviceRecord],
     hosts: list[Host],
@@ -601,6 +642,7 @@ def validate_all(
         validate_cross_record_constraints(inventory),
         validate_controls(records, hosts, inventory.site),
         validate_locations(records),
+        validate_sites(records, inventory.site),
     ]:
         for violation in result.violations:
             combined.add(violation)

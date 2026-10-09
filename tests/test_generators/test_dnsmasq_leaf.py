@@ -114,6 +114,11 @@ class TestLeafScopeDiscipline:
             for line in content.splitlines():
                 if line.startswith("host-record="):
                     name = line.split("=", 1)[1].split(",", 1)[0]
+                    # An unqualified name (the bare DHCP-name record, issue
+                    # #75) is leaf-local, not site-scoped; any qualified
+                    # name must be net-scoped.
+                    if "." not in name:
+                        continue
                     assert ".int.welland" in name or ".store.welland" in name, (
                         f"site-scoped record leaked into a leaf: {line}"
                     )
@@ -289,3 +294,154 @@ class TestNoDhcpTypes:
         )
         files = generate_dnsmasq_leaf(_inventory(host))
         assert "dhcp-host=" in files["int/generated/cam.conf"]
+
+
+def _reterm2():
+    """Two NICs on ONE net (the iot leaf), as on welland."""
+    return Host(
+        machine_name="reterm2",
+        hostname="reterm2",
+        interfaces=[
+            NetworkInterface(
+                name="eth0",
+                mac=MACAddress.parse("2c:cf:67:bb:47:61"),
+                ip_addresses=(
+                    IPv4Address("10.1.90.176"),
+                    IPv6Address("2404:e80:a137:190::176", "2404:e80:a137:"),
+                ),
+                dhcp_name="eth0-reterm2",
+            ),
+            NetworkInterface(
+                name="wlan0",
+                mac=MACAddress.parse("2c:cf:67:bb:47:62"),
+                ip_addresses=(
+                    IPv4Address("10.1.90.177"),
+                    IPv6Address("2404:e80:a137:190::177", "2404:e80:a137:"),
+                ),
+                dhcp_name="wlan0-reterm2",
+            ),
+        ],
+    )
+
+
+def _iot_plug():
+    """An IoT-sheet host: hostname and sheet DHCP name carry '.iot'."""
+    return Host(
+        machine_name="au-plug-1",
+        hostname="au-plug-1.iot",
+        interfaces=[
+            NetworkInterface(
+                name=None,
+                mac=MACAddress.parse("7c:2c:67:d9:ba:24"),
+                ip_addresses=(
+                    IPv4Address("10.1.91.1"),
+                    IPv6Address("2404:e80:a137:191::1", "2404:e80:a137:"),
+                ),
+                dhcp_name="au-plug-1.iot",
+            ),
+        ],
+    )
+
+
+class TestDhcpNameIsTheHostsLeafName:
+    """Issue #75. A known device's lease must never publish DNS names of
+    its own: dnsmasq's auth path answers a zone name from the lease AND
+    from host-records with no dedup, so a lease named like the host
+    doubled every A record.  Every dhcp-host of a host on a net therefore
+    carries ONE name (the hostname without the net's own suffix, other
+    dots hyphenated), and a bare host-record of that name carries all of
+    the host's addresses on the net, which makes dnsmasq keep the lease
+    name out of DNS (it already exists in config with that address)."""
+
+    def test_iot_host_dhcp_name_drops_own_net_suffix(self):
+        files = generate_dnsmasq_leaf(_inventory(_iot_plug()))
+        conf = files["iot/generated/au-plug-1.iot.conf"]
+        assert (
+            "dhcp-host=7c:2c:67:d9:ba:24,10.1.91.1,[2404:e80:a137:191::1],au-plug-1\n"
+            in conf
+        )
+        assert ",au-plug-1.iot\n" not in conf.split("host-record=")[0]
+
+    def test_iot_host_gets_bare_record_for_its_dhcp_name(self):
+        files = generate_dnsmasq_leaf(_inventory(_iot_plug()))
+        conf = files["iot/generated/au-plug-1.iot.conf"]
+        assert conf.count(
+            "host-record=au-plug-1,10.1.91.1,2404:e80:a137:191::1\n"
+        ) == 1
+
+    def test_two_nics_on_one_net_share_the_host_name(self):
+        files = generate_dnsmasq_leaf(_inventory(_reterm2()))
+        conf = files["iot/generated/reterm2.conf"]
+        assert (
+            "dhcp-host=2c:cf:67:bb:47:61,10.1.90.176,[2404:e80:a137:190::176],reterm2\n"
+            in conf
+        )
+        assert (
+            "dhcp-host=2c:cf:67:bb:47:62,10.1.90.177,[2404:e80:a137:190::177],reterm2\n"
+            in conf
+        )
+        assert "eth0-reterm2" not in conf
+        assert "wlan0-reterm2" not in conf
+
+    def test_two_nics_bare_record_once_per_address(self):
+        """reterm2 is single-net, so its short-name record already carries
+        every address — the DHCP-name record must not repeat it (a second
+        identical host-record would itself answer twice)."""
+        files = generate_dnsmasq_leaf(_inventory(_reterm2()))
+        conf = files["iot/generated/reterm2.conf"]
+        assert conf.count(
+            "host-record=reterm2,10.1.90.176,2404:e80:a137:190::176\n"
+        ) == 1
+        assert conf.count(
+            "host-record=reterm2,10.1.90.177,2404:e80:a137:190::177\n"
+        ) == 1
+
+    def test_multi_net_host_gets_bare_record_per_leaf(self):
+        """Multi-net hosts get no short names, but each leaf still needs
+        the bare DHCP-name record — with only that net's addresses."""
+        files = generate_dnsmasq_leaf(_inventory(_big_storage()))
+        int_conf = files["int/generated/big-storage.conf"]
+        store_conf = files["store/generated/big-storage.conf"]
+        assert (
+            "dhcp-host=aa:bb:cc:dd:ee:01,10.1.11.154,[2404:e80:a137:111::154],big-storage\n"
+            in int_conf
+        )
+        assert (
+            "dhcp-host=aa:bb:cc:dd:ee:02,10.1.11.155,[2404:e80:a137:111::155],big-storage\n"
+            in int_conf
+        )
+        assert "host-record=big-storage,10.1.11.154,2404:e80:a137:111::154\n" in int_conf
+        assert "host-record=big-storage,10.1.11.155,2404:e80:a137:111::155\n" in int_conf
+        assert "10.1.7.15" not in int_conf
+        assert "host-record=big-storage,10.1.7.15,2404:e80:a137:107::15\n" in store_conf
+        assert "host-record=big-storage,10.1.7.16,2404:e80:a137:107::16\n" in store_conf
+        assert "10.1.11.154" not in store_conf
+
+    def test_dotted_hostname_is_hyphenated(self):
+        """dnsmasq cuts a dhcp-host name at its first dot, so a BMC's
+        'bmc.big-storage' would register as 'bmc' — the same for every
+        BMC.  Other dots become hyphens."""
+        host = Host(
+            machine_name="big-storage",
+            hostname="bmc.big-storage",
+            interfaces=[_iface("bmc", "03", "10.1.10.60", "2404:e80:a137:110::60")],
+        )
+        files = generate_dnsmasq_leaf(_inventory(host))
+        conf = files["int/generated/bmc.big-storage.conf"]
+        assert (
+            "dhcp-host=aa:bb:cc:dd:ee:03,10.1.10.60,[2404:e80:a137:110::60],bmc-big-storage\n"
+            in conf
+        )
+        assert "host-record=bmc-big-storage,10.1.10.60,2404:e80:a137:110::60\n" in conf
+
+    def test_suppressed_dhcp_gets_no_dhcp_name_record(self):
+        host = Host(
+            machine_name="ten64",
+            hostname="ten64.wifi",
+            interfaces=[_iface("br-wifi", "01", "10.1.10.9")],
+            extra={"Type": "static"},
+        )
+        files = generate_dnsmasq_leaf(_inventory(host))
+        conf = files["int/generated/ten64.wifi.conf"]
+        assert "dhcp-host=" not in conf
+        assert "host-record=ten64-wifi," not in conf

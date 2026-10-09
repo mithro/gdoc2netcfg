@@ -18,7 +18,9 @@ process (their zones are central), and nets delegated to another server
 
 from __future__ import annotations
 
-from gdoc2netcfg.derivations.dns_names import _anchored_net, common_suffix
+import re
+
+from gdoc2netcfg.derivations.dns_names import _anchored_net
 from gdoc2netcfg.derivations.vlan import DELEGATED_NETS, ip_to_net
 from gdoc2netcfg.generators.dnsmasq_common import (
     _ipv4_to_ptr,
@@ -132,6 +134,7 @@ def _host_leaf_fragment(host: Host, net: str, inventory: NetworkInventory) -> st
         _net_dhcp_config(host, net, inventory),
         _net_host_records(host, net, inventory),
         _short_name_records(host, net, inventory),
+        _dhcp_name_records(host, net, inventory),
         _net_ptr_config(host, net, inventory),
         _anchored_caa(host, net, inventory),
         _net_sshfp_records(host, net, inventory),
@@ -163,34 +166,92 @@ def _anchored_caa(host: Host, net: str, inventory: NetworkInventory) -> list[str
     ]
 
 
-def _net_dhcp_config(host: Host, net: str, inventory: NetworkInventory) -> list[str]:
-    """dhcp-host entries for the host's interfaces on this net."""
+_LEAF_DHCP_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+
+
+def _leaf_dhcp_name(host: Host, net: str) -> str:
+    """The one name every dhcp-host of this host on this net carries.
+
+    The leaf's own domain= already qualifies a lease name, so the net's
+    suffix is dropped ('au-plug-1.iot' -> 'au-plug-1' in the iot leaf).
+    dnsmasq cuts a dhcp-host name at its first dot (strip_hostname) and
+    treats the rest as a domain, so any other dot becomes a hyphen
+    ('bmc.big-storage' -> 'bmc-big-storage'); otherwise every BMC would
+    register as 'bmc'.
+    """
+    name = host.hostname.removesuffix(f".{net}").replace(".", "-")
+    if not _LEAF_DHCP_NAME_RE.match(name):
+        raise ValueError(
+            f"Host {host.hostname!r} on net {net!r} gives DHCP name "
+            f"{name!r}, which is not a valid single DNS label"
+        )
+    return name
+
+
+def _dhcp_bindings(
+    host: Host, net: str, inventory: NetworkInventory,
+) -> list[tuple[str, str, list[str]]]:
+    """(MACs, IPv4, IPv6s) of each dhcp-host binding of the host on this net."""
     if dhcp_suppressed(host):
         return []
-
+    bindings = []
     vis = _net_virtual_interfaces(host, net, inventory.site)
-    if not vis:
-        return []
-
-    entries: list[str] = []
     for vi in sorted(vis, key=lambda v: ip_sort_key(str(v.ipv4))):
         if not vi.macs:
             continue  # DNS-only endpoint (wg, tailscale): no DHCP binding
         ip = str(vi.ipv4)
-        dhcp_name = common_suffix(*set(vi.dhcp_names)).strip("-")
-
-        ipv6_strs = _ipv6_for_ip(ip, inventory)
         mac_str = ",".join(str(mac) for mac in vi.macs)
+        bindings.append((mac_str, ip, _ipv6_for_ip(ip, inventory)))
+    return bindings
 
+
+def _net_dhcp_config(host: Host, net: str, inventory: NetworkInventory) -> list[str]:
+    """dhcp-host entries for the host's interfaces on this net.
+
+    Every binding carries the same name, _leaf_dhcp_name(), never the
+    per-interface sheet DHCP name: see _dhcp_name_records() for why.
+    """
+    bindings = _dhcp_bindings(host, net, inventory)
+    if not bindings:
+        return []
+
+    dhcp_name = _leaf_dhcp_name(host, net)
+    entries: list[str] = []
+    for mac_str, ip, ipv6_strs in bindings:
         if ipv6_strs:
             ipv6_brackets = ",".join(f"[{addr}]" for addr in ipv6_strs)
             entries.append(f"dhcp-host={mac_str},{ip},{ipv6_brackets},{dhcp_name}")
         else:
             entries.append(f"dhcp-host={mac_str},{ip},{dhcp_name}")
-
-    if not entries:
-        return []
     return [f"# {host.hostname} — DHCP"] + entries
+
+
+def _dhcp_name_records(host: Host, net: str, inventory: NetworkInventory) -> list[str]:
+    """Bare host-records for the DHCP name, with every bound address.
+
+    Issue #75: dnsmasq registers a lease under its dhcp-host name, and
+    for a name inside an auth-zone it answers from the lease AND from the
+    host-records, with no dedup — every A came back twice.  A config
+    record of exactly the lease's name and address makes dnsmasq keep
+    the lease out of DNS altogether (cache_add_dhcp_entry), so a known
+    device's names come only from the generated records.
+
+    A single-net host whose hostname already IS the DHCP name gets this
+    from _short_name_records() (with all of its addresses), and repeating
+    it would make dnsmasq answer each address twice.
+    """
+    bindings = _dhcp_bindings(host, net, inventory)
+    if not bindings:
+        return []
+    dhcp_name = _leaf_dhcp_name(host, net)
+    if dhcp_name == host.hostname and _host_nets(host, inventory.site) == [net]:
+        return []
+    records: list[str] = []
+    for _, ip, ipv6_strs in bindings:
+        # dnsmasq takes one IPv4 and one IPv6 per host-record line.
+        records.append(",".join([f"host-record={dhcp_name}", ip, *ipv6_strs[:1]]))
+        records += [f"host-record={dhcp_name},{v6}" for v6 in ipv6_strs[1:]]
+    return records
 
 
 def _net_host_records(host: Host, net: str, inventory: NetworkInventory) -> list[str]:

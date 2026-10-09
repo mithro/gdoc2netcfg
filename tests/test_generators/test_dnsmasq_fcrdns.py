@@ -317,3 +317,96 @@ def test_cli_runs_the_check_on_the_deployed_generator_only():
     assert "dnsmasq_leaf" in FCRDNS_VALIDATED_GENERATORS
     assert "dnsmasq_internal" not in FCRDNS_VALIDATED_GENERATORS
     assert "dnsmasq_external" not in FCRDNS_VALIDATED_GENERATORS
+
+
+class TestDhcpNameHasBareRecord:
+    """Issue #75: every dhcp-host name in a leaf needs a bare host-record
+    of the same name covering the binding's IPv4 IN THE SAME LEAF —
+    otherwise the device's lease publishes the name itself and dnsmasq's
+    auth path answers the zone name twice.  Two different hosts must
+    never share a dhcp-host name within one leaf."""
+
+    def test_binding_with_matching_bare_record_passes(self):
+        files = {
+            "iot/generated/au-plug-1.iot.conf": (
+                "dhcp-host=7c:2c:67:d9:ba:24,10.1.91.1,[2404:e80:a137:191::1],au-plug-1\n"
+                "host-record=au-plug-1,10.1.91.1,2404:e80:a137:191::1\n"
+            ),
+        }
+        assert validate_dnsmasq_output(files).is_valid
+
+    def test_binding_without_bare_record_is_an_error(self):
+        files = {
+            "iot/generated/au-plug-1.iot.conf": (
+                "dhcp-host=7c:2c:67:d9:ba:24,10.1.91.1,[2404:e80:a137:191::1],au-plug-1\n"
+                "host-record=au-plug-1.iot.welland.mithis.com,10.1.91.1\n"
+            ),
+        }
+        result = validate_dnsmasq_output(files)
+        assert [v.code for v in result.errors] == ["dhcp_name_without_record"]
+        assert "au-plug-1" in result.errors[0].message
+        assert "10.1.91.1" in result.errors[0].message
+
+    def test_bare_record_with_other_address_is_an_error(self):
+        files = {
+            "iot/generated/au-plug-1.iot.conf": (
+                "dhcp-host=7c:2c:67:d9:ba:24,10.1.91.1,au-plug-1\n"
+                "host-record=au-plug-1,10.1.91.2\n"
+            ),
+        }
+        result = validate_dnsmasq_output(files)
+        assert [v.code for v in result.errors] == ["dhcp_name_without_record"]
+
+    def test_bare_record_in_another_leaf_does_not_count(self):
+        files = {
+            "int/generated/big-storage.conf": (
+                "dhcp-host=0c:c4:7a:f4:10:e4,10.1.11.154,big-storage\n"
+            ),
+            "store/generated/big-storage.conf": (
+                "dhcp-host=0c:c4:7a:f4:10:e6,10.1.7.15,big-storage\n"
+                "host-record=big-storage,10.1.7.15\n"
+                "host-record=big-storage,10.1.11.154\n"
+            ),
+        }
+        result = validate_dnsmasq_output(files)
+        assert [(v.code, v.record_id) for v in result.errors] == [
+            ("dhcp_name_without_record", "int/generated/big-storage.conf"),
+        ]
+
+    def test_one_host_two_bindings_one_name_passes(self):
+        files = {
+            "iot/generated/reterm2.conf": (
+                "dhcp-host=2c:cf:67:bb:47:61,10.1.90.176,reterm2\n"
+                "dhcp-host=2c:cf:67:bb:47:62,10.1.90.177,reterm2\n"
+                "host-record=reterm2,10.1.90.176\n"
+                "host-record=reterm2,10.1.90.177\n"
+            ),
+        }
+        assert validate_dnsmasq_output(files).is_valid
+
+    def test_two_hosts_sharing_a_name_in_one_leaf_is_an_error(self):
+        files = {
+            "int/generated/ports.sw-a.conf": (
+                "dhcp-host=02:00:00:00:00:01,10.1.10.50,swp01\n"
+                "host-record=swp01,10.1.10.50\n"
+            ),
+            "int/generated/ports.sw-b.conf": (
+                "dhcp-host=02:00:00:00:00:02,10.1.10.51,swp01\n"
+                "host-record=swp01,10.1.10.51\n"
+            ),
+        }
+        result = validate_dnsmasq_output(files)
+        assert "dhcp_name_collision" in [v.code for v in result.errors]
+
+    def test_same_name_in_different_leaves_passes(self):
+        files = {
+            "int/generated/big-storage.conf": (
+                "dhcp-host=0c:c4:7a:f4:10:e4,10.1.11.154,big-storage\n"
+                "host-record=big-storage,10.1.11.154\n"
+            ),
+            "store/generated/big-storage.conf": (
+                "dhcp-host=0c:c4:7a:f4:10:e6,10.1.7.15,big-storage\n"
+                "host-record=big-storage,10.1.7.15\n"
+            ),
+        }
+        assert validate_dnsmasq_output(files).is_valid

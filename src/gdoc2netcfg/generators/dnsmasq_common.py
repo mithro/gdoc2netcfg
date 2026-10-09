@@ -226,12 +226,14 @@ def sections_to_text(sections: list[list[str]]) -> str:
 
 
 def validate_dnsmasq_output(files: dict[str, str]) -> ValidationResult:
-    """Validate that every PTR record name has a matching host-record.
+    """Validate the generated leaf output before it is written.
 
     Parses all generated dnsmasq config files and checks that every forward
     name referenced by a ptr-record also appears as a name in a host-record
     line. This catches bugs in the DNS name derivation pipeline or generator
-    code that would break forward-confirmed reverse DNS (FCrDNS).
+    code that would break forward-confirmed reverse DNS (FCrDNS).  It also
+    checks every dhcp-host name against the bare host-records of its leaf
+    (_validate_dhcp_names, issue #75).
 
     Args:
         files: Dict mapping filename to config file content, as returned by
@@ -239,7 +241,8 @@ def validate_dnsmasq_output(files: dict[str, str]) -> ValidationResult:
 
     Returns:
         ValidationResult with ERROR-severity violations for any PTR name
-        that lacks a matching host-record.
+        that lacks a matching host-record, and for any dhcp-host name that
+        lacks its bare record or is shared by two hosts in one leaf.
     """
     from gdoc2netcfg.constraints.errors import (
         ConstraintViolation,
@@ -286,4 +289,86 @@ def validate_dnsmasq_output(files: dict[str, str]) -> ValidationResult:
                     field="ptr-record",
                 ))
 
+    _validate_dhcp_names(files, result)
     return result
+
+
+def _parse_dhcp_host(line: str) -> tuple[str | None, str | None]:
+    """(name, IPv4) of a dhcp-host=MAC[,MAC...],IPv4[,[IPv6]...][,name] line."""
+    fields = line[len("dhcp-host="):].split(",")
+    ipv4 = next((f for f in fields if _is_ipv4(f)), None)
+    last = fields[-1]
+    is_name = not (_is_ipv4(last) or last.startswith("[") or _is_mac(last))
+    return (last if is_name else None), ipv4
+
+
+def _is_ipv4(field: str) -> bool:
+    try:
+        ipaddress.IPv4Address(field)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_mac(field: str) -> bool:
+    parts = field.split(":")
+    return len(parts) == 6 and all(len(p) == 2 for p in parts)
+
+
+def _validate_dhcp_names(files: dict[str, str], result: ValidationResult) -> None:
+    """Every dhcp-host name needs a bare host-record of the same name with
+    the binding's IPv4, in the SAME leaf; two hosts never share one.
+
+    Issue #75: a lease is registered under its dhcp-host name, and unless
+    that exact name already exists in config with the lease's address,
+    dnsmasq publishes the lease too and its auth path answers the zone
+    name from both, with no dedup.  Each leaf is its own dnsmasq, so only
+    records in the same "{net}/" tree count.
+    """
+    from gdoc2netcfg.constraints.errors import ConstraintViolation, Severity
+
+    bare: dict[tuple[str, str], set[str]] = {}  # (net, name) -> IPv4s
+    for filename, content in files.items():
+        net = filename.split("/", 1)[0]
+        for line in content.splitlines():
+            if not line.startswith("host-record="):
+                continue
+            name, *addrs = line[len("host-record="):].split(",")
+            if "." not in name:
+                bare.setdefault((net, name), set()).update(
+                    a for a in addrs if _is_ipv4(a)
+                )
+
+    owners: dict[tuple[str, str], str] = {}  # (net, name) -> first file
+    for filename, content in sorted(files.items()):
+        net = filename.split("/", 1)[0]
+        for line in content.splitlines():
+            if not line.startswith("dhcp-host="):
+                continue
+            name, ipv4 = _parse_dhcp_host(line)
+            if name is None:
+                continue
+            owner = owners.setdefault((net, name), filename)
+            if owner != filename:
+                result.add(ConstraintViolation(
+                    severity=Severity.ERROR,
+                    code="dhcp_name_collision",
+                    message=(
+                        f"dhcp-host name '{name}' is used by both {owner} "
+                        f"and {filename} in the {net} leaf"
+                    ),
+                    record_id=filename,
+                    field="dhcp-host",
+                ))
+            if ipv4 not in bare.get((net, name), set()):
+                result.add(ConstraintViolation(
+                    severity=Severity.ERROR,
+                    code="dhcp_name_without_record",
+                    message=(
+                        f"dhcp-host name '{name}' ({ipv4}) has no bare "
+                        f"host-record of that name and address in the {net} "
+                        f"leaf, so its lease would publish the name itself"
+                    ),
+                    record_id=filename,
+                    field="dhcp-host",
+                ))

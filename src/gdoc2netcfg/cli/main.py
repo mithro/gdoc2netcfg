@@ -939,7 +939,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
             if post_result.has_errors:
                 post_gen_errors = True
                 print(
-                    f"  {name}: post-generation FCrDNS validation errors:",
+                    f"  {name}: post-generation validation errors:",
                     file=sys.stderr,
                 )
                 print(post_result.report(), file=sys.stderr)

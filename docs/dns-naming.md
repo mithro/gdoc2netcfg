@@ -243,8 +243,31 @@ dhcp-host=aa:bb:cc:dd:ee:ff,10.1.10.100,[2404:e80:a137:110::100],desktop
 ```
 
 For hosts with multiple NICs sharing the same IPv4 (e.g. wired + wireless),
-MACs are comma-joined on a single line. The DHCP name is computed via
-`common_suffix()` of all interface DHCP names.
+MACs are comma-joined on a single line.
+
+Every `dhcp-host` of a host on a net carries the **same** name: the
+hostname without that net's own suffix, with any other dots turned into
+hyphens (`au-plug-1.iot` → `au-plug-1` in the iot leaf, `bmc.big-storage`
+→ `bmc-big-storage`, both NICs of `reterm2` → `reterm2`). dnsmasq cuts a
+`dhcp-host` name at its first dot, so dotted names would otherwise
+collapse (every BMC would become `bmc`). The leaf also gets a bare
+`host-record` of that name with all of the host's addresses on the net:
+
+```
+dhcp-host=7c:2c:67:d9:ba:24,10.1.91.1,[2404:e80:a137:191::1],au-plug-1
+host-record=au-plug-1,10.1.91.1,2404:e80:a137:191::1
+```
+
+Without that bare record, a known device's lease publishes its name
+itself, and dnsmasq's auth path answers a zone name from both the lease
+and the host-records without deduplicating: every A came back twice, and
+lease-only per-interface names (`eth0-reterm2.iot.…`) appeared outside
+the naming scheme (issue #75). With it, dnsmasq keeps the lease out of
+DNS (the name already exists in config with that address), so a known
+host's names come only from the generated records. Unbound (dynamic)
+devices still get their names from their leases. `validate_dnsmasq_output`
+fails generation if any `dhcp-host` name lacks its bare record in its
+leaf, or if two hosts share one name in a leaf.
 
 ### CAA records
 
@@ -344,7 +367,7 @@ gets `10.1.10.2`.
 ```
 # server — DHCP
 dhcp-host=aa:bb:cc:dd:ee:01,10.1.10.1,[2404:e80:a137:110::1],server
-dhcp-host=aa:bb:cc:dd:ee:02,10.1.10.2,[2404:e80:a137:110::2],eth0-server
+dhcp-host=aa:bb:cc:dd:ee:02,10.1.10.2,[2404:e80:a137:110::2],server
 
 host-record=ipv4.eth0.server.int.welland.mithis.com,10.1.10.2
 host-record=ipv6.eth0.server.int.welland.mithis.com,2404:e80:a137:110::2
@@ -388,7 +411,8 @@ dns-rr=server.welland.mithis.com,257,000569737375656C657473656E63727970742E6F726
   most specific); `10.1.10.2` → `ipv4.eth0.server.int…` (interface-based,
   even more specific).
 - **Two DHCP lines** — one per interface, each binding a different MAC to a
-  different IP. The named interface gets `eth0-server` as its DHCP name.
+  different IP. Both carry the host's name, `server` (see *DHCP bindings*);
+  the per-interface names are the dotted `eth0.server…` records.
 
 ### External variant (server, multi-interface)
 

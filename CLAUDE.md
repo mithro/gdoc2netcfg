@@ -482,6 +482,26 @@ Why: cron ignores exit codes and only mails output. The previous lines ended in
 `>>cron.log 2>&1`, so a job could traceback nightly for weeks with no signal
 (the sshfp scan did, 2026-08-21 → 2026-09-03, while a host was re-keyed).
 
+**Reading a `fetch` line.** Each sheet's line carries a per-hop trace
+(`sources/sheets.py` `FetchTrace`), on success as well as failure. A published
+CSV is two requests: docs.google.com answers 307 with a signed
+`doc-*-sheets.googleusercontent.com` URL that serves the CSV.
+
+```
+network: fetched (65680 bytes) [hop 1: docs.google.com[2404:6800:4013:407::8a] tcp +0.08s, tls +0.15s,
+  sent +0.00s, headers +0.30s, HTTP 307 -> doc-10-4o-sheets.googleusercontent.com (server ESF),
+  1590 B received, 0.53s total; hop 2: doc-10-4o-sheets.googleusercontent.com[2404:6800:4013:409::84]
+  tcp +0.04s, tls +0.16s, sent +0.00s, headers +0.67s, HTTP 200 (server ESF), 73665 B received, 0.91s total]
+```
+
+Each step is the time since the previous one, and `[addr]` is the server
+address actually connected to. A failure is the original error followed by the
+same trace, ending in `FAILED while <phase>: no progress for Ns, N B received`.
+The phase is connecting (DNS + TCP), doing the TLS handshake, sending the
+request, waiting for response headers or reading the body, which pins a stall
+to one hop, one server and one stage. In code, `SheetFetchError.__cause__` is
+the original exception.
+
 ### Is /etc actually up to date? (`deploy-check`)
 
 `generate` writes into the project directory; **nothing in cron installs

@@ -555,7 +555,10 @@ def cmd_fetch(args: argparse.Namespace) -> int:
                 timeout=min(SHEET_FETCH_TIMEOUT_SECONDS, remaining),
             )
             raw_csvs.append((sheet.name, data.csv_text))
-            print(f"  {sheet.name}: fetched ({len(data.csv_text)} bytes)")
+            # The per-hop trace goes to cron.log on success too: the timing
+            # baseline that a failure's trace is compared against.
+            trace = f" [{data.trace.describe()}]" if data.trace else ""
+            print(f"  {sheet.name}: fetched ({len(data.csv_text)} bytes){trace}")
             ok += 1
         except Exception as e:
             print(f"  {sheet.name}: FAILED ({e})", file=sys.stderr)

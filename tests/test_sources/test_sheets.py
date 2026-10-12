@@ -7,7 +7,11 @@ import io
 import pytest
 
 from gdoc2netcfg.sources import sheets
-from gdoc2netcfg.sources.sheets import SHEET_FETCH_TIMEOUT_SECONDS, fetch_sheet
+from gdoc2netcfg.sources.sheets import (
+    SHEET_FETCH_TIMEOUT_SECONDS,
+    SheetFetchError,
+    fetch_sheet,
+)
 
 
 class _FakeResponse(io.BytesIO):
@@ -19,13 +23,15 @@ class _FakeResponse(io.BytesIO):
 
 
 def _capture_urlopen(monkeypatch, body: bytes = b"Machine,MAC\n"):
+    """fetch_sheet opens URLs through its own tracing opener, so capture
+    OpenerDirector.open (what urlopen() itself calls)."""
     calls: list[tuple[str, dict]] = []
 
-    def fake_urlopen(url, *args, **kwargs):
+    def fake_open(self, url, *args, **kwargs):
         calls.append((url, kwargs))
         return _FakeResponse(body)
 
-    monkeypatch.setattr(sheets.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(sheets.urllib.request.OpenerDirector, "open", fake_open)
     return calls
 
 
@@ -53,9 +59,10 @@ def test_non_positive_timeout_is_refused(monkeypatch, bad):
 
 
 def test_stalled_request_raises_instead_of_hanging(monkeypatch):
-    def stalled(url, *args, **kwargs):
+    def stalled(self, url, *args, **kwargs):
         raise TimeoutError("timed out")
 
-    monkeypatch.setattr(sheets.urllib.request, "urlopen", stalled)
-    with pytest.raises(TimeoutError):
+    monkeypatch.setattr(sheets.urllib.request.OpenerDirector, "open", stalled)
+    with pytest.raises(SheetFetchError) as info:
         fetch_sheet("network", "https://example.test/csv", timeout=1)
+    assert isinstance(info.value.__cause__, TimeoutError)

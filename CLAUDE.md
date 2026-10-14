@@ -585,7 +585,7 @@ primary IP or their NOTIFY ACL refuses).
 ```
 /etc/dnsmasq.d/
   dnsmasq.<net>.conf             # per-leaf entry: conf-dir=shared, adblock (roam/int only), <net>, <net>/generated
-  shared/                        # base, logging, edns
+  shared/                        # base (incl. no-hosts), logging, edns — hand-maintained, byte-identical at both sites
   adblock/adblock.conf           # local=/domain/ blocklist — roam + int leaves ONLY
   <net>/                         # 00-listen, 01-upstream, 02-dns, 03-dhcp (+05-pxe on PXE nets)
   <net>/generated/               # ← gdoc2netcfg dnsmasq_leaf output (wipe-and-replace safe)
@@ -605,7 +605,12 @@ REFUSES clients' external queries); owned subnets on the FORWARD
 `auth-zone` line (separate arpa auth-zones serve no PTRs);
 `local=/zone/` scoping on every served zone (misses loop via the
 recursor otherwise); `enable-tftp=br-<net>` (bare form binds nothing under
-`except-interface=lo`); `bind-dynamic` everywhere (shared :67).
+`except-interface=lo`); `bind-dynamic` everywhere (shared :67); `no-hosts`
+in `shared/00-base.conf` (dnsmasq otherwise serves `/etc/hosts`, whose
+`127.0.0.1 ten64` line made every leaf answer a bare `ten64` with loopback
+until 2026-10-14 — every name a leaf serves must come from its generated
+records or its leases; `expand-hosts` only qualifies hosts-file names and
+was removed with it).
 
 ```bash
 # Welland fetch + generate + deploy:

@@ -271,6 +271,9 @@ remains as the shared record-building layer for `dnsmasq_leaf` and
 must also appear as a `host-record` name) now runs on `dnsmasq_leaf` —
 the output a deploy installs — rather than on the retired pair, which meant
 it had never checked what reaches /etc. See `FCRDNS_VALIDATED_GENERATORS`.
+The same pass also checks every `dhcp-host` name has its bare `host-record`
+and is unique within a net (issue #75; see *Post-generation validation* in
+`docs/dns-naming.md`).
 
 ### Let's Encrypt Certificates
 
@@ -449,7 +452,7 @@ Note: `uv` is at `/usr/local/bin/uv` on both sites (verified 2026-10-14; monarto
 The SQLite DBs (`.cache/config.db`, `.cache/discovery.db`) accrue historical scan data (see *SQLite Storage*). They are created automatically by the first write (the reachability daemon, a scan command, or `fetch`). Inspect from the repo dir (the cache path is resolved relative to the working directory):
 
 ```bash
-cd /opt/gdoc2netcfg && .venv/bin/gdoc2netcfg db info   # sudo-free (read-only)
+cd /opt/gdoc2netcfg && .venv/bin/gdoc2netcfg db info   # sudo-free (read-only) — except on welland, see below
 ```
 
 **Ownership: root writes, anyone reads.** The reachability daemon runs as root, so `/opt/gdoc2netcfg/.cache` and `.venv` are owned by `root`. Reads are sudo-free — the DBs use DELETE journal and read-only opens (see *Journal mode* under *SQLite Storage*), so commands that only read (`generate`, `validate`, `password`, `db info`, `db history`, the show commands) work as a normal user. **Welland exception (seen 2026-10-14):** its `.venv/bin/python` is a symlink into root's uv-managed Python under `/root/.local/share/uv/` (`/root` is `0700`), so `.venv/bin/gdoc2netcfg` fails with `bad interpreter: Permission denied` for a normal user and even reads need `sudo` there; monarto's venv uses `/usr/bin/python3` and is unaffected. Commands that **write** the DBs (the supplement scan commands, `fetch`) must run via `sudo`, using the direct `.venv/bin/gdoc2netcfg` (not `uv run`, which would re-sync the root-owned venv). The reachability daemon writes a new `reachability` scan to `discovery.db` each 5-minute cycle; the other supplements only gain history when their scan commands are run.
@@ -809,7 +812,7 @@ sudo .venv/bin/gdoc2netcfg password --type snmp switch1   # SNMP community strin
 sudo .venv/bin/gdoc2netcfg password --type ipmi bmc.server1  # IPMI username + password
 ```
 
-Credentials are stored root-only in `.cache/credentials.db`, so the `password` command must run as **root** on prod (`sudo .venv/bin/gdoc2netcfg password <query>`, not `uv run`). It reads the host inventory from the credential-free CSV cache and the secret from `credentials.db` (`gdoc2netcfg fetch` must have been run at least once); it does not contact the Google Sheet directly. `generate`, `db`, `validate`, and the show commands stay sudo-free — the rest of the cache is credential-free. A `password --field <non-credential-column>` lookup also stays sudo-free (it never opens the credential store).
+Credentials are stored root-only in `.cache/credentials.db`, so the `password` command must run as **root** on prod (`sudo .venv/bin/gdoc2netcfg password <query>`, not `uv run`). It reads the host inventory from the credential-free CSV cache and the secret from `credentials.db` (`gdoc2netcfg fetch` must have been run at least once); it does not contact the Google Sheet directly. `generate`, `db`, `validate`, and the show commands stay sudo-free (apart from the welland venv exception under *SQLite databases*) — the rest of the cache is credential-free. A `password --field <non-credential-column>` lookup also stays sudo-free (it never opens the credential store).
 
 ### Other
 

@@ -188,7 +188,7 @@ identical-pair mirror can never trigger.
 
 `ten64`/`wisp` infra rows set `Type=static` (address configured on the device itself);
 `tenwrt` infra rows set `Type=DHCP:wisp` like the pucks (DHCP-served by wisp's
-gwifi-netboot). `_host_dhcp_config()` in `generators/dnsmasq.py` checks the `Type` extra
+gwifi-netboot). `dhcp_suppressed()` in `generators/dnsmasq_common.py` checks the `Type` extra
 column case-insensitively and skips `dhcp-host` bindings entirely for `DHCP:wisp` (DHCP for
 that VLAN is served elsewhere, not ten64's dnsmasq) or `static` (a second binding for an
 address already bound elsewhere is a FATAL dnsmasq startup error). A/PTR and other DNS
@@ -271,6 +271,9 @@ remains as the shared record-building layer for `dnsmasq_leaf` and
 must also appear as a `host-record` name) now runs on `dnsmasq_leaf` —
 the output a deploy installs — rather than on the retired pair, which meant
 it had never checked what reaches /etc. See `FCRDNS_VALIDATED_GENERATORS`.
+The same pass also checks every `dhcp-host` name has its bare `host-record`
+and is unique within a net (issue #75; see *Post-generation validation* in
+`docs/dns-naming.md`).
 
 ### Let's Encrypt Certificates
 
@@ -442,17 +445,17 @@ cp gdoc2netcfg.toml.example gdoc2netcfg.toml
 # Edit [site], [ipv6], [generators] enabled, and [[zigbee.sites]] for this site
 ```
 
-Note: `uv` on monarto is at `~/.local/bin/uv` (not in PATH for non-interactive shells).
+Note: `uv` is at `/usr/local/bin/uv` on both sites (verified 2026-10-14; monarto has no `~/.local/bin/uv`). sudo's PATH on both is `/usr/sbin:/usr/bin:/sbin:/bin`, which lacks `/usr/local/bin`, so under sudo name it in full (`sudo /usr/local/bin/uv …`); the Makefile resolves `UV` itself (a plain `sudo make deploy` works on welland). If you do override `PATH` for `sudo make deploy`, keep `/usr/sbin` in it: without it `deploy-nginx` fails at `nginx -t` after the new configs are already copied.
 
 ### SQLite databases
 
 The SQLite DBs (`.cache/config.db`, `.cache/discovery.db`) accrue historical scan data (see *SQLite Storage*). They are created automatically by the first write (the reachability daemon, a scan command, or `fetch`). Inspect from the repo dir (the cache path is resolved relative to the working directory):
 
 ```bash
-cd /opt/gdoc2netcfg && .venv/bin/gdoc2netcfg db info   # sudo-free (read-only)
+cd /opt/gdoc2netcfg && .venv/bin/gdoc2netcfg db info   # sudo-free (read-only) — except on welland, see below
 ```
 
-**Ownership: root writes, anyone reads.** The reachability daemon runs as root, so `/opt/gdoc2netcfg/.cache` and `.venv` are owned by `root`. Reads are sudo-free — the DBs use DELETE journal and read-only opens (see *Journal mode* under *SQLite Storage*), so commands that only read (`generate`, `validate`, `password`, `db info`, `db history`, the show commands) work as a normal user. Commands that **write** the DBs (the supplement scan commands, `fetch`) must run via `sudo`, using the direct `.venv/bin/gdoc2netcfg` (not `uv run`, which would re-sync the root-owned venv). The reachability daemon writes a new `reachability` scan to `discovery.db` each 5-minute cycle; the other supplements only gain history when their scan commands are run.
+**Ownership: root writes, anyone reads.** The reachability daemon runs as root, so `/opt/gdoc2netcfg/.cache` and `.venv` are owned by `root`. Reads are sudo-free — the DBs use DELETE journal and read-only opens (see *Journal mode* under *SQLite Storage*), so commands that only read (`generate`, `validate`, `password`, `db info`, `db history`, the show commands) work as a normal user. **Welland exception (seen 2026-10-14):** its `.venv/bin/python` is a symlink into root's uv-managed Python under `/root/.local/share/uv/` (`/root` is `0700`), so `.venv/bin/gdoc2netcfg` fails with `bad interpreter: Permission denied` for a normal user and even reads need `sudo` there; monarto's venv uses `/usr/bin/python3` and is unaffected. Commands that **write** the DBs (the supplement scan commands, `fetch`) must run via `sudo`, using the direct `.venv/bin/gdoc2netcfg` (not `uv run`, which would re-sync the root-owned venv). The reachability daemon writes a new `reachability` scan to `discovery.db` each 5-minute cycle; the other supplements only gain history when their scan commands are run.
 
 **"database is locked":** run `sudo .venv/bin/python scripts/db_lock_watch.py 120` to see which process holds which lock and for how long. A `SHARED` holder lasting more than a second or two is a slow read query (see the *Query shape rule* under *SQLite Storage*); a writer stuck in `PENDING` behind it is the victim. Failed cron jobs mail root (`cron run`, see *Scheduled jobs*), so a locked-DB failure is an email, not a silent log line.
 
@@ -585,7 +588,7 @@ primary IP or their NOTIFY ACL refuses).
 ```
 /etc/dnsmasq.d/
   dnsmasq.<net>.conf             # per-leaf entry: conf-dir=shared, adblock (roam/int only), <net>, <net>/generated
-  shared/                        # base, logging, edns
+  shared/                        # base (incl. no-hosts), logging, edns — hand-maintained, byte-identical at both sites
   adblock/adblock.conf           # local=/domain/ blocklist — roam + int leaves ONLY
   <net>/                         # 00-listen, 01-upstream, 02-dns, 03-dhcp (+05-pxe on PXE nets)
   <net>/generated/               # ← gdoc2netcfg dnsmasq_leaf output (wipe-and-replace safe)
@@ -605,7 +608,12 @@ REFUSES clients' external queries); owned subnets on the FORWARD
 `auth-zone` line (separate arpa auth-zones serve no PTRs);
 `local=/zone/` scoping on every served zone (misses loop via the
 recursor otherwise); `enable-tftp=br-<net>` (bare form binds nothing under
-`except-interface=lo`); `bind-dynamic` everywhere (shared :67).
+`except-interface=lo`); `bind-dynamic` everywhere (shared :67); `no-hosts`
+in `shared/00-base.conf` (dnsmasq otherwise serves `/etc/hosts`, whose
+`127.0.0.1 ten64` line made every leaf answer a bare `ten64` with loopback
+until 2026-10-14 — every name a leaf serves must come from its generated
+records or its leases; `expand-hosts` only qualifies hosts-file names and
+was removed with it).
 
 ```bash
 # Welland fetch + generate + deploy:
@@ -624,8 +632,8 @@ sudo systemctl restart pdns-recursor     # if forward-zones.yml changed
 
 #### Monarto
 
-Monarto mirrors the welland layout with its own values: 7 leaves
-(guest tmp net pwr iot roam int — 12h leases, guest 1h, NO PXE
+Monarto mirrors the welland layout with its own values: 9 leaves
+(guest tmp net pwr store wifi iot roam int — 12h leases, guest 1h, NO PXE
 anywhere), recursor on 10.2.0.1 (v4-only listen; loopback + the wg
 listener 10.98.2.2), pdns@internal on 127.0.0.1:5300, pdns@external on
 [2404:e80:a137:200::1] with query-local-address pinned to that v6 for
@@ -786,11 +794,11 @@ documented follow-up (gwifi-openwrt image + live push).
 Certbot scripts are generated to `/opt/gdoc2netcfg/letsencrypt/`. The `letsencrypt` **generator** is Welland only — monarto does not enable it; monarto's TLS certs (`/etc/letsencrypt/live/ten64.monarto.mithis.com`, `ipv6-ten64.monarto`) are managed by **certbot directly** (a single host cert that nginx terminates with), not by this per-host DNS-01 generator.
 
 ```bash
-sudo uv run gdoc2netcfg generate --output-dir /opt/gdoc2netcfg letsencrypt
+sudo /usr/local/bin/uv run gdoc2netcfg generate --output-dir /opt/gdoc2netcfg letsencrypt
 sudo sh /opt/gdoc2netcfg/letsencrypt/certs-available/{fqdn}  # Provision a cert
 ```
 
-The auth hook is the `certbot-hook-dnsmasq` Python CLI installed at `/opt/certbot/bin/certbot-hook-dnsmasq` (separate repo: `mithro/certbot-hook-dnsmasq`). It creates TXT records in the external dnsmasq, verifies local resolution, sends NOTIFY to secondaries, and polls until they sync.
+The auth hook is `/opt/certbot/bin/certbot-hook-pdns` (see *Let's Encrypt Certificates* above). The legacy `certbot-hook-dnsmasq` is still installed beside it but targets the retired dnsmasq@external.
 
 ### Looking up device credentials
 
@@ -804,7 +812,7 @@ sudo .venv/bin/gdoc2netcfg password --type snmp switch1   # SNMP community strin
 sudo .venv/bin/gdoc2netcfg password --type ipmi bmc.server1  # IPMI username + password
 ```
 
-Credentials are stored root-only in `.cache/credentials.db`, so the `password` command must run as **root** on prod (`sudo .venv/bin/gdoc2netcfg password <query>`, not `uv run`). It reads the host inventory from the credential-free CSV cache and the secret from `credentials.db` (`gdoc2netcfg fetch` must have been run at least once); it does not contact the Google Sheet directly. `generate`, `db`, `validate`, and the show commands stay sudo-free — the rest of the cache is credential-free. A `password --field <non-credential-column>` lookup also stays sudo-free (it never opens the credential store).
+Credentials are stored root-only in `.cache/credentials.db`, so the `password` command must run as **root** on prod (`sudo .venv/bin/gdoc2netcfg password <query>`, not `uv run`). It reads the host inventory from the credential-free CSV cache and the secret from `credentials.db` (`gdoc2netcfg fetch` must have been run at least once); it does not contact the Google Sheet directly. `generate`, `db`, `validate`, and the show commands stay sudo-free (apart from the welland venv exception under *SQLite databases*) — the rest of the cache is credential-free. A `password --field <non-credential-column>` lookup also stays sudo-free (it never opens the credential store).
 
 ### Other
 

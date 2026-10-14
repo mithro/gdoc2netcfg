@@ -442,7 +442,7 @@ cp gdoc2netcfg.toml.example gdoc2netcfg.toml
 # Edit [site], [ipv6], [generators] enabled, and [[zigbee.sites]] for this site
 ```
 
-Note: `uv` on monarto is at `~/.local/bin/uv` (not in PATH for non-interactive shells).
+Note: `uv` is at `/usr/local/bin/uv` on both sites (verified 2026-10-14; monarto has no `~/.local/bin/uv`). sudo's PATH on both is `/usr/sbin:/usr/bin:/sbin:/bin`, which lacks `/usr/local/bin`, so under sudo name it in full (`sudo /usr/local/bin/uv …`); the Makefile resolves `UV` itself, so a plain `sudo make deploy` works. If you do override `PATH` for `sudo make deploy`, keep `/usr/sbin` in it: without it `deploy-nginx` fails at `nginx -t` after the new configs are already copied.
 
 ### SQLite databases
 

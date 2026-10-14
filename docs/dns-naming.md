@@ -59,8 +59,9 @@ The site zone delegates every net zone (`NS` + glue, deliberately no
 recursor follows it into the iot leaf.
 
 A hostname with a net suffix (`au-plug-1.iot`, `openmesh-96-00.wifi`)
-puts **all** of that host's names under the net's zone cut, because the
-recursor forwards the whole cut to the leaf. See [Zone-cut
+puts every name of the host that ends in `.{suffix}.{domain}` under that
+net's zone cut, whether or not the host has an interface there, because
+the recursor forwards the whole cut to the leaf. See [Zone-cut
 names](#zone-cut-names).
 
 
@@ -77,22 +78,27 @@ transit VLANs, and `wg` for the tunnels.
 
 Three kinds of interface are special throughout:
 
-- **Parked** (site addresses in `10.X.253/254`): no records at all, and
-  left out of every aggregate.
+- **Parked** (site addresses in `10.X.253/254`): no records from
+  Passes 1–4, and left out of the default aggregate.
 - **CGNAT** (tailscale, `100.64/10`): left out of site aggregates and of
   the public view; reachable by interface name.
 - **No net home** (public WAN, tailscale) or a net delegated to another
   server (`fpgas` → tweed): the interface keeps a site-scope native
   record, since there is no net zone of ours to project it into.
 
-A host whose hostname suffix names a delegated net (`pi4.fpgas`)
-produces no names at all: it lives entirely in the delegated zone.
+A host with an interface on a delegated net whose hostname carries
+that net's suffix (`pi4.fpgas`) produces no names in Passes 1–3: it
+lives entirely in the delegated zone.
+
+Two paths bypass these rules. An *Aggregate* override selects
+interfaces by name, parked ones included. Pass 5 applies none of them:
+an alt name carries every interface's addresses.
 
 ### Pass 1 — Site aggregate
 
 | Name | Scope | Addresses |
 |------|-------|-----------|
-| `{hostname}.{domain}` | `site` (or `net`, if the hostname has a net suffix) | every aggregate interface, IPv4 + IPv6 |
+| `{hostname}.{domain}` | `site` (or `net`, if the hostname has a net suffix **and** an interface on that net: `au-plug-1.iot`) | every aggregate interface, IPv4 + IPv6 |
 | `{hostname}` | `short` | the same |
 
 The aggregate is every interface that is neither parked nor CGNAT. The
@@ -137,8 +143,10 @@ For every FQDN from Passes 1–3:
 - a **CNAME** gets `ipv4.{alias}` → `ipv4.{target}` and `ipv6.{alias}` →
   `ipv6.{target}`, only for the families the interface has.
 
-The `ipv4.*`/`ipv6.*` forms of the per-interface net names have the most
-labels of any name, which is what makes them the reverse-DNS targets.
+For a named interface, the `ipv4.*`/`ipv6.*` forms of its net name have
+the most labels of any name carrying that address, which is what makes
+them the reverse-DNS targets. An unnamed interface's target is the
+prefix form of the per-net host name (`ipv4.au-plug-1.iot.…`).
 
 ### Pass 5 — Alt names
 
@@ -414,8 +422,9 @@ eno0.desktop.int.welland.mithis.com. 300 IN AAAA 2404:e80:a137:111::124
 `validate_dnsmasq_output()` in `generators/dnsmasq_common.py` runs on the
 output of the generators listed in `FCRDNS_VALIDATED_GENERATORS`
 (`cli/main.py`), currently `dnsmasq_leaf`: the files a deploy installs.
-Each failure is an `ERROR` violation, which stops the output being
-written and makes `generate` exit non-zero.
+Each failure is an `ERROR` violation: `generate` exits non-zero and
+skips writing that generator's output, unless `--force` is given (the
+exit code stays non-zero). Deploys never use `--force`.
 
 | Code | Checks |
 |------|--------|

@@ -1266,16 +1266,10 @@ def _print_reachability_summary(
 def _reachability_build_hosts(config):
     """Shared helper: build hosts from cached CSVs for reachability commands."""
     from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
 
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
+    all_records = _parse_device_records(csv_data)
 
     return build_hosts(all_records, config.site)
 
@@ -1359,7 +1353,6 @@ def _scan_ssh_host_keys_pipeline(
     Returns (hosts, host_keys_data).
     """
     from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.sshfp import (
         enrich_hosts_with_ssh_host_keys,
         raise_for_ssh_errors,
@@ -1369,12 +1362,7 @@ def _scan_ssh_host_keys_pipeline(
     # We need a minimal pipeline to get hosts with IPs
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
+    all_records = _parse_device_records(csv_data)
 
     hosts = build_hosts(all_records, config.site)
 
@@ -1451,7 +1439,6 @@ def cmd_ssl_certs(args: argparse.Namespace) -> int:
     )
     from gdoc2netcfg.derivations.dns_names import derive_all_dns_names
     from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.ssl_certs import (
         enrich_hosts_with_ssl_certs,
         scan_ssl_certs,
@@ -1460,12 +1447,7 @@ def cmd_ssl_certs(args: argparse.Namespace) -> int:
     # Minimal pipeline to get hosts with IPs
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
+    all_records = _parse_device_records(csv_data)
 
     hosts = build_hosts(all_records, config.site)
 
@@ -1835,19 +1817,13 @@ def cmd_bridge_show(args: argparse.Namespace) -> int:
     config = _load_config(args)
 
     from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.bridge import enrich_hosts_with_bridge_data
     from gdoc2netcfg.supplements.nsdp import enrich_hosts_with_nsdp
 
     # Build hosts from cached CSVs
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
+    all_records = _parse_device_records(csv_data)
 
     hosts = build_hosts(all_records, config.site)
 
@@ -2130,7 +2106,6 @@ def cmd_nsdp_scan(args: argparse.Namespace) -> int:
     config = _load_config(args)
 
     from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.nsdp import (
         NSDP_HARDWARE_TYPES,
         enrich_hosts_with_nsdp,
@@ -2140,12 +2115,7 @@ def cmd_nsdp_scan(args: argparse.Namespace) -> int:
     # Minimal pipeline to get hosts with IPs
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
+    all_records = _parse_device_records(csv_data)
 
     hosts = build_hosts(all_records, config.site)
 
@@ -2279,7 +2249,6 @@ def cmd_tasmota_scan(args: argparse.Namespace) -> int:
     config = _load_config(args)
 
     from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.tasmota import (
         _UNKNOWN_PREFIX,
         enrich_hosts_with_tasmota,
@@ -2289,11 +2258,7 @@ def cmd_tasmota_scan(args: argparse.Namespace) -> int:
     # Minimal pipeline to get hosts with IPs.
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        all_records.extend(parse_csv(csv_text, name))
+    all_records = _parse_device_records(csv_data)
     hosts = build_hosts(all_records, config.site)
 
     discrepancies: list = []

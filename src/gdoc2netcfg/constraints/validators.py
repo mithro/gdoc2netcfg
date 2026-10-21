@@ -272,6 +272,7 @@ def _is_cross_sheet_mirror(
     macs: list[tuple[MACAddress, str]],
     ip_str: str,
     mac_to_hosts: dict[str, list[Host]],
+    ip_hostnames: set[str],
 ) -> bool:
     """Is this IP's MAC collision a deliberate cross-sheet mirror?
 
@@ -296,6 +297,13 @@ def _is_cross_sheet_mirror(
     two failure modes: a genuine same-IP duplicate getting masked by an
     unrelated host that merely reuses the MAC elsewhere, and a genuine
     same-IP mirror getting wrongly rejected by such an unrelated host.
+
+    One further requirement keeps the carve-out to exactly that pair:
+    *ip_hostnames* (the hosts on ip_str the caller judges: every host
+      for the DNS-level check, the MAC'd ones for the DHCP-level one) must
+      be the mirror's hosts and nothing else.  *macs* comes from
+      ip_to_macs, which omits DNS-only interfaces, so without this a
+      MAC-less third host on a mirror's IP was waved through.
     """
     unique_macs = {str(mac) for mac, _ in macs}
     if len(unique_macs) != 1:
@@ -319,6 +327,7 @@ def _is_cross_sheet_mirror(
         len(machine_names) == 1
         and len(sheet_types) > 1
         and len(hostnames) == len(sheet_types)
+        and hostnames == ip_hostnames
     )
 
 
@@ -372,6 +381,19 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
         for iface in host.interfaces:
             mac_to_hosts.setdefault(str(iface.mac), []).append(host)
 
+    # ip → every host with an interface on it (ip_to_hosts), and the hosts
+    # with a MAC'd interface on it (ip_to_macced_hosts).  The mirror
+    # carve-out must see exactly the pair on the IP: the DHCP-level check
+    # below judges the MAC'd owners, the DNS-level one every owner.
+    ip_to_hosts: dict[str, set[str]] = {}
+    ip_to_macced_hosts: dict[str, set[str]] = {}
+    for host in inventory.hosts:
+        for iface in host.interfaces:
+            ip_to_hosts.setdefault(str(iface.ipv4), set()).add(host.hostname)
+            if iface.mac is not None:
+                ip_to_macced_hosts.setdefault(
+                    str(iface.ipv4), set()).add(host.hostname)
+
     # Multiple MACs per IP: allowed in the roaming range, or when all MACs
     # belong to one host (e.g. a multi-port endpoint like a puck's wan+lan
     # interfaces sharing one fixed IP — this owner check stays MAC-global,
@@ -392,7 +414,10 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
                 owning_hostnames.update(h.hostname for h in hosts)
         if not has_unowned_mac and len(owning_hostnames) == 1:
             continue
-        if _is_cross_sheet_mirror(macs, ip_str, mac_to_hosts):
+        if _is_cross_sheet_mirror(
+            macs, ip_str, mac_to_hosts,
+            ip_to_macced_hosts.get(ip_str, set()),
+        ):
             continue
         mac_list = ", ".join(f"{mac} ({name})" for mac, name in macs)
         result.add(ConstraintViolation(
@@ -409,10 +434,6 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
     # two different hosts is always a data error — this catches stale rows
     # (e.g. a replaced switch's old row keeping the new switch's address)
     # even when one side has no MAC and so dodges the DHCP-keyed checks.
-    ip_to_hosts: dict[str, set[str]] = {}
-    for host in inventory.hosts:
-        for iface in host.interfaces:
-            ip_to_hosts.setdefault(str(iface.ipv4), set()).add(host.hostname)
     for ip_str, hostnames in sorted(ip_to_hosts.items()):
         # Same roaming-range exemption as ip_multiple_macs above: pool
         # addresses legitimately move between devices.
@@ -420,11 +441,13 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
             continue
         # Same cross-sheet-mirror carve-out as ip_multiple_macs: an IP
         # Allocation row and its wifi-tab formula row share one MAC+IP by
-        # design. A MAC-less duplicate never qualifies (the predicate
-        # requires the identical MAC on every colliding record), so the
-        # stale-row cases this check exists for still error.
+        # design. A MAC-less duplicate never qualifies: the predicate
+        # requires the IP's hosts to be exactly the MAC'd mirror pair, so
+        # a DNS-only host on the IP (alone or beside a genuine mirror) and
+        # the stale-row cases this check exists for still error.
         if _is_cross_sheet_mirror(
-            inventory.ip_to_macs.get(ip_str, []), ip_str, mac_to_hosts
+            inventory.ip_to_macs.get(ip_str, []), ip_str, mac_to_hosts,
+            hostnames,
         ):
             continue
         if len(hostnames) > 1:

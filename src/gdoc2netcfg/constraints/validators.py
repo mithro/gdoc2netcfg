@@ -409,15 +409,15 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
     # two different hosts is always a data error — this catches stale rows
     # (e.g. a replaced switch's old row keeping the new switch's address)
     # even when one side has no MAC and so dodges the DHCP-keyed checks.
+    # No roaming-range exemption here: ip_multiple_macs lets one roaming
+    # device's wired+wifi MACs share its address, but two different hosts
+    # on one roam IP is an error too (decision 2026-10-22; the rsyslog
+    # generator relies on no cross-host shared IP but the mirrors).
     ip_to_hosts: dict[str, set[str]] = {}
     for host in inventory.hosts:
         for iface in host.interfaces:
             ip_to_hosts.setdefault(str(iface.ipv4), set()).add(host.hostname)
     for ip_str, hostnames in sorted(ip_to_hosts.items()):
-        # Same roaming-range exemption as ip_multiple_macs above: pool
-        # addresses legitimately move between devices.
-        if roam_prefix and ip_str.startswith(roam_prefix):
-            continue
         # Same cross-sheet-mirror carve-out as ip_multiple_macs: an IP
         # Allocation row and its wifi-tab formula row share one MAC+IP by
         # design. A MAC-less duplicate never qualifies (the predicate
@@ -444,8 +444,8 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
     # another host's derived ::181 while every IPv4 stays unique. Keyed on
     # the exploded form — the cells are free text (::0181 == ::181).
     # Colliding interfaces that all share ONE IPv4 are left to the IPv4
-    # check above, which already errors or applies the roaming/mirror
-    # carve-outs; only collisions across distinct IPv4s are reported here.
+    # check above, which already errors or applies the mirror carve-out;
+    # only collisions across distinct IPv4s are reported here.
     v6_owners: dict[str, list[tuple[str, str]]] = {}  # exploded → [(host, ipv4)]
     v6_display: dict[str, str] = {}
     for host in inventory.hosts:

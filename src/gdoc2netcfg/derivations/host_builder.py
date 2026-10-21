@@ -68,10 +68,12 @@ def _build_interface(record: DeviceRecord, site: Site) -> NetworkInterface:
     mac = MACAddress.parse(record.mac_address) if record.mac_address else None
     ipv4 = IPv4Address(record.ip)
     ipv6_addrs = list(ipv4_to_ipv6_list(ipv4, site.active_ipv6_prefixes))
-    seen_v6 = {str(a) for a in ipv6_addrs}
+    # Dedupe on the exploded form: the cells are free text, and ::0181 is
+    # the derived ::181 (str() kept both -> a duplicate AAAA, #84 J).
+    seen_v6 = {a.exploded for a in ipv6_addrs}
     for addr in _parse_explicit_ipv6(record, site):
-        if str(addr) not in seen_v6:
-            seen_v6.add(str(addr))
+        if addr.exploded not in seen_v6:
+            seen_v6.add(addr.exploded)
             ipv6_addrs.append(addr)
     vlan_id = ip_to_vlan_id(ipv4, site)
     interface_name = record.interface if record.interface else None

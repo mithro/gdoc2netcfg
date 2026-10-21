@@ -609,9 +609,24 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
     # 3. If a credential-bearing sheet was fetched, store credentials FIRST
     #    (before touching the cache) so a failure leaves old state intact.
-    #    Skip entirely when no credential columns were seen this run — never
-    #    tombstone credentials on a transient fetch failure of that sheet.
-    if has_credential_columns:
+    #    Skip entirely when no credential columns were seen this run, and
+    #    skip (loudly) when any device sheet failed to fetch: save_credentials
+    #    tombstones every stored (hostname, field) missing from its input, so
+    #    a partial input would wipe the failed sheet's credentials (#87).
+    unfetched_device_sheets = [
+        sheet.name for sheet in config.sheets
+        if sheet.name not in fetched_names
+        and sheet.name not in _NON_DEVICE_SHEETS
+    ]
+    if has_credential_columns and unfetched_device_sheets:
+        print(
+            "Warning: not updating the credential store: device sheet(s) "
+            f"{', '.join(unfetched_device_sheets)} failed to fetch, so their "
+            "credentials are unknown this run. Stored credentials are left "
+            "unchanged.",
+            file=sys.stderr,
+        )
+    elif has_credential_columns:
         from gdoc2netcfg.derivations.host_builder import (
             build_hosts,
             find_lost_credential_cells,

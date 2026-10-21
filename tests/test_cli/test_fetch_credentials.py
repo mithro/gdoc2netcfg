@@ -150,3 +150,58 @@ def test_failed_credential_sheet_fetch_does_not_wipe_store(
     with CredentialsDB(cache_dir / "credentials.db", read_only=True) as db:
         after = db.load_latest_credentials()
     assert after == before
+
+
+def _add_sheets(config, **sheets):
+    """Configure extra [sheets] entries alongside network."""
+    lines = "".join(f'\n{name} = "https://example.com/{name}"' for name in sheets)
+    config.write_text(config.read_text().replace(
+        'network = "https://example.com/network"',
+        'network = "https://example.com/network"' + lines,
+    ))
+
+
+def test_partial_fetch_does_not_tombstone_failed_sheets_credentials(
+    fetch_config, monkeypatch, capsys,
+):
+    """#87: network (Password) fails while iot (with its own credential
+    column) fetches fine.  The store must keep network's credentials —
+    the run has no idea what that sheet holds now."""
+    config, cache_dir = fetch_config
+    _add_sheets(config, iot="")
+
+    iot_csv = (
+        "Machine,MAC Address,IP,Interface,SNMP Community\n"
+        "plug-1,aa:bb:cc:dd:ee:09,10.1.90.10,,plugcomm\n"
+    )
+    failing: set[str] = set()
+
+    def fake_fetch(name, url, timeout=None):
+        if name in failing:
+            raise RuntimeError("HTTP 503")
+        return SheetData(
+            name=name,
+            csv_text=_fake_network_csv() if name == "network" else iot_csv,
+        )
+
+    monkeypatch.setattr(
+        "gdoc2netcfg.sources.sheets.fetch_sheet", fake_fetch, raising=True,
+    )
+    assert cli.main(["-c", str(config), "fetch"]) == 0
+    with CredentialsDB(cache_dir / "credentials.db", read_only=True) as db:
+        before = db.load_latest_credentials()
+    assert {"Password": "secret1"} in before.values()
+    assert {"SNMP Community": "plugcomm"} in before.values()
+
+    failing.add("network")
+    capsys.readouterr()
+    assert cli.main(["-c", str(config), "fetch"]) == 1
+    with CredentialsDB(cache_dir / "credentials.db", read_only=True) as db:
+        after = db.load_latest_credentials()
+    assert after == before
+    # Skipping the store is loud: the mail says why it was not updated.
+    err = capsys.readouterr().err
+    assert "credential store" in err and "network" in err
+    # The good sheet is still cached.
+    assert (cache_dir / "iot.csv").exists()
+

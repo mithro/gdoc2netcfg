@@ -29,7 +29,9 @@ _DHCP_NAME_RE = re.compile(r'^[a-z0-9.\-_]+$')
 # Field Constraints (on raw DeviceRecords)
 # ---------------------------------------------------------------------------
 
-def validate_field_constraints(records: list[DeviceRecord]) -> ValidationResult:
+def validate_field_constraints(
+    records: list[DeviceRecord], site: Site,
+) -> ValidationResult:
     """Validate field-level constraints on raw device records.
 
     Checks:
@@ -39,19 +41,39 @@ def validate_field_constraints(records: list[DeviceRecord]) -> ValidationResult:
       on the same IP.  ERROR — fetch refuses to cache the sheet set.
     - Machine name must be present (WARNING)
     - IP address must be present (WARNING)
+
+    Every site's rows are checked, so either site's fetch refuses a
+    contract-breaking sheet.  For this site's rows the cross-reference
+    exemption is judged exactly as build_hosts judges it: over this site's
+    records with 'X' resolved (#84 C).  Unresolved, an owner at another
+    site exempted a row this site then built as a MAC-less host, and an
+    owner spelled 10.1.* failed to exempt a 10.X.* cross-reference.
+    Another site's rows keep the unresolved, all-records view; that
+    site's own run applies its exact rule.
     """
     from gdoc2netcfg.derivations.host_builder import macced_ips
+    from gdoc2netcfg.derivations.ip_remap import (
+        filter_and_resolve_records,
+        is_record_for_site,
+        resolve_site_ip,
+    )
     from gdoc2netcfg.sources.parser import DNS_ONLY_MARKER
 
     result = ValidationResult()
-    claimed = macced_ips(records)
+    claimed_anywhere = macced_ips(records)
+    claimed_here = macced_ips(filter_and_resolve_records(records, site))
+
+    def is_cross_reference(record: DeviceRecord) -> bool:
+        if is_record_for_site(record, site):
+            return resolve_site_ip(record.ip, site.site_octet) in claimed_here
+        return record.ip in claimed_anywhere
 
     for record in records:
         record_id = f"{record.sheet_name}:{record.row_number}"
 
         if not record.mac_address and not record.dns_only:
             is_interface_row = bool(record.machine and record.ip)
-            if is_interface_row and record.ip in claimed:
+            if is_interface_row and is_cross_reference(record):
                 pass  # cross-reference row; host_builder skips it
             elif is_interface_row:
                 result.add(ConstraintViolation(
@@ -693,7 +715,7 @@ def validate_all(
     combined = ValidationResult()
 
     for result in [
-        validate_field_constraints(records),
+        validate_field_constraints(records, inventory.site),
         validate_ipv6_consistency(records, inventory.site),
         validate_vlan_consistency(records, inventory.site),
         validate_record_constraints(hosts, inventory.site),

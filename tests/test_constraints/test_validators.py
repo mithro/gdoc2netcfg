@@ -900,3 +900,108 @@ class TestMacLessAndCrossHostDuplicates:
         )
         result = validate_cross_record_constraints(inv)
         assert [v for v in result.errors if v.code == "ip_multiple_hosts"]
+
+
+def _dual_iface(ip, v6s, mac="aa:bb:cc:dd:ee:ff", dhcp_name="test", name=None):
+    from gdoc2netcfg.models.addressing import IPv6Address
+
+    return NetworkInterface(
+        name=name,
+        mac=MACAddress.parse(mac),
+        ip_addresses=(IPv4Address(ip),) + tuple(
+            IPv6Address(address=a, prefix="2404:e80:a137:1") for a in v6s
+        ),
+        dhcp_name=dhcp_name,
+    )
+
+
+class TestCrossHostIPv6Duplicates:
+    """The same IPv6 on two hosts is a data error, like the IPv4 case.
+
+    The live case that motivated it: network.csv gave samsung-tv
+    (10.X.90.191) an explicit 'IPv6 A' of ::181, which collides with
+    geekmagic-ultra-1.iot's derived ::181 — explicit cells are unioned
+    with the derived address, so nothing else notices.
+    """
+
+    def test_explicit_ipv6_colliding_with_another_hosts_derived_errors(self):
+        hosts = [
+            _host("samsung-tv", [
+                _dual_iface("10.1.90.191",
+                            ["2404:e80:a137:190::191", "2404:e80:a137:190::181"],
+                            mac="aa:bb:cc:dd:ee:01"),
+            ]),
+            _host("geekmagic-ultra-1", [
+                _dual_iface("10.1.90.181", ["2404:e80:a137:190::181"],
+                            mac="aa:bb:cc:dd:ee:02"),
+            ], sheet_type="IoT"),
+        ]
+        inv = NetworkInventory(site=SITE, hosts=hosts)
+        result = validate_cross_record_constraints(inv)
+        errors = [v for v in result.errors if v.code == "ipv6_multiple_hosts"]
+        assert len(errors) == 1
+        assert errors[0].record_id == "2404:e80:a137:190::181"
+        assert "samsung-tv" in errors[0].message
+        assert "geekmagic-ultra-1" in errors[0].message
+
+    def test_spelling_variants_of_one_address_collide(self):
+        """Explicit cells are free text: ::0181 and ::181 are one address."""
+        hosts = [
+            _host("a", [_dual_iface("10.1.90.1", ["2404:e80:a137:190::0181"],
+                                    mac="aa:bb:cc:dd:ee:01")]),
+            _host("b", [_dual_iface("10.1.90.2", ["2404:e80:a137:190::181"],
+                                    mac="aa:bb:cc:dd:ee:02")]),
+        ]
+        inv = NetworkInventory(site=SITE, hosts=hosts)
+        result = validate_cross_record_constraints(inv)
+        assert [v for v in result.errors if v.code == "ipv6_multiple_hosts"]
+
+    def test_cross_sheet_mirror_is_exempt(self):
+        """wisp / wisp.wifi share MAC+IPv4, hence the derived IPv6 too —
+        the IPv4 check's mirror carve-out decides, no IPv6 error."""
+        hosts = [
+            _host("wisp", [
+                _dual_iface("10.1.4.2", ["2404:e80:a137:104::2"],
+                            mac="aa:bb:cc:dd:ee:01", dhcp_name="wisp"),
+            ], machine_name="wisp", sheet_type="Network"),
+            _host("wisp.wifi", [
+                _dual_iface("10.1.4.2", ["2404:e80:a137:104::2"],
+                            mac="aa:bb:cc:dd:ee:01", dhcp_name="wisp.wifi"),
+            ], machine_name="wisp", sheet_type="WiFi"),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.4.2": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wisp"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wisp.wifi"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        assert not result.errors
+
+    def test_shared_ipv4_reported_once_by_the_ipv4_check(self):
+        """Two hosts on one IPv4 (not a mirror) share its derived IPv6:
+        ip_multiple_hosts already reports it; no second IPv6 error."""
+        hosts = [
+            _host(name, [_dual_iface("10.1.5.31", ["2404:e80:a137:105::31"],
+                                     mac=f"aa:bb:cc:dd:ee:0{i}")])
+            for i, name in enumerate(("sw-old", "sw-new"), start=1)
+        ]
+        inv = NetworkInventory(site=SITE, hosts=hosts)
+        result = validate_cross_record_constraints(inv)
+        assert [v for v in result.errors if v.code == "ip_multiple_hosts"]
+        assert not [v for v in result.errors if v.code == "ipv6_multiple_hosts"]
+
+    def test_same_host_two_interfaces_one_ipv6_is_fine(self):
+        """A puck's wan+lan share one IPv4, so one derived IPv6."""
+        host = _host("puck01.wifi", [
+            _dual_iface("10.1.4.101", ["2404:e80:a137:104::101"],
+                        mac="aa:bb:cc:dd:ee:01", name="wan"),
+            _dual_iface("10.1.4.101", ["2404:e80:a137:104::101"],
+                        mac="aa:bb:cc:dd:ee:02", name="lan"),
+        ], sheet_type="WiFi")
+        inv = NetworkInventory(site=SITE, hosts=[host])
+        result = validate_cross_record_constraints(inv)
+        assert not [v for v in result.errors if v.code == "ipv6_multiple_hosts"]

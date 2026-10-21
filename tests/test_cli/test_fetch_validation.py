@@ -90,3 +90,33 @@ def test_fetch_validates_against_cached_copy_of_a_sheet_that_failed_to_fetch(
     # fresh fetch, and iot's own successful, valid data must still be cached.
     assert cli.main(["-c", str(config), "fetch"]) == 1
     assert (cache_dir / "iot.csv").exists()
+
+
+def test_fetch_refuses_sheet_set_failing_a_cross_host_check(fetch_config, monkeypatch, capsys):  # noqa: F811
+    """fetch runs the FULL validation, not just the per-row field checks:
+    two hosts sharing one IP is only visible once hosts are built, and
+    must keep that data out of the cache just like a missing MAC does."""
+    config, cache_dir = fetch_config
+
+    good_csv = "Machine,MAC Address,IP,Interface\nswitch1,aa:bb:cc:dd:ee:01,10.1.30.1,\n"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "network.csv").write_text(good_csv)
+
+    def fake_fetch(name, url, timeout=None):
+        return SheetData(name=name, csv_text=(
+            "Machine,MAC Address,IP,Interface\n"
+            "sw-old,aa:bb:cc:dd:ee:01,10.1.30.1,\n"
+            "sw-new,aa:bb:cc:dd:ee:02,10.1.30.1,\n"
+        ))
+
+    monkeypatch.setattr("gdoc2netcfg.sources.sheets.fetch_sheet", fake_fetch, raising=True)
+
+    rc = cli.main(["-c", str(config), "fetch"])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "ip_multiple_hosts" in err
+    assert "sw-old" in err and "sw-new" in err
+    assert "Nothing was stored" in err
+    assert (cache_dir / "network.csv").read_text() == good_csv
+    assert not (cache_dir / "config.db").exists()

@@ -575,7 +575,10 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     #     the sheets just fetched plus the CACHED copy of any sheet that
     #     failed to fetch.  Invalid data is never cached — the previous
     #     good CSVs stay and the cron mail says why (fail loud, early).
-    from gdoc2netcfg.constraints.validators import validate_field_constraints
+    #     This is the FULL validate_all over the same sheet model generate
+    #     builds, so checks between hosts (shared IPs, ...) gate the cache
+    #     too, not only the per-row field checks.
+    from gdoc2netcfg.constraints.validators import validate_all
 
     cache = CSVCache(config.cache.directory)
     fetched_names = {name for name, _ in raw_csvs}
@@ -583,20 +586,20 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     for sheet in config.sheets:
         if sheet.name not in fetched_names and cache.has(sheet.name):
             to_validate.append((sheet.name, cache.read(sheet.name)))
-    field_result = validate_field_constraints(_parse_device_records(to_validate))
-    if field_result.has_errors:
+    sheet_result = validate_all(*_build_sheet_model(config, to_validate))
+    if sheet_result.has_errors:
         print(
             "Error: the fetched sheets fail validation; refusing to cache "
             "or store them (the previous cached copies stay in place):",
             file=sys.stderr,
         )
-        # Errors only, once each — not field_result.report() (which also
+        # Errors only, once each — not sheet_result.report() (which also
         # lists every WARNING; on today's sheets that's ~366 extra lines
         # mailed to root every 15 minutes until the sheet is fixed).
         # ValidationResult.__str__ omits the machine-readable `code`
         # (test_constraints/test_errors.py pins that format), so prefix
         # it ourselves.
-        for violation in field_result.errors:
+        for violation in sheet_result.errors:
             print(f"  [{violation.code}] {violation}", file=sys.stderr)
         print("Fix the spreadsheet rows above, then re-run fetch. Nothing was stored.",
               file=sys.stderr)

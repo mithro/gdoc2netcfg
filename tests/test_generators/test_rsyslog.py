@@ -449,6 +449,67 @@ class TestAlerts:
         assert "%$.name%" in conf[conf.index('template(name="AlertSubjectBmc"'):]
 
 
+class TestAlertsFromToml:
+    def _config(self, tmp_path, alert_lines):
+        import textwrap
+        cache_dir = tmp_path / ".cache"
+        cache_dir.mkdir()
+        (cache_dir / "network.csv").write_text(
+            "Machine,MAC Address,IP,Interface\n"
+            "ten64,02:00:0a:01:05:01,10.1.5.1,br-net\n"
+            "bmc.big-storage,aa:bb:cc:dd:ee:01,10.1.5.150,\n"
+        )
+        (cache_dir / "vlan_allocations.csv").write_text(
+            "VLAN,Name,IP Range,Netmask,CIDR,,,Color,For\n"
+            "5,net,10.X.5.X,255.255.255.0,/24,,,,Network\n"
+        )
+        config = tmp_path / "gdoc2netcfg.toml"
+        config.write_text(textwrap.dedent(f"""\
+            [site]
+            name = "test"
+            domain = "test.example.com"
+            site_octet = 1
+
+            [sheets]
+            network = "https://example.com/not-used"
+            vlan_allocations = "https://example.com/not-used-either"
+
+            [cache]
+            directory = "{cache_dir}"
+
+            [ipv6]
+            prefixes = ["2001:db8:1:"]
+
+            [generators]
+            enabled = []
+
+            [generators.rsyslog]
+            output_dir = "etc"
+        """) + alert_lines)
+        return config
+
+    def test_toml_alert_keys_reach_the_generator(self, tmp_path, capsys):
+        from gdoc2netcfg.cli.main import main
+        config = self._config(tmp_path, (
+            'alert_mail_to = "servers+test@example.com"\n'
+            'alert_mail_from = "rsyslog@test.example.com"\n'
+            'alert_smtp_server = "127.0.0.1"\n'
+            "alert_smtp_port = 25\n"        # toml integers are accepted
+            "alert_interval = 60\n"
+        ))
+        assert main(["-c", str(config), "generate", "--stdout", "rsyslog"]) == 0
+        out = capsys.readouterr().out
+        assert 'mailto="servers+test@example.com"' in out
+        assert 'server="127.0.0.1" port="25"' in out
+        assert 'action.execOnlyOnceEveryInterval="60"' in out
+
+    def test_no_alert_keys_no_mail(self, tmp_path, capsys):
+        from gdoc2netcfg.cli.main import main
+        config = self._config(tmp_path, "")
+        assert main(["-c", str(config), "generate", "--stdout", "rsyslog"]) == 0
+        assert "ommail" not in capsys.readouterr().out
+
+
 class TestAlertSettingTypes:
     @pytest.mark.parametrize("key,value", [
         ("alert_smtp_port", "0"), ("alert_smtp_port", 70000),

@@ -1101,3 +1101,46 @@ class TestCrossHostIPv6Duplicates:
         assert errors[0].record_id == "2404:e80:a137:190::181"
         assert "samsung-tv" in errors[0].message
         assert "geekmagic-ultra-1" in errors[0].message
+
+
+class TestConsistencyChecksSeeResolvedSiteRecords:
+    """#84 B: the IPv6 and VLAN consistency checks must see every row this
+    site builds, with its 'X' resolved -- not skip each 10.X.* row as an
+    unparseable IP, and not judge another site's rows by this site."""
+
+    @staticmethod
+    def _records(rows, header="Machine,MAC Address,IP,Interface,Site,IPv6 A,VLAN"):
+        from gdoc2netcfg.sources.parser import parse_csv
+
+        return parse_csv(header + "\n" + rows, "network")
+
+    def test_ipv6_mismatch_on_a_multi_site_row_is_caught(self):
+        records = self._records(
+            "bluray,aa:bb:cc:dd:ee:01,10.X.10.193,,,2404:e80:a137:110::183,\n")
+        result = validate_ipv6_consistency(records, IPV6_SITE)
+        assert [e.code for e in result.errors] == ["ipv6_mismatch"]
+        assert result.errors[0].record_id == "network:2"
+
+    def test_x_in_the_ipv6_cell_resolves_like_the_ipv4(self):
+        records = self._records(
+            "desk,aa:bb:cc:dd:ee:01,10.X.10.1,,,2404:e80:a137:X10::1,\n")
+        assert validate_ipv6_consistency(records, IPV6_SITE).violations == []
+
+    def test_another_sites_row_is_not_judged_here(self):
+        records = self._records(
+            "desk,aa:bb:cc:dd:ee:01,10.X.10.1,,monarto,2404:e80:a137:210::1,\n")
+        assert validate_ipv6_consistency(records, IPV6_SITE).violations == []
+
+    def test_vlan_mismatch_on_a_multi_site_row_is_caught(self):
+        records = self._records("desk,aa:bb:cc:dd:ee:01,10.X.10.1,,,,20\n")
+        result = validate_vlan_consistency(records, VLAN_SITE)
+        assert [e.code for e in result.errors] == ["vlan_mismatch"]
+
+    def test_vlan_of_another_sites_row_is_not_judged_here(self):
+        records = self._records("desk,aa:bb:cc:dd:ee:01,10.X.10.1,,monarto,,20\n")
+        assert validate_vlan_consistency(records, VLAN_SITE).violations == []
+
+    def test_ipv6_cell_spelling_does_not_matter(self):
+        records = self._records(
+            "desk,aa:bb:cc:dd:ee:01,10.X.10.1,,,2404:e80:a137:110:0::0001,\n")
+        assert validate_ipv6_consistency(records, IPV6_SITE).violations == []

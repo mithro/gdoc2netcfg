@@ -100,6 +100,35 @@ def validate_field_constraints(records: list[DeviceRecord]) -> ValidationResult:
 # IPv6 Consistency Constraints (spreadsheet vs algorithmic derivation)
 # ---------------------------------------------------------------------------
 
+def _site_ipv4_records(
+    records: list[DeviceRecord], site: Site,
+) -> list[tuple[DeviceRecord, IPv4Address]]:
+    """This site's records with an IP, 'X' resolved, paired with the IPv4.
+
+    The same filter_and_resolve_records view build_hosts uses.  A record
+    whose resolved IP does not parse is left out.
+    """
+    from gdoc2netcfg.derivations.ip_remap import filter_and_resolve_records
+
+    pairs: list[tuple[DeviceRecord, IPv4Address]] = []
+    for record in filter_and_resolve_records(records, site):
+        if not record.ip:
+            continue
+        try:
+            pairs.append((record, IPv4Address(record.ip)))
+        except ValueError:
+            continue
+    return pairs
+
+
+def _same_ipv6(a: str, b: str) -> bool:
+    """Equal as IPv6 addresses (the cells are free text: ::0181 == ::181)."""
+    try:
+        return ipaddress.IPv6Address(a) == ipaddress.IPv6Address(b)
+    except ValueError:
+        return a == b
+
+
 def validate_ipv6_consistency(
     records: list[DeviceRecord], site: Site
 ) -> ValidationResult:
@@ -108,19 +137,17 @@ def validate_ipv6_consistency(
 
     For each record with 'IPv6 A', 'IPv6 B', etc. columns, computes the
     expected IPv6 from the IPv4 address and checks for mismatches.
+
+    Runs on this site's records with 'X' resolved (in the IPv4 and in the
+    IPv6 cells), exactly what build_hosts builds from: before, every
+    10.X.* row failed IPv4Address() and was skipped, so no multi-site
+    device was ever checked (#84 B).  Other sites' rows are judged by
+    their own site's run.
     """
     result = ValidationResult()
 
-    for record in records:
-        if not record.ip:
-            continue
-
+    for record, ipv4 in _site_ipv4_records(records, site):
         record_id = f"{record.sheet_name}:{record.row_number}"
-
-        try:
-            ipv4 = IPv4Address(record.ip)
-        except ValueError:
-            continue
 
         # Compute expected IPv6 addresses from algorithm
         expected = ipv4_to_ipv6_list(ipv4, site.active_ipv6_prefixes)
@@ -129,7 +156,7 @@ def validate_ipv6_consistency(
         for key, value in record.extra.items():
             if not key.startswith("IPv6 "):
                 continue
-            value = value.strip()
+            value = value.strip().replace("X", str(site.site_octet))
             if not value:
                 continue
 
@@ -174,7 +201,7 @@ def validate_ipv6_consistency(
                     record_id=record_id,
                     field=key,
                 ))
-            elif algo_addr != value:
+            elif not _same_ipv6(algo_addr, value):
                 result.add(ConstraintViolation(
                     severity=Severity.ERROR,
                     code="ipv6_mismatch",
@@ -485,13 +512,13 @@ def validate_vlan_consistency(
     For each record with a 'VLAN' extra column, derives the expected VLAN
     from the IP address and checks for mismatches. Skips non-numeric VLAN
     values (e.g. 'N/A', 'Q', empty).
+
+    Runs on this site's records with 'X' resolved, like
+    validate_ipv6_consistency (#84 B).
     """
     result = ValidationResult()
 
-    for record in records:
-        if not record.ip:
-            continue
-
+    for record, ipv4 in _site_ipv4_records(records, site):
         vlan_str = record.extra.get("VLAN", "").strip()
         if not vlan_str:
             continue
@@ -503,11 +530,6 @@ def validate_vlan_consistency(
             continue
 
         record_id = f"{record.sheet_name}:{record.row_number}"
-
-        try:
-            ipv4 = IPv4Address(record.ip)
-        except ValueError:
-            continue
 
         derived_vlan = ip_to_vlan_id(ipv4, site)
         if derived_vlan is not None and derived_vlan != sheet_vlan:

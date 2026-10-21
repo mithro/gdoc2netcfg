@@ -120,3 +120,153 @@ def test_fetch_refuses_sheet_set_failing_a_cross_host_check(fetch_config, monkey
     assert "Nothing was stored" in err
     assert (cache_dir / "network.csv").read_text() == good_csv
     assert not (cache_dir / "config.db").exists()
+
+
+def test_refused_fetch_leaves_the_credential_store_untouched(fetch_config, monkeypatch, capsys):  # noqa: F811
+    """The gate runs before ANY write, the root-only credential store
+    included: a refused fetch must not record (or tombstone) a secret."""
+    from gdoc2netcfg.storage.credentials_db import CredentialsDB
+
+    config, cache_dir = fetch_config
+    sheet = {"csv": "Machine,MAC Address,IP,Interface,Password\n"
+                    "switch1,aa:bb:cc:dd:ee:01,10.1.30.1,,secret1\n"}
+
+    def fake_fetch(name, url, timeout=None):
+        return SheetData(name=name, csv_text=sheet["csv"])
+
+    monkeypatch.setattr("gdoc2netcfg.sources.sheets.fetch_sheet", fake_fetch, raising=True)
+    assert cli.main(["-c", str(config), "fetch"]) == 0
+    with CredentialsDB(cache_dir / "credentials.db", read_only=True) as db:
+        before = db.load_latest_credentials()
+    assert before
+
+    sheet["csv"] = (
+        "Machine,MAC Address,IP,Interface,Password\n"
+        "sw-old,aa:bb:cc:dd:ee:01,10.1.30.1,,secret2\n"
+        "sw-new,aa:bb:cc:dd:ee:02,10.1.30.1,,secret3\n"
+    )
+    capsys.readouterr()
+    assert cli.main(["-c", str(config), "fetch"]) == 1
+    err = capsys.readouterr().err
+    assert "ip_multiple_hosts" in err
+    assert "secret2" not in err and "secret3" not in err
+    with CredentialsDB(cache_dir / "credentials.db", read_only=True) as db:
+        assert db.load_latest_credentials() == before
+
+
+def test_fetch_caches_a_sheet_set_with_only_warnings(fetch_config, monkeypatch, capsys):  # noqa: F811
+    """Full validation still gates on ERRORS only: production carries
+    hundreds of warnings, and blocking on them would stop every fetch.
+    Warnings are not printed either (cron mails any output)."""
+    from gdoc2netcfg.cli.main import _build_sheet_model
+    from gdoc2netcfg.config import load_config
+    from gdoc2netcfg.constraints.validators import validate_all
+
+    config, cache_dir = fetch_config
+    csv_text = (
+        "Machine,MAC Address,IP,Interface,IPv6 x\n"
+        "desk,aa:bb:cc:dd:ee:01,10.1.10.5,,yes\n"   # ipv6_unknown_prefix
+        "spare,,,,\n"                               # missing_ip etc.
+    )
+    result = validate_all(*_build_sheet_model(load_config(config), [("network", csv_text)]))
+    assert result.warnings and not result.errors  # not vacuous
+
+    def fake_fetch(name, url, timeout=None):
+        return SheetData(name=name, csv_text=csv_text)
+
+    monkeypatch.setattr("gdoc2netcfg.sources.sheets.fetch_sheet", fake_fetch, raising=True)
+    assert cli.main(["-c", str(config), "fetch"]) == 0
+    assert (cache_dir / "network.csv").read_text() == csv_text
+    captured = capsys.readouterr()
+    for v in result.warnings:
+        assert v.code not in captured.err and v.code not in captured.out
+
+
+def test_fetch_refuses_conflict_with_the_cached_copy_of_a_failed_sheet(
+    fetch_config, monkeypatch, capsys,  # noqa: F811
+):
+    """Partial fetch, refuse direction: the conflicting owner exists only
+    in the cached copy of the sheet that failed to fetch."""
+    config, cache_dir = fetch_config
+    config.write_text(config.read_text().replace(
+        'network = "https://example.com/network"',
+        'network = "https://example.com/network"\niot = "https://example.com/iot"',
+    ))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "network.csv").write_text(
+        "Machine,MAC Address,IP,Interface\nsw-old,aa:bb:cc:dd:ee:01,10.1.30.1,\n"
+    )
+
+    def fake_fetch(name, url, timeout=None):
+        if name == "network":
+            raise RuntimeError("HTTP 503")
+        return SheetData(name=name, csv_text=(
+            "Machine,MAC Address,IP,Interface\nsw-new,aa:bb:cc:dd:ee:02,10.1.30.1,\n"
+        ))
+
+    monkeypatch.setattr("gdoc2netcfg.sources.sheets.fetch_sheet", fake_fetch, raising=True)
+    assert cli.main(["-c", str(config), "fetch"]) == 1
+    err = capsys.readouterr().err
+    assert "ip_multiple_hosts" in err
+    assert not (cache_dir / "iot.csv").exists()
+    assert not (cache_dir / "config.db").exists()
+
+
+def _with_wifi_sheet(config):
+    config.write_text(config.read_text().replace(
+        'network = "https://example.com/network"',
+        'network = "https://example.com/network"\nwifi = "https://example.com/wifi"',
+    ))
+
+
+_NETWORK_CSV = "Machine,MAC Address,IP,Interface\nswitch1,aa:bb:cc:dd:ee:01,10.1.30.1,\n"
+
+
+def test_fetch_stores_nothing_when_building_hosts_raises(fetch_config, monkeypatch):  # noqa: F811
+    """Host building runs at fetch now, so its fail-loud raises (here a
+    puck whose '#' names another machine) stop the fetch before any
+    write instead of being cached for every later generate to crash on."""
+    import pytest
+
+    config, cache_dir = fetch_config
+    _with_wifi_sheet(config)
+
+    def fake_fetch(name, url, timeout=None):
+        if name == "wifi":
+            return SheetData(name=name, csv_text=(
+                "Machine,MAC Address,IP,Interface,#,Serial\n"
+                "puck03,aa:bb:cc:dd:ee:11,10.1.4.103,wan,2,S1\n"
+                "puck03,aa:bb:cc:dd:ee:12,10.1.4.103,lan,2,S1\n"
+            ))
+        return SheetData(name=name, csv_text=_NETWORK_CSV)
+
+    monkeypatch.setattr("gdoc2netcfg.sources.sheets.fetch_sheet", fake_fetch, raising=True)
+    with pytest.raises(ValueError, match="puck02"):
+        cli.main(["-c", str(config), "fetch"])
+    assert not (cache_dir / "wifi.csv").exists()
+    assert not (cache_dir / "network.csv").exists()
+    assert not (cache_dir / "config.db").exists()
+    assert not (cache_dir / "credentials.db").exists()
+
+
+def test_build_sheet_model_attaches_wifi_identity(fetch_config):  # noqa: F811
+    """_build_sheet_model is the one host builder shared by fetch and
+    generate; dropping its WiFi enrichment would silently empty pucks.json."""
+    from gdoc2netcfg.cli.main import _build_pipeline
+    from gdoc2netcfg.config import load_config
+    from gdoc2netcfg.models.host import WifiData
+
+    config, cache_dir = fetch_config
+    _with_wifi_sheet(config)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "network.csv").write_text(_NETWORK_CSV)
+    (cache_dir / "wifi.csv").write_text(
+        "Machine,MAC Address,IP,Interface,#,Serial\n"
+        "puck01,aa:bb:cc:dd:ee:11,10.1.4.101,wan,1,S1\n"
+        "puck01,aa:bb:cc:dd:ee:12,10.1.4.101,lan,1,\n"
+    )
+    _, hosts, inventory, _ = _build_pipeline(load_config(config))
+    by_name = {h.hostname: h for h in inventory.hosts}
+    assert by_name["puck01.wifi"].wifi_data == WifiData(number=1, serial="S1")
+    assert by_name["switch1"].wifi_data is None
+

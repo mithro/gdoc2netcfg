@@ -2,7 +2,14 @@
 
 One imudp input per served router leg, all on UDP 514 — the log class is
 the net the message arrives on. Messages are written to
-/var/log/<netname>/<hostname>.log via a per-net dynafile ruleset.
+/var/log/<netname>/<name>.log via a per-net dynafile ruleset.
+
+<name> is the sending IP's sheet hostname, looked up in the generated
+remote-logs.names.json table (see _sender_names) — never the hostname a
+device claims in its header (BMCs say "ATEN", switches append "-1") nor
+its PTR (ipv4.<host>.<net>.<domain>). An IP missing from the table is
+written to unknown-<ip>.log, so an unexpected sender is visible rather
+than merged into some other device's file.
 
 Served nets = the router's leaf-net legs (recursor_forward._leaf_gateways,
 i.e. the same derivation as the DNS leaf gateways) minus the untrusted
@@ -16,10 +23,9 @@ directory; dynafile dirs are auto-created (0755, files root:adm 0640).
 
 Kernel netconsole capture rides the same file: one leg-bound imudp input
 per served net on UDP 6666 (the fleet's netconsole port), ruleset
-remote-<net>-kernel, files /var/log/<net>/<sender>.kernel.log. Netconsole
-payloads are raw printk — no syslog header, no hostname — so filenames
-key on the SHORT name extracted from the sender's reverse-DNS name (see
-_SHORT_NAME_RE; unresolvable senders degrade to their bare IP) and the
+remote-<net>-kernel, files /var/log/<net>/<name>.kernel.log, named from the
+same table so they sit beside the sender's syslog file. Netconsole
+payloads are raw printk — no syslog header, no hostname — and the
 shared KernelLine template stamps wall-clock arrival next to the raw
 payload (whose level,seq,monotonic-ts prefix survives for gap
 detection). Receive-only for now: the pucks still stream to wisp:6666;
@@ -46,10 +52,13 @@ _HEADER = """\
 # performs the single allowed imudp module load).
 module(load="imudp")
 
+# Sending IP -> sheet hostname (generated alongside this file). Every
+# ruleset names its files from it; an IP not in it logs to unknown-<ip>.
+lookup_table(name="remote-names" file="/etc/rsyslog.d/remote-logs.names.json" reloadOnHUP="on")
+
 # Kernel netconsole capture: raw printk datagrams (no syslog header, no
 # hostname) arrive on UDP 6666, one leg-bound input per served net.
-# Filenames key on the sender's reverse-DNS name; each line is stamped
-# with wall-clock arrival time (the payload carries only the extended
+# Each line is stamped with wall-clock arrival time (the payload carries only the extended
 # netconsole level,seq,monotonic-ts prefix, preserved for gap detection).
 template(name="KernelLine" type="string"
          string="%timegenerated:::date-rfc3339% %rawmsg:::drop-last-lf%\\n")
@@ -121,13 +130,23 @@ def _names_table(names: dict[str, str]) -> str:
     ) + "\n"
 
 
+# Shared head of every ruleset: the file name for the sending IP. The
+# table's nomatch is "", so a sender it does not know gets unknown-<ip>.
+_LOOKUP_NAME = """\
+    set $.name = lookup("remote-names", $fromhost-ip);
+    if $.name == "" then {
+        set $.name = "unknown-" & $fromhost-ip;
+    }
+"""
+
+
 def _net_block(net: str, addr: str) -> str:
     """Template + ruleset + leg-bound :514 input for one served net."""
     return f"""\
 template(name="RemoteLog-{net}" type="string"
-         string="/var/log/{net}/%hostname:::secpath-replace%.log")
+         string="/var/log/{net}/%$.name:::secpath-replace%.log")
 ruleset(name="remote-{net}") {{
-    action(type="omfile" dynaFile="RemoteLog-{net}"
+{_LOOKUP_NAME}    action(type="omfile" dynaFile="RemoteLog-{net}"
            fileOwner="root" fileGroup="adm"
            fileCreateMode="0640" dirCreateMode="0755")
     stop
@@ -136,36 +155,13 @@ input(type="imudp" port="514" address="{addr}" ruleset="remote-{net}")
 """
 
 
-# Short-name extraction for netconsole senders.
-#
-# Netconsole payloads carry no hostname, so the name comes from the sender's
-# PTR — and in this estate PTRs are ipv4-prefixed, e.g.
-# ipv4.wisp.wifi.welland.mithis.com (or ipv4.br-net.ten64.net.<domain> for a
-# router leg). Taking the first real label gives wisp/br-net/puck07, so a
-# kernel file sits next to its syslog sibling: wisp.kernel.log by wisp.log.
-#
-# Literal dots are written [.] so the emitted conf needs no backslashes
-# (rsyslog's parser treats backslashes in "..." as escapes).
-#
-# The submatch can only be [a-zA-Z][a-zA-Z0-9-]* — inherently path-safe. The
-# FALLBACK is the risky one (a broken or hostile PTR lands there verbatim),
-# hence secpath-replace stays on the dynafile. Verified live on rsyslog
-# 8.2606: secpath-replace turns ../../etc/passwd into .._.._etc_passwd and
-# nothing escapes the directory.
-_SHORT_NAME_RE = "^(ipv4[.]|ipv6[.])?([a-zA-Z][a-zA-Z0-9-]*)[.]"
-
-
 def _kernel_block(net: str, addr: str) -> str:
     """Netconsole template + ruleset + leg-bound :6666 input for one net."""
     return f"""\
 template(name="KernelLog-{net}" type="string"
-         string="/var/log/{net}/%$.short:::secpath-replace%.kernel.log")
+         string="/var/log/{net}/%$.name:::secpath-replace%.kernel.log")
 ruleset(name="remote-{net}-kernel") {{
-    set $.short = re_extract($fromhost, "{_SHORT_NAME_RE}", 0, 2, "");
-    if $.short == "" then {{
-        set $.short = $fromhost;
-    }}
-    action(type="omfile" dynaFile="KernelLog-{net}" template="KernelLine"
+{_LOOKUP_NAME}    action(type="omfile" dynaFile="KernelLog-{net}" template="KernelLine"
            fileOwner="root" fileGroup="adm"
            fileCreateMode="0640" dirCreateMode="0755")
     stop

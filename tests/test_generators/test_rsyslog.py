@@ -83,7 +83,7 @@ class TestRsyslogConf:
 
     def test_ruleset_writes_secpath_dynafile_and_stops(self):
         conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
-        assert ('string="/var/log/wifi/%hostname:::secpath-replace%.log"') in conf
+        assert ('string="/var/log/wifi/%$.name:::secpath-replace%.log"') in conf
         assert 'fileOwner="root" fileGroup="adm"' in conf
         assert 'fileCreateMode="0640" dirCreateMode="0755"' in conf
         assert conf.count("    stop") == 6
@@ -130,40 +130,13 @@ class TestNetconsole:
                 'ruleset="remote-iot-kernel")') in conf
         assert conf.count('port="6666"') == 3
 
-    def test_kernel_dynafile_keys_on_extracted_short_name(self):
+    def test_kernel_dynafile_keys_on_the_looked_up_name(self):
         conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
-        # the short name is extracted into $.short (see below), so the
-        # dynafile keys on that — still secpath-guarded, because the
-        # no-match fallback puts the raw sender name in there.
-        assert ('string="/var/log/wifi/%$.short:::secpath-replace%'
+        # same name as the sender's syslog file, so wisp.kernel.log sits
+        # beside wisp.log; still secpath-guarded (defence in depth).
+        assert ('string="/var/log/wifi/%$.name:::secpath-replace%'
                 '.kernel.log"') in conf
-        assert conf.count("%$.short:::secpath-replace%.kernel.log") == 3
-
-    def test_kernel_extracts_short_name_from_sender_reverse_dns(self):
-        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
-        # netconsole payloads carry no hostname, so the name comes from the
-        # sender's PTR — which in this estate is ipv4-prefixed
-        # (ipv4.wisp.wifi.welland.mithis.com). Take the first real label so
-        # kernel files sit next to their syslog siblings (wisp.kernel.log
-        # beside wisp.log). Literal dots as [.] keep the conf backslash-free.
-        assert conf.count(
-            'set $.short = re_extract($fromhost, '
-            '"^(ipv4[.]|ipv6[.])?([a-zA-Z][a-zA-Z0-9-]*)[.]", 0, 2, "");'
-        ) == 3
-
-    def test_kernel_falls_back_to_full_sender_when_regex_misses(self):
-        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
-        # rsyslog's own no-match modes are useless here: DFLT yields the
-        # literal "**NO MATCH**", collapsing every PTR-less sender into one
-        # file. An explicit fallback keeps e.g. 10.1.4.99.log distinct.
-        assert conf.count('if $.short == "" then') == 3
-        assert conf.count("set $.short = $fromhost;") == 3
-
-    def test_kernel_name_extraction_precedes_the_write(self):
-        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
-        block = conf[conf.index('ruleset(name="remote-wifi-kernel")'):]
-        block = block[:block.index("input(")]
-        assert block.index("re_extract") < block.index("action(")
+        assert conf.count("%$.name:::secpath-replace%.kernel.log") == 3
 
     def test_kernel_line_template_defined_once_stamps_arrival_and_rawmsg(self):
         conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
@@ -314,3 +287,40 @@ class TestSenderNames:
         )
         with pytest.raises(AssertionError, match="10.1.5.31.*sw-new.*sw-old"):
             generate_rsyslog(inv)
+
+
+class TestRulesetNaming:
+    """Both rulesets per net name the file from the generated table."""
+
+    def test_lookup_table_loaded_once_from_the_deployed_path(self):
+        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
+        assert conf.count(
+            'lookup_table(name="remote-names" '
+            'file="/etc/rsyslog.d/remote-logs.names.json" reloadOnHUP="on")'
+        ) == 1
+        assert conf.index("lookup_table(") < conf.index("ruleset(")
+
+    def test_every_ruleset_looks_up_the_sending_ip(self):
+        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
+        # 3 served nets x (syslog + kernel)
+        assert conf.count(
+            'set $.name = lookup("remote-names", $fromhost-ip);'
+        ) == 6
+
+    def test_unknown_sender_gets_its_own_unknown_ip_file(self):
+        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
+        assert conf.count('if $.name == "" then {') == 6
+        assert conf.count('set $.name = "unknown-" & $fromhost-ip;') == 6
+
+    def test_lookup_precedes_the_write_in_each_ruleset(self):
+        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
+        for name in ("remote-wifi", "remote-wifi-kernel"):
+            block = conf[conf.index(f'ruleset(name="{name}")'):]
+            block = block[:block.index("input(")]
+            assert block.index("lookup(") < block.index("unknown-") < block.index("action(")
+
+    def test_claimed_hostname_and_ptr_no_longer_name_files(self):
+        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
+        assert "%hostname" not in conf
+        assert "$fromhost," not in conf      # the PTR, as opposed to $fromhost-ip
+        assert "re_extract" not in conf

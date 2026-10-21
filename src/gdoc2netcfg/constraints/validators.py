@@ -224,8 +224,10 @@ def validate_record_constraints(hosts: list[Host], site: Site) -> ValidationResu
                     field="dhcp_name",
                 ))
 
-            # BMC placement validation
-            if iface.name and "bmc" in iface.name.lower():
+            # BMC placement validation.  Keyed on host.is_bmc: build_hosts
+            # splits each BMC row into its own host and strips the
+            # interface name, so iface.name never says "bmc" (#84 A).
+            if host.is_bmc:
                 ip_str = str(iface.ipv4)
                 a, b, c, d = iface.ipv4.octets
 

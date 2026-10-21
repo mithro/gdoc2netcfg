@@ -44,6 +44,15 @@ def _iface(name=None, mac="aa:bb:cc:dd:ee:ff", ip="10.1.10.1", dhcp_name="test")
     )
 
 
+def _pipeline_hosts(rows, site=None):
+    """Hosts as the real pipeline builds them from network-sheet rows."""
+    from gdoc2netcfg.derivations.host_builder import build_hosts
+    from gdoc2netcfg.sources.parser import parse_csv
+
+    csv_text = "Machine,MAC Address,IP,Interface\n" + rows
+    return build_hosts(parse_csv(csv_text, "network"), site or SITE)
+
+
 # Site with VLANs configured for validator tests
 SITE = Site(
     name="welland",
@@ -130,46 +139,47 @@ class TestRecordConstraints:
         result = validate_record_constraints([host], SITE)
         assert result.is_valid
 
+    # BMC placement goes through the real pipeline shapes (parse_csv ->
+    # build_hosts): build_hosts splits a 'bmc' row into its own host and
+    # strips the interface name, so hand-built name="bmc" interfaces
+    # describe a shape the pipeline never produces (#84 A).
+
     def test_bmc_on_management_network(self):
         """BMC on 10.1.5.X is valid."""
-        host = _host("server", [
-            _iface(name="bmc", ip="10.1.5.200", dhcp_name="bmc-server"),
-        ])
-        result = validate_record_constraints([host], SITE)
+        result = validate_record_constraints(
+            _pipeline_hosts("server,aa:bb:cc:dd:ee:01,10.1.5.200,bmc\n"), SITE)
         assert result.is_valid
 
     def test_bmc_not_on_management_network(self):
         """BMC on 10.1.10.X is an error."""
-        host = _host("server", [
-            _iface(name="bmc", ip="10.1.10.200", dhcp_name="bmc-server"),
-        ])
-        result = validate_record_constraints([host], SITE)
-        assert result.has_errors
-        assert result.errors[0].code == "bmc_not_management"
+        result = validate_record_constraints(
+            _pipeline_hosts("server,aa:bb:cc:dd:ee:01,10.1.10.200,bmc\n"), SITE)
+        assert [e.code for e in result.errors] == ["bmc_not_management"]
+        assert result.errors[0].record_id == "bmc.server"
+
+    def test_bmc_named_variant_not_on_management_network(self):
+        """'bmc-alt' style interface names are BMCs too (host 'bmc-alt.X')."""
+        result = validate_record_constraints(
+            _pipeline_hosts("server,aa:bb:cc:dd:ee:01,10.1.10.201,bmc-alt\n"), SITE)
+        assert [e.code for e in result.errors] == ["bmc_not_management"]
 
     def test_test_hardware_bmc_correct_subnet(self):
         """Test-hardware BMC on 10.41.1.X is valid (global VLAN)."""
-        host = _host("board", [
-            _iface(name="bmc", ip="10.41.1.200", dhcp_name="bmc-board"),
-        ])
-        result = validate_record_constraints([host], SITE)
+        result = validate_record_constraints(
+            _pipeline_hosts("board,aa:bb:cc:dd:ee:01,10.41.1.200,bmc\n"), SITE)
         assert result.is_valid
 
     def test_test_hardware_bmc_wrong_subnet(self):
         """Test-hardware BMC on 10.41.2.X is an error."""
-        host = _host("board", [
-            _iface(name="bmc", ip="10.41.2.200", dhcp_name="bmc-board"),
-        ])
-        result = validate_record_constraints([host], SITE)
-        assert result.has_errors
-        assert result.errors[0].code == "bmc_wrong_subnet"
+        result = validate_record_constraints(
+            _pipeline_hosts("board,aa:bb:cc:dd:ee:01,10.41.2.200,bmc\n"), SITE)
+        assert [e.code for e in result.errors] == ["bmc_wrong_subnet"]
 
     def test_non_bmc_interface_no_check(self):
-        """Non-BMC interfaces don't get BMC placement validation."""
-        host = _host("server", [
-            _iface(name="eth0", ip="10.1.10.200", dhcp_name="eth0-server"),
-        ])
-        result = validate_record_constraints([host], SITE)
+        """The parent host's own interfaces get no BMC placement check."""
+        result = validate_record_constraints(_pipeline_hosts(
+            "server,aa:bb:cc:dd:ee:01,10.1.10.200,eth0\n"
+            "server,aa:bb:cc:dd:ee:02,10.1.5.200,bmc\n"), SITE)
         assert result.is_valid
 
     def test_bmc_monarto_uses_site_prefix(self):
@@ -182,19 +192,14 @@ class TestRecordConstraints:
                 5: VLAN(id=5, name="net", subdomain="net", third_octets=(5,)),
             },
         )
-        host = _host("server", [
-            _iface(name="bmc", ip="10.2.5.200", dhcp_name="bmc-server"),
-        ])
-        result = validate_record_constraints([host], monarto)
+        result = validate_record_constraints(_pipeline_hosts(
+            "server,aa:bb:cc:dd:ee:01,10.X.5.200,bmc\n", monarto), monarto)
         assert result.is_valid
 
         # 10.1.5.X is NOT valid for Monarto
-        host2 = _host("server2", [
-            _iface(name="bmc", ip="10.1.5.200", dhcp_name="bmc-server2"),
-        ])
-        result2 = validate_record_constraints([host2], monarto)
-        assert result2.has_errors
-        assert result2.errors[0].code == "bmc_not_management"
+        result2 = validate_record_constraints(_pipeline_hosts(
+            "server2,aa:bb:cc:dd:ee:02,10.1.5.200,bmc\n", monarto), monarto)
+        assert [e.code for e in result2.errors] == ["bmc_not_management"]
 
 
 class TestCrossRecordConstraints:

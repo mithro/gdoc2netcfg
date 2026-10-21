@@ -1005,3 +1005,99 @@ class TestCrossHostIPv6Duplicates:
         inv = NetworkInventory(site=SITE, hosts=[host])
         result = validate_cross_record_constraints(inv)
         assert not [v for v in result.errors if v.code == "ipv6_multiple_hosts"]
+
+    def test_mirror_plus_third_host_on_another_ipv4_errors(self):
+        """A shared IPv4 among SOME owners must not exempt the rest:
+        a third host claiming the wisp mirror's address is still an error."""
+        hosts = [
+            _host("wisp", [
+                _dual_iface("10.1.4.2", ["2404:e80:a137:104::2"],
+                            mac="aa:bb:cc:dd:ee:01", dhcp_name="wisp"),
+            ], machine_name="wisp", sheet_type="Network"),
+            _host("wisp.wifi", [
+                _dual_iface("10.1.4.2", ["2404:e80:a137:104::2"],
+                            mac="aa:bb:cc:dd:ee:01", dhcp_name="wisp.wifi"),
+            ], machine_name="wisp", sheet_type="WiFi"),
+            _host("samsung-tv", [
+                _dual_iface("10.1.90.191",
+                            ["2404:e80:a137:190::191", "2404:e80:a137:104::2"],
+                            mac="aa:bb:cc:dd:ee:02"),
+            ]),
+        ]
+        inv = NetworkInventory(
+            site=SITE, hosts=hosts,
+            ip_to_macs={
+                "10.1.4.2": [
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wisp"),
+                    (MACAddress.parse("aa:bb:cc:dd:ee:01"), "wisp.wifi"),
+                ],
+            },
+        )
+        result = validate_cross_record_constraints(inv)
+        assert [v.code for v in result.errors] == ["ipv6_multiple_hosts"]
+        assert result.errors[0].message == (
+            "IPv6 2404:e80:a137:104::2 assigned to multiple hosts: "
+            "samsung-tv (10.1.90.191), wisp (10.1.4.2), wisp.wifi (10.1.4.2)"
+        )
+
+    def test_same_host_on_two_ipv4s_sharing_one_ipv6_is_not_a_host_conflict(self):
+        """One host owning an address twice is not two hosts owning it:
+        the hostname check, not the IPv4 check, is what lets this through."""
+        host = _host("desk", [
+            _dual_iface("10.1.10.5", ["2404:e80:a137:110::5"],
+                        mac="aa:bb:cc:dd:ee:01", name="eth0"),
+            _dual_iface("10.1.20.5", ["2404:e80:a137:120::5", "2404:e80:a137:110::5"],
+                        mac="aa:bb:cc:dd:ee:02", name="wlan0"),
+        ])
+        inv = NetworkInventory(site=SITE, hosts=[host])
+        result = validate_cross_record_constraints(inv)
+        assert not [v for v in result.errors if v.code == "ipv6_multiple_hosts"]
+
+    def test_reports_the_canonical_spelling_and_lists_each_host_once(self):
+        """record_id is the compressed form whichever spelling came first,
+        and a two-interface host is named once, in sorted order."""
+        hosts = [
+            _host("a", [_dual_iface("10.1.90.1", ["2404:e80:a137:190::0181"],
+                                    mac="aa:bb:cc:dd:ee:01")]),
+            _host("puck01.wifi", [
+                _dual_iface("10.1.4.101", ["2404:e80:a137:190::181"],
+                            mac="aa:bb:cc:dd:ee:02", name="wan"),
+                _dual_iface("10.1.4.101", ["2404:e80:a137:190::181"],
+                            mac="aa:bb:cc:dd:ee:03", name="lan"),
+            ], sheet_type="WiFi"),
+        ]
+        inv = NetworkInventory(site=SITE, hosts=hosts)
+        result = validate_cross_record_constraints(inv)
+        errors = [v for v in result.errors if v.code == "ipv6_multiple_hosts"]
+        assert len(errors) == 1
+        assert errors[0].record_id == "2404:e80:a137:190::181"
+        assert errors[0].message == (
+            "IPv6 2404:e80:a137:190::181 assigned to multiple hosts: "
+            "a (10.1.90.1), puck01.wifi (10.1.4.101)"
+        )
+
+    def test_explicit_sheet_cell_reaches_the_check_end_to_end(self):
+        """The motivating rows, through parse_csv -> build_hosts ->
+        build_inventory: an 'IPv6 A' cell (with the X site placeholder)
+        must land where the check looks."""
+        from gdoc2netcfg.derivations.host_builder import build_hosts, build_inventory
+        from gdoc2netcfg.sources.parser import parse_csv
+
+        network = parse_csv(
+            "Machine,MAC Address,IP,Interface,IPv6 A\n"
+            "samsung-tv,aa:bb:cc:dd:ee:01,10.X.90.191,,2404:e80:a137:X90::181\n",
+            "Network",
+        )
+        iot = parse_csv(
+            "Machine,MAC Address,IP,Interface\n"
+            "geekmagic-ultra-1,aa:bb:cc:dd:ee:02,10.X.90.181,\n",
+            "IoT",
+        )
+        hosts = build_hosts(network + iot, IPV6_SITE)
+        inv = build_inventory(hosts, IPV6_SITE)
+        result = validate_cross_record_constraints(inv)
+        errors = [v for v in result.errors if v.code == "ipv6_multiple_hosts"]
+        assert len(errors) == 1
+        assert errors[0].record_id == "2404:e80:a137:190::181"
+        assert "samsung-tv" in errors[0].message
+        assert "geekmagic-ultra-1" in errors[0].message

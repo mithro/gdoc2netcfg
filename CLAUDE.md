@@ -801,8 +801,10 @@ rsyslog, which reads it at startup.
 
 **Mail alerts** (`[generators.rsyslog]` `alert_*` keys; all six or none,
 see `gdoc2netcfg.toml.example`): each net's syslog ruleset mails a
-Supermicro BMC `Health EventLog` line at `Critical` or `Warning`, and
-every ruleset mails a sender that resolves to `unknown-<ip>`. The subject
+Supermicro BMC `Health EventLog` line at `Critical` or `Warning` sent
+from the address of a host the sheet marks as a BMC (never from any other
+device, which could otherwise forge one and flood mail), and every
+ruleset mails a sender that resolves to `unknown-<ip>`. The subject
 names the device and the event (`[syslog] bmc.big-storage: Critical IERR -
 Assertion`).
 

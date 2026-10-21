@@ -236,3 +236,31 @@ def test_partial_fetch_with_failed_sites_sheet_still_caches_good_sheets(
     # device sheet was fetched, so step 3 ran and stored the password
     with CredentialsDB(cache_dir / "credentials.db", read_only=True) as db:
         assert {"Password": "secret1"} in db.load_latest_credentials().values()
+
+
+def test_failed_vlan_sheet_with_a_cache_still_caches_and_stores(
+    fetch_config, monkeypatch,
+):
+    """A VLAN Allocations sheet that fails to fetch but has a cached copy:
+    the gate used that copy, so step 3 must not re-derive the site from
+    only the fetched sheets (#94 makes that re-derivation raise)."""
+    config, cache_dir = fetch_config
+    _add_sheets(config, vlan_allocations="")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "vlan_allocations.csv").write_text(
+        "VLAN,Name,IP Range,Netmask,CIDR,,,Color,For\n"
+        "30,net,10.X.30.X,255.255.255.0,/24,,,,Network\n"
+    )
+
+    def fake_fetch(name, url, timeout=None):
+        if name == "vlan_allocations":
+            raise RuntimeError("HTTP 503")
+        return SheetData(name=name, csv_text=_fake_network_csv())
+
+    monkeypatch.setattr(
+        "gdoc2netcfg.sources.sheets.fetch_sheet", fake_fetch, raising=True,
+    )
+    assert cli.main(["-c", str(config), "fetch"]) == 1
+    assert "switch1" in (cache_dir / "network.csv").read_text()
+    with CredentialsDB(cache_dir / "credentials.db", read_only=True) as db:
+        assert {"Password": "secret1"} in db.load_latest_credentials().values()

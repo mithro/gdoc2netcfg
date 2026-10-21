@@ -368,3 +368,97 @@ class TestSenderNameEdges:
         ])
         with pytest.raises(AssertionError, match="10.1.5.77"):
             generate_rsyslog(inv)
+
+
+ALERTS = dict(
+    alert_mail_to="servers+ten64.welland@mithis.com",
+    alert_mail_from="rsyslog@ten64.welland.mithis.com",
+    alert_smtp_server="127.0.0.1",
+    alert_smtp_port="25",
+    alert_interval="60",
+)
+
+
+def _conf(**kwargs):
+    return generate_rsyslog(_default_inventory(), **kwargs)["rsyslog.d/remote-logs.conf"]
+
+
+def _ruleset(conf, name):
+    block = conf[conf.index(f'ruleset(name="{name}")'):]
+    return block[:block.index("\ninput(")]
+
+
+class TestAlerts:
+    def test_no_alert_settings_means_no_alerts(self):
+        conf = _conf()
+        assert "ommail" not in conf
+
+    def test_partial_alert_settings_fail_loud(self):
+        partial = dict(ALERTS)
+        del partial["alert_smtp_port"]
+        with pytest.raises(ValueError, match="alert_smtp_port"):
+            _conf(**partial)
+
+    def test_interval_must_be_a_positive_integer(self):
+        with pytest.raises(ValueError, match="alert_interval"):
+            _conf(**{**ALERTS, "alert_interval": "soon"})
+
+    def test_ommail_loaded_once(self):
+        assert _conf(**ALERTS).count('module(load="ommail")') == 1
+
+    def test_bmc_health_critical_or_warning_mails_from_every_syslog_ruleset(self):
+        conf = _conf(**ALERTS)
+        for net in ("wifi", "net", "iot"):
+            block = _ruleset(conf, f"remote-{net}")
+            assert ('if $msg contains "Health EventLog" and\n'
+                    '       ($msg contains "| Critical |" or '
+                    '$msg contains "| Warning |") then {') in block
+            assert 'subject.template="AlertSubjectBmc"' in block
+
+    def test_unknown_sender_mails_from_every_ruleset(self):
+        conf = _conf(**ALERTS)
+        for name in ("remote-net", "remote-net-kernel", "remote-iot-kernel"):
+            block = _ruleset(conf, name)
+            assert 'if $.name startswith "unknown-" then {' in block
+            assert 'subject.template="AlertSubjectUnknown"' in block
+
+    def test_kernel_rulesets_carry_no_bmc_rule(self):
+        block = _ruleset(_conf(**ALERTS), "remote-net-kernel")
+        assert "Health EventLog" not in block
+
+    def test_mail_actions_use_the_configured_relay_and_rate_limit(self):
+        block = _ruleset(_conf(**ALERTS), "remote-net")
+        assert block.count('server="127.0.0.1" port="25"') == 2
+        assert block.count('mailfrom="rsyslog@ten64.welland.mithis.com"') == 2
+        assert block.count('mailto="servers+ten64.welland@mithis.com"') == 2
+        assert block.count('action.execOnlyOnceEveryInterval="60"') == 2
+
+    def test_mail_actions_have_their_own_queue(self):
+        """An SMTP outage must never stall the file write (probe: the
+        line is still written with the relay down)."""
+        block = _ruleset(_conf(**ALERTS), "remote-net")
+        assert block.count('queue.type="LinkedList"') == 2
+
+    def test_file_is_written_before_any_mail_is_attempted(self):
+        block = _ruleset(_conf(**ALERTS), "remote-net")
+        assert block.index('type="omfile"') < block.index('type="ommail"')
+
+    def test_bmc_subject_names_the_device_severity_and_event(self):
+        conf = _conf(**ALERTS)
+        assert conf.count('template(name="AlertSubjectBmc"') == 1
+        assert "%$.name%" in conf[conf.index('template(name="AlertSubjectBmc"'):]
+
+
+class TestAlertSettingTypes:
+    @pytest.mark.parametrize("key,value", [
+        ("alert_smtp_port", "0"), ("alert_smtp_port", 70000),
+        ("alert_smtp_port", True), ("alert_interval", 0), ("alert_interval", "-5"),
+    ])
+    def test_bad_numbers_fail_loud(self, key, value):
+        with pytest.raises(ValueError, match=f"{key} must be a whole number"):
+            _conf(**{**ALERTS, key: value})
+
+    def test_integers_accepted(self):
+        conf = _conf(**{**ALERTS, "alert_smtp_port": 25, "alert_interval": 60})
+        assert 'port="25"' in conf
+        assert 'action.execOnlyOnceEveryInterval="60"' in conf

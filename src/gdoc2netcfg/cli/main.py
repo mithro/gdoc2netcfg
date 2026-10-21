@@ -70,7 +70,10 @@ FETCH_JOB_DEADLINE_SECONDS = 300.0
 def _fetch_or_load_csvs(config, use_cache: bool = False):
     """Fetch CSVs from sheets or read from cache.
 
-    Returns list of (name, csv_text) tuples.
+    Returns list of (name, csv_text) tuples, one per configured sheet.
+    A sheet that can be neither fetched nor read from the cache raises
+    RuntimeError: dropping it would build an inventory missing every host
+    on it (#84 H).
     """
     from gdoc2netcfg.sources.cache import CSVCache
     from gdoc2netcfg.sources.sheets import fetch_sheet
@@ -89,10 +92,14 @@ def _fetch_or_load_csvs(config, use_cache: bool = False):
                 results.append((sheet.name, data.csv_text))
             except Exception as e:
                 print(f"Warning: failed to fetch sheet {sheet.name!r}: {e}", file=sys.stderr)
-                if cache.has(sheet.name):
-                    print(f"  Using cached version of {sheet.name!r}", file=sys.stderr)
-                    csv_text = cache.read(sheet.name)
-                    results.append((sheet.name, csv_text))
+                if not cache.has(sheet.name):
+                    raise RuntimeError(
+                        f"sheet {sheet.name!r}: fetch failed ({e}) and there "
+                        "is no cached copy; run 'gdoc2netcfg fetch'"
+                    ) from e
+                print(f"  Using cached version of {sheet.name!r}", file=sys.stderr)
+                csv_text = cache.read(sheet.name)
+                results.append((sheet.name, csv_text))
 
     return results
 

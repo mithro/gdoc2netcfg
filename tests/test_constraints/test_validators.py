@@ -1152,3 +1152,12 @@ class TestCrossSheetMirrorCarveOutIsExact:
         result = validate_cross_record_constraints(build_inventory(hosts, SITE))
         assert [(v.code, v.record_id) for v in result.errors] == [
             ("ip_multiple_hosts", "10.1.4.2")]
+
+    def test_a_pair_without_a_network_side_is_not_a_mirror(self):
+        """An IoT + WiFi copy of one MAC+IP is a copy-paste error, not the
+        Network-sheet mirror CLAUDE.md defines (and rsyslog relies on)."""
+        assert self._errors(
+            iot="plug,aa:bb:cc:dd:ee:01,10.1.4.9,\n",
+            wifi="plug,aa:bb:cc:dd:ee:01,10.1.4.9,\n",
+        ) == [("ip_multiple_hosts", "10.1.4.9"),
+              ("ip_multiple_macs", "10.1.4.9")]

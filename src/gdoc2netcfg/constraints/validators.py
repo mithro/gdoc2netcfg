@@ -268,6 +268,11 @@ def validate_record_constraints(hosts: list[Host], site: Site) -> ValidationResu
 # Cross-Record Constraints (on NetworkInventory)
 # ---------------------------------------------------------------------------
 
+#: The sheet_types of a cross-sheet mirror: an IP Allocation (Network)
+#: row and its wifi-tab formula copy.
+_MIRROR_SHEET_TYPES = frozenset({"Network", "WiFi"})
+
+
 def _is_cross_sheet_mirror(
     macs: list[tuple[MACAddress, str]],
     ip_str: str,
@@ -298,12 +303,16 @@ def _is_cross_sheet_mirror(
     unrelated host that merely reuses the MAC elsewhere, and a genuine
     same-IP mirror getting wrongly rejected by such an unrelated host.
 
-    One further requirement keeps the carve-out to exactly that pair:
-    *ip_hostnames* (the hosts on ip_str the caller judges: every host
+    Two further requirements keep the carve-out to exactly that pair:
+
+    - *ip_hostnames* (the hosts on ip_str the caller judges: every host
       for the DNS-level check, the MAC'd ones for the DHCP-level one) must
       be the mirror's hosts and nothing else.  *macs* comes from
       ip_to_macs, which omits DNS-only interfaces, so without this a
       MAC-less third host on a mirror's IP was waved through.
+    - The pair is one Network-sheet host and one WiFi-sheet host, as
+      CLAUDE.md defines the mirrors (and the rsyslog generator assumes):
+      an IoT + WiFi copy of one MAC+IP is a copy-paste error.
     """
     unique_macs = {str(mac) for mac, _ in macs}
     if len(unique_macs) != 1:
@@ -325,7 +334,7 @@ def _is_cross_sheet_mirror(
     sheet_types = {h.sheet_type for h in owning_hosts.values()}
     return (
         len(machine_names) == 1
-        and len(sheet_types) > 1
+        and sheet_types == _MIRROR_SHEET_TYPES
         and len(hostnames) == len(sheet_types)
         and hostnames == ip_hostnames
     )

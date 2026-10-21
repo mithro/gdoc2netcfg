@@ -97,6 +97,12 @@ def test_make_deploy_syslog_installs_every_syslog_pair():
     lines = recipe.splitlines()
     restart = next(i for i, line in enumerate(lines) if "systemctl restart rsyslog" in line)
     assert all(i < restart for i, line in enumerate(lines) if line.split()[:1] == ["cp"])
+    # ... and the installed config, table included, is validated before the
+    # restart: a bad table does not stop rsyslogd starting, it silently
+    # sends every remote sender to unknown-<ip>.log.
+    check = [i for i, line in enumerate(lines) if line.split()[:2] == ["rsyslogd", "-N1"]]
+    last_cp = max(i for i, line in enumerate(lines) if line.split()[:1] == ["cp"])
+    assert len(check) == 1 and last_cp < check[0] < restart
 
 
 def test_nginx_compares_the_generated_subtrees(tmp_path):

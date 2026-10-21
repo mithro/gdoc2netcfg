@@ -162,6 +162,7 @@ deploy-syslog: $(VENV)/.stamp ## Deploy generated per-net remote syslog + logrot
 	cp $(OUTPUT_DIR)/etc/rsyslog.d/remote-logs.names.json $(RSYSLOG_REMOTE_NAMES)
 	cp $(OUTPUT_DIR)/etc/rsyslog.d/remote-logs.conf $(RSYSLOG_REMOTE_CONF)
 	cp $(OUTPUT_DIR)/etc/logrotate.d/remote-logs $(LOGROTATE_REMOTE_CONF)
+	rsyslogd -N1
 	systemctl restart rsyslog
 	$(ETCKEEPER_COMMIT) "gdoc2netcfg deploy syslog: $(GDOC2NETCFG_VERSION)" /etc/rsyslog.d /etc/logrotate.d
 

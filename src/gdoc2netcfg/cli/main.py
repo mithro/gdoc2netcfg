@@ -113,6 +113,12 @@ def _enrich_vlans_from_sheet(config, csv_data: list[tuple[str, str]]) -> None:
 
     Finds the 'vlan_allocations' CSV in csv_data, parses it, builds
     VLAN objects and network_subdomains, and updates config.site in place.
+
+    Like the Sites sheet: if one is configured under [sheets] but is
+    unavailable or has no VLAN rows, that is a hard error — without VLANs
+    the vlan_mismatch check and the roaming and BMC net-prefix logic go
+    quiet (#84 E).  If none is configured at all, VLANs stay unset (the
+    historical optional behaviour, with a warning).
     """
     from gdoc2netcfg.derivations.vlan import build_network_subdomains, build_vlans_from_definitions
     from gdoc2netcfg.sources.vlan_parser import parse_vlan_allocations
@@ -124,13 +130,21 @@ def _enrich_vlans_from_sheet(config, csv_data: list[tuple[str, str]]) -> None:
             break
 
     if vlan_csv is None:
-        print("Warning: no vlan_allocations sheet found, VLANs not configured", file=sys.stderr)
+        if any(s.name == "vlan_allocations" for s in config.sheets):
+            raise ValueError(
+                "VLAN Allocations sheet is configured under [sheets] but "
+                "unavailable (fetch failed and no cache); VLAN validation "
+                "and naming depend on it."
+            )
+        print("Warning: no vlan_allocations sheet configured, VLANs not configured",
+              file=sys.stderr)
         return
 
     definitions = parse_vlan_allocations(vlan_csv)
     if not definitions:
-        print("Warning: vlan_allocations sheet is empty", file=sys.stderr)
-        return
+        raise ValueError(
+            "VLAN Allocations sheet has no VLAN rows (VLANs would be empty)."
+        )
 
     vlans = build_vlans_from_definitions(definitions, config.site.site_octet)
     subdomains = build_network_subdomains(vlans)

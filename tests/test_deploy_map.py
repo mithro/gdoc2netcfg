@@ -51,11 +51,13 @@ def test_known_hosts_never_installed_reports_missing(tmp_path):
     assert [(d.component, d.kind) for d in drift] == [("known_hosts", "missing")]
 
 
-def test_syslog_compares_both_generated_files(tmp_path):
-    """`make deploy-syslog` installs the rsyslog conf and the logrotate conf."""
+def test_syslog_compares_every_generated_file(tmp_path):
+    """`make deploy-syslog` installs the rsyslog conf, its sender-name
+    table and the logrotate conf."""
     out = tmp_path / "out"
     etc = tmp_path / "etc"
     write(out / "etc" / "rsyslog.d" / "remote-logs.conf", "new rsyslog\n")
+    write(out / "etc" / "rsyslog.d" / "remote-logs.names.json", "new names\n")
     write(out / "etc" / "logrotate.d" / "remote-logs", "same\n")
     write(etc / "rsyslog.d" / "remote-logs.conf", "old rsyslog\n")
     write(etc / "logrotate.d" / "remote-logs", "same\n")
@@ -64,7 +66,33 @@ def test_syslog_compares_both_generated_files(tmp_path):
 
     assert [(d.component, d.kind, d.path) for d in drift] == [
         ("syslog", "changed", etc / "rsyslog.d" / "remote-logs.conf"),
+        ("syslog", "missing", etc / "rsyslog.d" / "remote-logs.names.json"),
     ]
+
+
+def test_make_deploy_syslog_installs_every_syslog_pair():
+    """deploy-check compares syslog_pairs; deploy-syslog must cp each one
+    (generated path -> installed path), or the drift can never clear."""
+    makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text()
+    variables = {"OUTPUT_DIR": "OUT"}
+    for line in makefile.splitlines():
+        if " := " in line and not line.startswith(("\t", " ")):
+            name, value = line.split(" := ", 1)
+            variables.setdefault(name.strip(), value.strip())
+    recipe = makefile[makefile.index("\ndeploy-syslog:"):]
+    recipe = recipe[:recipe.index("\n\n")]
+    copies = set()
+    for line in recipe.splitlines():
+        words = line.split()
+        if words[:1] == ["cp"]:
+            for name, value in variables.items():
+                words = [w.replace(f"$({name})", value) for w in words]
+            copies.add((words[1], words[2]))
+    expected = {
+        (str(src), str(dst))
+        for src, dst in deploy_map.syslog_pairs(Path("OUT"), Path("/etc"))
+    }
+    assert copies == expected
 
 
 def test_nginx_compares_the_generated_subtrees(tmp_path):

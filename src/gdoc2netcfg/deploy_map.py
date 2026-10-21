@@ -213,10 +213,12 @@ def dnsmasq_logrotate_pair(out: Path, etc: Path = ETC) -> tuple[Path, Path]:
 
 
 def syslog_pairs(out: Path, etc: Path = ETC) -> list[tuple[Path, Path]]:
-    """The two files `make deploy-syslog` installs."""
+    """The three files `make deploy-syslog` installs."""
     return [
         (out / "etc" / "rsyslog.d" / "remote-logs.conf",
          etc / "rsyslog.d" / "remote-logs.conf"),
+        (out / "etc" / "rsyslog.d" / "remote-logs.names.json",
+         etc / "rsyslog.d" / "remote-logs.names.json"),
         (out / "etc" / "logrotate.d" / "remote-logs",
          etc / "logrotate.d" / "remote-logs"),
     ]

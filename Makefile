@@ -153,11 +153,13 @@ deploy-letsencrypt: ## Not deployed at this site (no $(LETSENCRYPT_DIR)/certs-av
 endif
 
 RSYSLOG_REMOTE_CONF := /etc/rsyslog.d/remote-logs.conf
+RSYSLOG_REMOTE_NAMES := /etc/rsyslog.d/remote-logs.names.json
 LOGROTATE_REMOTE_CONF := /etc/logrotate.d/remote-logs
 
 .PHONY: deploy-syslog
 deploy-syslog: $(VENV)/.stamp ## Deploy generated per-net remote syslog + logrotate config (run with sudo)
 	$(VENV_BIN)/gdoc2netcfg generate rsyslog --output-dir $(OUTPUT_DIR)
+	cp $(OUTPUT_DIR)/etc/rsyslog.d/remote-logs.names.json $(RSYSLOG_REMOTE_NAMES)
 	cp $(OUTPUT_DIR)/etc/rsyslog.d/remote-logs.conf $(RSYSLOG_REMOTE_CONF)
 	cp $(OUTPUT_DIR)/etc/logrotate.d/remote-logs $(LOGROTATE_REMOTE_CONF)
 	systemctl restart rsyslog

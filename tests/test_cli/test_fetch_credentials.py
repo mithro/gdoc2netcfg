@@ -232,3 +232,7 @@ def test_partial_fetch_with_failed_sites_sheet_still_caches_good_sheets(
     )
     assert cli.main(["-c", str(config), "fetch"]) == 1
     assert "switch1" in (cache_dir / "network.csv").read_text()
+    # a failed NON-device sheet must not freeze the credential store: every
+    # device sheet was fetched, so step 3 ran and stored the password
+    with CredentialsDB(cache_dir / "credentials.db", read_only=True) as db:
+        assert {"Password": "secret1"} in db.load_latest_credentials().values()

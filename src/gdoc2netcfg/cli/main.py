@@ -3448,6 +3448,11 @@ def _interfaces_document(records, machines, site):
     for r in records:
         if not r.machine:
             continue
+        # A row naming the machine with no interface, no MAC and no IP is
+        # metadata (plug, location) — the IoT sheet carries such rows for
+        # Network-sheet machines; it is not an interface.
+        if not (r.interface or r.mac_address or r.ip):
+            continue
         if site and r.site != site:
             continue
         if wanted and r.machine not in wanted:

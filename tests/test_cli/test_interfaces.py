@@ -134,3 +134,20 @@ def test_sheet_records_reads_the_cache_only():
     assert fetch.call_args.kwargs.get("use_cache") is True
     assert [(r.machine, r.interface, r.mac_address) for r in recs] == [
         ("box", "eth0", "aa:bb:cc:dd:ee:01")]
+
+
+def test_metadata_only_rows_are_not_interfaces(capsys):
+    """rpi5-rfbridge / rpi4-esp / rpicm1-serial on the real sheet (2026-10-21):
+    an IoT row naming the machine with no interface, no MAC and no IP (plug /
+    location metadata only) must not come back as an interface."""
+    records = RECORDS + [_rec("rpi4-gwifi", "", "", "", sheet="IoT", row=170)]
+    ctx = _patchers(records)
+    for p in ctx:
+        p.start()
+    try:
+        main(["interfaces", "--json", "rpi4-gwifi"])
+    finally:
+        for p in ctx:
+            p.stop()
+    doc = json.loads(capsys.readouterr().out)
+    assert [i["name"] for i in doc["rpi4-gwifi"]["interfaces"]] == ["eth0", "eth-glan", "wlanE"]

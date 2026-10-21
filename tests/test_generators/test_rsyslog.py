@@ -324,3 +324,46 @@ class TestRulesetNaming:
         assert "%hostname" not in conf
         assert "$fromhost," not in conf      # the PTR, as opposed to $fromhost-ip
         assert "re_extract" not in conf
+
+
+class TestSenderNameEdges:
+    def test_one_host_with_two_interfaces_on_one_ip_is_one_owner(self):
+        """Puck wan+lan (and 14 other live hosts) share one IPv4 inside one
+        host; that is one owner, not a collision."""
+        inv = _with_senders(
+            _sender("puck07.wifi", "10.1.4.107", "10.1.4.107",
+                    machine_name="puck07", sheet_type="WiFi", mac_suffix="50"),
+        )
+        names, table = _names(inv)
+        assert names["10.1.4.107"] == "puck07.wifi"
+        assert [r["index"] for r in table["table"]].count("10.1.4.107") == 1
+
+    def test_mirror_on_the_routers_own_leg(self):
+        """ten64.wifi mirrors the router's br-wifi leg (10.1.4.1)."""
+        inv = _with_senders(
+            _sender("ten64.wifi", "10.1.4.1", machine_name="ten64",
+                    sheet_type="WiFi", mac_suffix="51"),
+        )
+        names, _ = _names(inv)
+        assert names["10.1.4.1"] == "ten64"
+
+    @pytest.mark.parametrize("owners", [
+        # different machines on two sheets: a stale row, not a mirror
+        [("sw-old", "sw-old", "Network"), ("puck03.wifi", "puck03", "WiFi")],
+        # one machine on two sheets but neither is the Network sheet
+        [("plug.iot", "plug", "IoT"), ("plug.wifi", "plug", "WiFi")],
+        # a mirror plus a second host of the same machine on the same sheet
+        [("wisp", "wisp", "Network"), ("wisp.wifi", "wisp", "WiFi"),
+         ("bmc.wisp.wifi", "wisp", "WiFi")],
+        # a BMC row cloning its parent's IP (same machine, same sheet)
+        [("big-storage", "big-storage", "Network"),
+         ("bmc.big-storage", "big-storage", "Network")],
+    ], ids=["different-machines", "no-network-host", "two-on-one-sheet", "bmc-clone"])
+    def test_each_mirror_condition_is_required(self, owners):
+        inv = _with_senders(*[
+            _sender(hostname, "10.1.5.77", machine_name=machine,
+                    sheet_type=sheet, mac_suffix=f"{60 + i}")
+            for i, (hostname, machine, sheet) in enumerate(owners)
+        ])
+        with pytest.raises(AssertionError, match="10.1.5.77"):
+            generate_rsyslog(inv)

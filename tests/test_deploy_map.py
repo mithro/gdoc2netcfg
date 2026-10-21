@@ -93,6 +93,10 @@ def test_make_deploy_syslog_installs_every_syslog_pair():
         for src, dst in deploy_map.syslog_pairs(Path("OUT"), Path("/etc"))
     }
     assert copies == expected
+    # rsyslog reads the table at startup, so every file is in place first
+    lines = recipe.splitlines()
+    restart = next(i for i, line in enumerate(lines) if "systemctl restart rsyslog" in line)
+    assert all(i < restart for i, line in enumerate(lines) if line.split()[:1] == ["cp"])
 
 
 def test_nginx_compares_the_generated_subtrees(tmp_path):

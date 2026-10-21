@@ -588,7 +588,20 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     for sheet in config.sheets:
         if sheet.name not in fetched_names and cache.has(sheet.name):
             to_validate.append((sheet.name, cache.read(sheet.name)))
-    sheet_result = validate_all(*_build_sheet_model(config, to_validate))
+    from gdoc2netcfg.sources.parser import SheetFormatError
+
+    try:
+        sheet_model = _build_sheet_model(config, to_validate)
+    except SheetFormatError as e:
+        print(
+            "Error: a sheet cannot be read; refusing to cache or store the "
+            f"fetched sheets (the previous cached copies stay in place):\n  {e}\n"
+            "Fix the sheet (or its published URL), then re-run fetch. "
+            "Nothing was stored.",
+            file=sys.stderr,
+        )
+        return 1
+    sheet_result = validate_all(*sheet_model)
     if sheet_result.has_errors:
         print(
             "Error: the fetched sheets fail validation; refusing to cache "

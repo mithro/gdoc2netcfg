@@ -291,3 +291,38 @@ def test_fetch_validates_the_credential_free_text_it_caches(fetch_config, monkey
     assert cli.main(["-c", str(config), "fetch"]) == 1
     assert "ip_multiple_hosts" in capsys.readouterr().err
     assert (cache_dir / "network.csv").read_text() == good_csv
+
+
+import pytest  # noqa: E402
+
+_GOOD_CSV = "Machine,MAC Address,IP,Interface\nswitch1,aa:bb:cc:dd:ee:01,10.1.30.1,\n"
+
+
+@pytest.mark.parametrize("fetched,expect", [
+    ("<!DOCTYPE html>\n<html><body>Sorry, unable to open the file.</body></html>\n",
+     "no header row"),
+    ("Host,MAC Address,IP\nswitch1,aa:bb:cc:dd:ee:01,10.1.30.1\n", "no header row"),
+    ("Machine,MAC Address,Address\nswitch1,aa:bb:cc:dd:ee:01,10.1.30.1\n",
+     "no IP column"),
+])
+def test_fetch_refuses_a_device_sheet_it_cannot_read(
+    fetch_config, monkeypatch, capsys, fetched, expect,  # noqa: F811
+):
+    """#84 D: each of these used to be cached with 0 errors while every
+    host on the sheet vanished from DNS."""
+    config, cache_dir = fetch_config
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "network.csv").write_text(_GOOD_CSV)
+
+    def fake_fetch(name, url, timeout=None):
+        return SheetData(name=name, csv_text=fetched)
+
+    monkeypatch.setattr("gdoc2netcfg.sources.sheets.fetch_sheet", fake_fetch, raising=True)
+
+    assert cli.main(["-c", str(config), "fetch"]) == 1
+    err = capsys.readouterr().err
+    assert expect in err
+    assert "network" in err
+    assert "Nothing was stored" in err
+    assert (cache_dir / "network.csv").read_text() == _GOOD_CSV
+    assert not (cache_dir / "config.db").exists()

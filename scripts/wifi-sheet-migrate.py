@@ -936,11 +936,18 @@ def find_ref_errors(tab_values: dict[str, list[list[str]]]) -> list[str]:
 
 
 def values_to_csv_text(values: list[list[str]]) -> str:
-    """Render a fetched values grid back to CSV text (for feeding parse_csv)."""
+    """Render a fetched values grid back to CSV text (for feeding parse_csv).
+
+    The Sheets API's values.get omits each row's trailing empty cells, but
+    parse_csv refuses a row whose width differs from the header's, so short
+    rows are padded back to the header (values[0]) width. A row LONGER than
+    the header is left alone for parse_csv to refuse.
+    """
+    width = len(values[0]) if values else 0
     buf = io.StringIO()
     writer = csv.writer(buf)
     for row in values:
-        writer.writerow(row)
+        writer.writerow(row + [""] * (width - len(row)))
     return buf.getvalue()
 
 
@@ -1388,10 +1395,11 @@ def cmd_verify(client: SheetsClient, *, snapshot_path: Path) -> int:
 
     new_tab_values = client.get_values(NEW_TAB_TITLE, render="FORMATTED_VALUE")
     csv_text = values_to_csv_text(new_tab_values)
-    records = parse_csv(csv_text, "wifi")
-    if not records:
+    try:
+        records = parse_csv(csv_text, "wifi")
+    except SheetFormatError as e:
         ok = False
-        print(f"FAIL: {NEW_TAB_TITLE!r} parsed to 0 records via parse_csv.")
+        print(f"FAIL: {NEW_TAB_TITLE!r} does not parse via parse_csv: {e}")
     else:
         print(f"OK: {NEW_TAB_TITLE!r} parsed to {len(records)} records via parse_csv.")
 

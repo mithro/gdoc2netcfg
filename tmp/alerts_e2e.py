@@ -73,6 +73,7 @@ out = generate_rsyslog(
     inventory,
     alert_mail_to="alerts@probe", alert_mail_from="rsyslog@probe",
     alert_smtp_server="127.0.0.1", alert_smtp_port=25, alert_interval=5,
+    alert_unknown_interval=5,
 )
 table = ROOT / "names.json"
 table.write_text(out["rsyslog.d/remote-logs.names.json"])

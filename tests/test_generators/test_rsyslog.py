@@ -376,6 +376,7 @@ ALERTS = dict(
     alert_smtp_server="127.0.0.1",
     alert_smtp_port="25",
     alert_interval="60",
+    alert_unknown_interval="3600",
 )
 
 
@@ -406,14 +407,33 @@ class TestAlerts:
     def test_ommail_loaded_once(self):
         assert _conf(**ALERTS).count('module(load="ommail")') == 1
 
-    def test_bmc_health_critical_or_warning_mails_from_every_syslog_ruleset(self):
+    def test_bmc_critical_and_warning_mail_from_every_syslog_ruleset(self):
         conf = _conf(**ALERTS)
         for net in ("wifi", "net", "iot"):
             block = _ruleset(conf, f"remote-{net}")
-            assert ('if $msg contains "Health EventLog" and\n'
-                    '       ($msg contains "| Critical |" or '
-                    '$msg contains "| Warning |") then {') in block
-            assert 'subject.template="AlertSubjectBmc"' in block
+            for severity in ("Critical", "Warning"):
+                assert ('if $msg contains "Health EventLog" and '
+                        f'$msg contains "| {severity} |" then {{') in block
+            assert block.count('subject.template="AlertSubjectBmc"') == 2
+
+    def test_critical_has_its_own_unlimited_action(self):
+        """execOnlyOnceEveryInterval is per action: sharing one with
+        Warning let a Warning swallow a Critical seconds later, from any
+        BMC on the net (review: 1 mail for Warning + 2 Criticals)."""
+        block = _ruleset(_conf(**ALERTS), "remote-net")
+        critical = block[block.index('"| Critical |"'):]
+        critical = critical[:critical.index("\n    }\n")]
+        assert 'type="ommail"' in critical
+        assert "execOnlyOnceEveryInterval" not in critical
+
+    def test_warning_and_unknown_use_their_own_intervals(self):
+        block = _ruleset(_conf(**ALERTS), "remote-net")
+        warning = block[block.index('"| Warning |"'):]
+        warning = warning[:warning.index("\n    }\n")]
+        unknown = block[block.index('startswith "unknown-"'):]
+        unknown = unknown[:unknown.index("\n    }\n")]
+        assert 'action.execOnlyOnceEveryInterval="60"' in warning
+        assert 'action.execOnlyOnceEveryInterval="3600"' in unknown
 
     def test_unknown_sender_mails_from_every_ruleset(self):
         conf = _conf(**ALERTS)
@@ -428,16 +448,25 @@ class TestAlerts:
 
     def test_mail_actions_use_the_configured_relay_and_rate_limit(self):
         block = _ruleset(_conf(**ALERTS), "remote-net")
-        assert block.count('server="127.0.0.1" port="25"') == 2
-        assert block.count('mailfrom="rsyslog@ten64.welland.mithis.com"') == 2
-        assert block.count('mailto="servers+ten64.welland@mithis.com"') == 2
-        assert block.count('action.execOnlyOnceEveryInterval="60"') == 2
+        assert block.count('server="127.0.0.1" port="25"') == 3
+        assert block.count('mailfrom="rsyslog@ten64.welland.mithis.com"') == 3
+        assert block.count('mailto="servers+ten64.welland@mithis.com"') == 3
 
     def test_mail_actions_have_their_own_queue(self):
         """An SMTP outage must never stall the file write (probe: the
         line is still written with the relay down)."""
         block = _ruleset(_conf(**ALERTS), "remote-net")
-        assert block.count('queue.type="LinkedList"') == 2
+        assert block.count('queue.type="LinkedList"') == 3
+
+    def test_queued_mail_survives_a_restart(self):
+        """Disk-assisted, saved on shutdown, one spool file per action
+        (review: an in-memory queue lost the alert across a restart
+        during an SMTP outage)."""
+        conf = _conf(**ALERTS)
+        for name in ("alert-critical-net", "alert-warning-net",
+                     "alert-unknown-net", "alert-unknown-net-kernel"):
+            assert conf.count(f'queue.filename="{name}"') == 1
+        assert conf.count('queue.saveOnShutdown="on"') == conf.count('type="ommail"')
 
     def test_file_is_written_before_any_mail_is_attempted(self):
         block = _ruleset(_conf(**ALERTS), "remote-net")
@@ -496,6 +525,7 @@ class TestAlertsFromToml:
             'alert_smtp_server = "127.0.0.1"\n'
             "alert_smtp_port = 25\n"        # toml integers are accepted
             "alert_interval = 60\n"
+            "alert_unknown_interval = 3600\n"
         ))
         assert main(["-c", str(config), "generate", "--stdout", "rsyslog"]) == 0
         out = capsys.readouterr().out
@@ -514,6 +544,7 @@ class TestAlertSettingTypes:
     @pytest.mark.parametrize("key,value", [
         ("alert_smtp_port", "0"), ("alert_smtp_port", 70000),
         ("alert_smtp_port", True), ("alert_interval", 0), ("alert_interval", "-5"),
+        ("alert_unknown_interval", "hourly"),
     ])
     def test_bad_numbers_fail_loud(self, key, value):
         with pytest.raises(ValueError, match=f"{key} must be a whole number"):

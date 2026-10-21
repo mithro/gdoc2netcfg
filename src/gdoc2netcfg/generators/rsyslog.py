@@ -146,7 +146,7 @@ _LOOKUP_NAME = """\
 # Mail alerts ([generators.rsyslog] alert_* keys; all or none).
 ALERT_KEYS = (
     "alert_mail_to", "alert_mail_from", "alert_smtp_server",
-    "alert_smtp_port", "alert_interval",
+    "alert_smtp_port", "alert_interval", "alert_unknown_interval",
 )
 
 # Subjects. A Supermicro BMC line reads
@@ -154,6 +154,10 @@ ALERT_KEYS = (
 # so the subject takes the severity and the event after it. Verified on
 # rsyslog 8.2608 against the 2026-10-20 big-storage IERR (tmp/ommail_probe.py):
 # "[syslog] bmc.big-storage: Critical IERR - Assertion".
+# Device text reaches the subject and body, so header injection relies on
+# rsyslog's default escapeControlCharactersOnReceive="on": CR/LF arrive as
+# #015#012 (verified in review with an SMTP-smuggling payload). Do not
+# turn that global off.
 _SEVERITY = "%msg:R,ERE,1,FIELD:[|] (Critical|Warning) [|]--end%"
 _EVENT = "%msg:R,ERE,2,FIELD:[|] (Critical|Warning) [|] ([^|]*[^| ])--end%"
 _ALERT_TEMPLATES = f"""\
@@ -186,7 +190,11 @@ def _alert_settings(
             f"but not {', '.join(missing)}; set all of {', '.join(ALERT_KEYS)} "
             "or none"
         )
-    for key, low, high in (("alert_interval", 1, None), ("alert_smtp_port", 1, 65535)):
+    for key, low, high in (
+        ("alert_interval", 1, None),
+        ("alert_unknown_interval", 1, None),
+        ("alert_smtp_port", 1, 65535),
+    ):
         value = given[key]
         if not value.isdigit() or int(value) < low or (high and int(value) > high):
             raise ValueError(
@@ -196,33 +204,58 @@ def _alert_settings(
     return given
 
 
-def _mail_action(alerts: dict[str, str], subject: str) -> str:
-    """One ommail action on its own queue, so an SMTP outage never stalls
-    the file write; at most one mail per alert_interval per action."""
+def _mail_action(alerts: dict[str, str], subject: str, spool: str,
+                 interval: str | None) -> str:
+    """One ommail action.
+
+    Its queue is its own (an SMTP outage never stalls the file write) and
+    disk-assisted under rsyslog's work directory, saved on shutdown, so a
+    mail queued during an outage survives a restart. execOnlyOnceEveryInterval
+    is per ACTION, not per sender or event: every mail it suppresses is
+    another line matching the same rule on the same net, so each rule gets
+    its own action and interval=None means every match is mailed.
+    """
+    limit = (f'\n               action.execOnlyOnceEveryInterval="{interval}"'
+             if interval is not None else "")
     return f"""\
         action(type="ommail"
                server="{alerts['alert_smtp_server']}" port="{alerts['alert_smtp_port']}"
                mailfrom="{alerts['alert_mail_from']}" mailto="{alerts['alert_mail_to']}"
-               subject.template="{subject}" template="AlertBody"
-               action.execOnlyOnceEveryInterval="{alerts['alert_interval']}"
+               subject.template="{subject}" template="AlertBody"{limit}
                queue.type="LinkedList" queue.size="1000"
+               queue.filename="{spool}" queue.saveOnShutdown="on"
+               queue.maxDiskSpace="10m"
                action.resumeRetryCount="-1" action.resumeInterval="30")
 """
 
 
-def _unknown_alert(alerts: dict[str, str] | None) -> str:
+def _unknown_alert(alerts: dict[str, str] | None, ruleset: str) -> str:
+    """A sender missing from the name table; it keeps sending, so this one
+    is limited by its own, long alert_unknown_interval."""
     if alerts is None:
         return ""
     return ('    if $.name startswith "unknown-" then {\n'
-            + _mail_action(alerts, "AlertSubjectUnknown") + "    }\n")
+            + _mail_action(alerts, "AlertSubjectUnknown",
+                           f"alert-unknown-{ruleset}",
+                           alerts["alert_unknown_interval"])
+            + "    }\n")
 
 
-def _bmc_alert(alerts: dict[str, str] | None) -> str:
+def _bmc_alert(alerts: dict[str, str] | None, net: str) -> str:
+    """Supermicro BMC Health events. Critical is never rate-limited: the
+    survey of all history found one Critical in 68,760 BMC lines, and a
+    suppressed one is the failure this alert exists to prevent."""
     if alerts is None:
         return ""
-    return ('    if $msg contains "Health EventLog" and\n'
-            '       ($msg contains "| Critical |" or $msg contains "| Warning |") then {\n'
-            + _mail_action(alerts, "AlertSubjectBmc") + "    }\n")
+    out = []
+    for severity, interval in (("Critical", None), ("Warning", alerts["alert_interval"])):
+        out.append(
+            '    if $msg contains "Health EventLog" and '
+            f'$msg contains "| {severity} |" then {{\n'
+            + _mail_action(alerts, "AlertSubjectBmc",
+                           f"alert-{severity.lower()}-{net}", interval)
+            + "    }\n")
+    return "".join(out)
 
 
 def _net_block(net: str, addr: str, alerts: dict[str, str] | None) -> str:
@@ -234,7 +267,7 @@ ruleset(name="remote-{net}") {{
 {_LOOKUP_NAME}    action(type="omfile" dynaFile="RemoteLog-{net}"
            fileOwner="root" fileGroup="adm"
            fileCreateMode="0640" dirCreateMode="0755")
-{_bmc_alert(alerts)}{_unknown_alert(alerts)}    stop
+{_bmc_alert(alerts, net)}{_unknown_alert(alerts, net)}    stop
 }}
 input(type="imudp" port="514" address="{addr}" ruleset="remote-{net}")
 """
@@ -249,7 +282,7 @@ ruleset(name="remote-{net}-kernel") {{
 {_LOOKUP_NAME}    action(type="omfile" dynaFile="KernelLog-{net}" template="KernelLine"
            fileOwner="root" fileGroup="adm"
            fileCreateMode="0640" dirCreateMode="0755")
-{_unknown_alert(alerts)}    stop
+{_unknown_alert(alerts, f"{net}-kernel")}    stop
 }}
 input(type="imudp" port="6666" address="{addr}" ruleset="remote-{net}-kernel")
 """
@@ -292,6 +325,7 @@ def generate_rsyslog(
     alert_smtp_server: str | None = None,
     alert_smtp_port: str | int | None = None,
     alert_interval: str | int | None = None,
+    alert_unknown_interval: str | int | None = None,
 ) -> dict[str, str]:
     """Generate the rsyslog drop-in + logrotate file.
 
@@ -315,6 +349,7 @@ def generate_rsyslog(
         "alert_smtp_server": alert_smtp_server,
         "alert_smtp_port": alert_smtp_port,
         "alert_interval": alert_interval,
+        "alert_unknown_interval": alert_unknown_interval,
     })
     parts = [_HEADER]
     if alerts is not None:

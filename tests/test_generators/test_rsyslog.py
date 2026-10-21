@@ -380,8 +380,15 @@ ALERTS = dict(
 )
 
 
+def _with_bmc():
+    bmc = _sender("bmc.big-storage", "10.1.5.150", machine_name="big-storage",
+                  mac_suffix="7f")
+    bmc.is_bmc = True
+    return _with_senders(bmc)
+
+
 def _conf(**kwargs):
-    return generate_rsyslog(_default_inventory(), **kwargs)["rsyslog.d/remote-logs.conf"]
+    return generate_rsyslog(_with_bmc(), **kwargs)["rsyslog.d/remote-logs.conf"]
 
 
 def _ruleset(conf, name):
@@ -412,7 +419,8 @@ class TestAlerts:
         for net in ("wifi", "net", "iot"):
             block = _ruleset(conf, f"remote-{net}")
             for severity in ("Critical", "Warning"):
-                assert ('if $msg contains "Health EventLog" and '
+                assert ('if $fromhost-ip == "10.1.5.150" and '
+                        '$msg contains "Health EventLog" and '
                         f'$msg contains "| {severity} |" then {{') in block
             assert block.count('subject.template="AlertSubjectBmc"') == 2
 
@@ -486,7 +494,7 @@ class TestAlertsFromToml:
         (cache_dir / "network.csv").write_text(
             "Machine,MAC Address,IP,Interface\n"
             "ten64,02:00:0a:01:05:01,10.1.5.1,br-net\n"
-            "bmc.big-storage,aa:bb:cc:dd:ee:01,10.1.5.150,\n"
+            "big-storage,aa:bb:cc:dd:ee:01,10.1.5.150,bmc\n"
         )
         (cache_dir / "vlan_allocations.csv").write_text(
             "VLAN,Name,IP Range,Netmask,CIDR,,,Color,For\n"
@@ -554,3 +562,41 @@ class TestAlertSettingTypes:
         conf = _conf(**{**ALERTS, "alert_smtp_port": 25, "alert_interval": 60})
         assert 'port="25"' in conf
         assert 'action.execOnlyOnceEveryInterval="60"' in conf
+
+
+class TestBmcRuleSenders:
+    """Only a sheet-marked BMC may trigger the BMC rules: Critical is never
+    rate-limited, so a forged "Health EventLog | Critical |" datagram from
+    any other device must not be able to flood mail."""
+
+    def _inv(self):
+        bmc = _sender("bmc.big-storage", "10.1.5.150", machine_name="big-storage",
+                      mac_suffix="70")
+        bmc.is_bmc = True
+        plug = _sender("au-plug-1.iot", "10.1.90.11", sheet_type="IoT", mac_suffix="71")
+        return _with_senders(bmc, plug)
+
+    def test_bmc_rules_match_only_bmc_sender_ips(self):
+        conf = generate_rsyslog(self._inv(), **ALERTS)["rsyslog.d/remote-logs.conf"]
+        block = _ruleset(conf, "remote-net")
+        for severity in ("Critical", "Warning"):
+            assert ('if $fromhost-ip == "10.1.5.150" and '
+                    '$msg contains "Health EventLog" and '
+                    f'$msg contains "| {severity} |" then {{') in block
+        assert "10.1.90.11" not in conf
+
+    def test_no_bmcs_no_bmc_rules(self):
+        conf = generate_rsyslog(_default_inventory(), **ALERTS)["rsyslog.d/remote-logs.conf"]
+        assert "Health EventLog" not in conf
+        assert 'startswith "unknown-"' in conf
+
+
+def test_toml_bmc_rule_names_the_sheet_bmc(tmp_path, capsys):
+    """Through the real sheet shape (interface "bmc" on its machine row),
+    the BMC rule is keyed on that BMC's address."""
+    from gdoc2netcfg.cli.main import main
+    config = TestAlertsFromToml()._config(tmp_path, "".join(
+        f'{k} = "{v}"\n' for k, v in ALERTS.items()))
+    assert main(["-c", str(config), "generate", "--stdout", "rsyslog"]) == 0
+    assert 'if $fromhost-ip == "10.1.5.150" and $msg contains "Health EventLog"' in (
+        capsys.readouterr().out)

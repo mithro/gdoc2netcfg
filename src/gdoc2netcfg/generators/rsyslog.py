@@ -241,16 +241,32 @@ def _unknown_alert(alerts: dict[str, str] | None, ruleset: str) -> str:
             + "    }\n")
 
 
-def _bmc_alert(alerts: dict[str, str] | None, net: str) -> str:
-    """Supermicro BMC Health events. Critical is never rate-limited: the
-    survey of all history found one Critical in 68,760 BMC lines, and a
-    suppressed one is the failure this alert exists to prevent."""
-    if alerts is None:
+def _bmc_ips(inventory: NetworkInventory) -> list[str]:
+    """The IPv4s of every host the sheet marks as a BMC, in numeric order."""
+    ips = {str(iface.ipv4) for host in inventory.hosts if host.is_bmc
+           for iface in host.interfaces}
+    return sorted(ips, key=ipaddress.IPv4Address)
+
+
+def _bmc_alert(alerts: dict[str, str] | None, net: str, bmc_ips: list[str]) -> str:
+    """Supermicro BMC Health events, from sheet-marked BMCs only.
+
+    Critical is never rate-limited: the survey of all history found one
+    Critical in 68,760 BMC lines, and a suppressed one is the failure this
+    alert exists to prevent. So only a BMC's own address may trigger it;
+    any other device on a served net could otherwise flood mail with a
+    forged "Health EventLog | Critical |" datagram (forging the BMC's
+    source address on the LAN remains possible, but is far harder).
+    """
+    if alerts is None or not bmc_ips:
         return ""
+    senders = " or ".join(f'$fromhost-ip == "{ip}"' for ip in bmc_ips)
+    if len(bmc_ips) > 1:
+        senders = f"({senders})"
     out = []
     for severity, interval in (("Critical", None), ("Warning", alerts["alert_interval"])):
         out.append(
-            '    if $msg contains "Health EventLog" and '
+            f'    if {senders} and $msg contains "Health EventLog" and '
             f'$msg contains "| {severity} |" then {{\n'
             + _mail_action(alerts, "AlertSubjectBmc",
                            f"alert-{severity.lower()}-{net}", interval)
@@ -258,7 +274,8 @@ def _bmc_alert(alerts: dict[str, str] | None, net: str) -> str:
     return "".join(out)
 
 
-def _net_block(net: str, addr: str, alerts: dict[str, str] | None) -> str:
+def _net_block(net: str, addr: str, alerts: dict[str, str] | None,
+               bmc_ips: list[str]) -> str:
     """Template + ruleset + leg-bound :514 input for one served net."""
     return f"""\
 template(name="RemoteLog-{net}" type="string"
@@ -267,7 +284,7 @@ ruleset(name="remote-{net}") {{
 {_LOOKUP_NAME}    action(type="omfile" dynaFile="RemoteLog-{net}"
            fileOwner="root" fileGroup="adm"
            fileCreateMode="0640" dirCreateMode="0755")
-{_bmc_alert(alerts, net)}{_unknown_alert(alerts, net)}    stop
+{_bmc_alert(alerts, net, bmc_ips)}{_unknown_alert(alerts, net)}    stop
 }}
 input(type="imudp" port="514" address="{addr}" ruleset="remote-{net}")
 """
@@ -351,11 +368,12 @@ def generate_rsyslog(
         "alert_interval": alert_interval,
         "alert_unknown_interval": alert_unknown_interval,
     })
+    bmc_ips = _bmc_ips(inventory)
     parts = [_HEADER]
     if alerts is not None:
         parts.append(_ALERT_TEMPLATES)
     for net in sorted(legs):
-        parts.append(_net_block(net, legs[net], alerts))
+        parts.append(_net_block(net, legs[net], alerts, bmc_ips))
         parts.append(_kernel_block(net, legs[net], alerts))
     return {
         "rsyslog.d/remote-logs.conf": "\n".join(parts),

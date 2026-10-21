@@ -799,17 +799,28 @@ from the sheet name; the table cannot. `rsyslogd -N1` loads the table, so
 it rejects a malformed one. The deploy copies the table before restarting
 rsyslog, which reads it at startup.
 
-**Mail alerts** (`[generators.rsyslog]` `alert_*` keys; all five or none,
+**Mail alerts** (`[generators.rsyslog]` `alert_*` keys; all six or none,
 see `gdoc2netcfg.toml.example`): each net's syslog ruleset mails a
 Supermicro BMC `Health EventLog` line at `Critical` or `Warning`, and
 every ruleset mails a sender that resolves to `unknown-<ip>`. The subject
 names the device and the event (`[syslog] bmc.big-storage: Critical IERR -
-Assertion`). Each `ommail` action runs after the file write on its own
-queue, so an SMTP outage never costs a log line, and sends at most one
-mail per `alert_interval` per rule per net (a burst is mailed once; every
-line is still in the file). Only big-storage's BMC sends syslog today; the
-other BMCs must be pointed at their net leg before they can alert, which
-is a device change that needs Tim's approval.
+Assertion`).
+
+Each rule is its own `ommail` action, because rsyslog's
+`execOnlyOnceEveryInterval` limits an *action*, not a sender or an event:
+while Warning and Critical shared one, a Warning swallowed a Critical a
+second later from any BMC on the net. So **Critical is never
+rate-limited** (one in 68,760 historical BMC lines), Warning sends at most
+one mail per net per `alert_interval`, and an unknown sender (which keeps
+sending until the sheet is fixed) at most one per net per
+`alert_unknown_interval`. Within a window every other line matching that
+rule, from any device, is not mailed; it is still in its file. Each action
+runs after the file write on its own disk-assisted queue
+(`/var/spool/rsyslog/alert-<rule>-<net>*`, saved on shutdown), so an SMTP
+outage never costs a log line and a mail queued during one survives an
+rsyslog restart. Only big-storage's BMC sends syslog today; the other BMCs
+must be pointed at their net leg before they can alert, which is a device
+change that needs Tim's approval.
 
 The per-net logrotate globs
 (`*.log`) cover these files — no extra stanzas. Receive-only today: the

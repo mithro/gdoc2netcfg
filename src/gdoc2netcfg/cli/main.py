@@ -201,15 +201,45 @@ def _build_hosts_from_csvs(config, csv_data: list[tuple[str, str]]):
 
 
 def _parse_device_records(csv_data: list[tuple[str, str]]):
-    """Parse device-sheet CSVs into DeviceRecords, skipping _NON_DEVICE_SHEETS."""
-    from gdoc2netcfg.sources.parser import parse_csv
+    """Parse device-sheet CSVs into DeviceRecords, skipping _NON_DEVICE_SHEETS.
+
+    A device sheet with no data rows (a header-only export) raises
+    SheetFormatError: every host on it would otherwise vanish from DNS
+    with fetch and generate both green (#84 D).
+    """
+    from gdoc2netcfg.sources.parser import SheetFormatError, parse_csv
 
     records = []
     for name, csv_text in csv_data:
         if name in _NON_DEVICE_SHEETS:
             continue
-        records.extend(parse_csv(csv_text, name))
+        sheet_records = parse_csv(csv_text, name)
+        if not sheet_records:
+            raise SheetFormatError(f"sheet {name!r}: no device rows")
+        records.extend(sheet_records)
     return records
+
+
+def _require_site_rows(records, csv_data, site) -> None:
+    """Every device sheet must give this site at least one interface row.
+
+    Raises SheetFormatError naming the first sheet whose rows are all for
+    other sites or lack a Machine or IP: such a sheet builds no host here,
+    which is the same silent loss as an empty one (#84 D).
+    """
+    from gdoc2netcfg.derivations.ip_remap import filter_and_resolve_records
+    from gdoc2netcfg.sources.parser import SheetFormatError
+
+    with_rows = {
+        r.sheet_name for r in filter_and_resolve_records(records, site)
+        if r.machine and r.ip
+    }
+    for name, _text in csv_data:
+        if name not in _NON_DEVICE_SHEETS and name not in with_rows:
+            raise SheetFormatError(
+                f"sheet {name!r}: no rows for site {site.name!r} with a "
+                "Machine and an IP"
+            )
 
 
 def _build_sheet_model(config, csv_data: list[tuple[str, str]]):
@@ -226,6 +256,7 @@ def _build_sheet_model(config, csv_data: list[tuple[str, str]]):
 
     _enrich_site_from_sheets(config, csv_data)
     records = _parse_device_records(csv_data)
+    _require_site_rows(records, csv_data, config.site)
     hosts = build_hosts(records, config.site)
     inventory = build_inventory(hosts, config.site)
     enrich_hosts_with_wifi_data(hosts)

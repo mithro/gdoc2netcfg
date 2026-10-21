@@ -304,6 +304,9 @@ _GOOD_CSV = "Machine,MAC Address,IP,Interface\nswitch1,aa:bb:cc:dd:ee:01,10.1.30
     ("Host,MAC Address,IP\nswitch1,aa:bb:cc:dd:ee:01,10.1.30.1\n", "no header row"),
     ("Machine,MAC Address,Address\nswitch1,aa:bb:cc:dd:ee:01,10.1.30.1\n",
      "no IP column"),
+    ("Machine,MAC Address,IP,Interface\n", "no device rows"),
+    ("Machine,MAC Address,IP,Interface,Site\nsw,aa:bb:cc:dd:ee:01,10.2.30.1,,monarto\n",
+     "no rows for site 'test'"),
 ])
 def test_fetch_refuses_a_device_sheet_it_cannot_read(
     fetch_config, monkeypatch, capsys, fetched, expect,  # noqa: F811

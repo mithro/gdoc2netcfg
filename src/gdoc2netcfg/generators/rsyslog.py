@@ -18,8 +18,9 @@ tmp/guest nets. v4 only — every current sender targets v4.
 Safety properties (carried over from the hand-written files this
 replaces): remote messages only reach the per-device files (ruleset
 isolation + stop), never /var/log/syslog; local messages never reach the
-remote dirs; secpath-replace prevents hostile hostnames escaping the
-directory; dynafile dirs are auto-created (0755, files root:adm 0640).
+remote dirs; file names come from the generated table (sheet hostnames
+or unknown-<ip>), and secpath-replace stays on as defence in depth;
+dynafile dirs are auto-created (0755, files root:adm 0640).
 
 Kernel netconsole capture rides the same file: one leg-bound imudp input
 per served net on UDP 6666 (the fleet's netconsole port), ruleset
@@ -54,12 +55,14 @@ module(load="imudp")
 
 # Sending IP -> sheet hostname (generated alongside this file). Every
 # ruleset names its files from it; an IP not in it logs to unknown-<ip>.
-lookup_table(name="remote-names" file="/etc/rsyslog.d/remote-logs.names.json" reloadOnHUP="on")
+lookup_table(name="remote-names"
+             file="/etc/rsyslog.d/remote-logs.names.json" reloadOnHUP="on")
 
 # Kernel netconsole capture: raw printk datagrams (no syslog header, no
 # hostname) arrive on UDP 6666, one leg-bound input per served net.
-# Each line is stamped with wall-clock arrival time (the payload carries only the extended
-# netconsole level,seq,monotonic-ts prefix, preserved for gap detection).
+# Each line is stamped with wall-clock arrival time (the payload carries
+# only the extended netconsole level,seq,monotonic-ts prefix, preserved
+# for gap detection).
 template(name="KernelLine" type="string"
          string="%timegenerated:::date-rfc3339% %rawmsg:::drop-last-lf%\\n")
 """
@@ -204,8 +207,8 @@ def generate_rsyslog(inventory: NetworkInventory) -> dict[str, str]:
     """Generate the rsyslog drop-in + logrotate file.
 
     Returns deploy-relative paths under etc/ ([generators.rsyslog]
-    output_dir = "etc"): rsyslog.d/remote-logs.conf and
-    logrotate.d/remote-logs.
+    output_dir = "etc"): rsyslog.d/remote-logs.conf, its sender-name
+    table rsyslog.d/remote-logs.names.json, and logrotate.d/remote-logs.
     """
     legs = _served_legs(inventory)
     if not legs:
@@ -219,6 +222,7 @@ def generate_rsyslog(inventory: NetworkInventory) -> dict[str, str]:
         parts.append(_kernel_block(net, legs[net]))
     return {
         "rsyslog.d/remote-logs.conf": "\n".join(parts),
-        "rsyslog.d/remote-logs.names.json": _names_table(_sender_names(inventory)),
+        "rsyslog.d/remote-logs.names.json":
+            _names_table(_sender_names(inventory)),
         "logrotate.d/remote-logs": _logrotate(sorted(legs)),
     }

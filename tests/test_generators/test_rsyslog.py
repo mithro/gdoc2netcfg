@@ -295,8 +295,9 @@ class TestRulesetNaming:
     def test_lookup_table_loaded_once_from_the_deployed_path(self):
         conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
         assert conf.count(
-            'lookup_table(name="remote-names" '
-            'file="/etc/rsyslog.d/remote-logs.names.json" reloadOnHUP="on")'
+            'lookup_table(name="remote-names"\n'
+            '             file="/etc/rsyslog.d/remote-logs.names.json" '
+            'reloadOnHUP="on")'
         ) == 1
         assert conf.index("lookup_table(") < conf.index("ruleset(")
 

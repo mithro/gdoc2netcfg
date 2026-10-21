@@ -566,9 +566,11 @@ which uses certbot directly) is skipped the same way a net is.
 `rsyslog` and `letsencrypt`, whose own deploy targets generate them (every
 other entry must be in the Makefile's `DEPLOY_GENERATORS`; a test enforces
 it). The check
-passes those names to `generate` explicitly, which is load-bearing: neither is
-in any site's `[generators] enabled` list, so a run driven by the enabled list
-would emit nothing for them and report every installed file as missing. A
+passes those names to `generate` explicitly, which is load-bearing: a site's
+`[generators] enabled` list need not name them (letsencrypt is in none;
+welland does enable rsyslog, so its 15-minute cron `generate` runs it too),
+and a run driven by the enabled list alone would emit nothing for a missing
+one and report every installed file as missing. A
 generator missing from this tuple is a component whose drift goes unnoticed —
 letsencrypt was, until 2026-09-14, by which point all 128 deployed certbot
 scripts still named the retired `certbot-hook-dnsmasq` and 45 belonged to hosts
@@ -715,10 +717,12 @@ is served except `tmp` and `guest` (untrusted); non-leaf nets (wg,
 transit, delegated) never are. The `rsyslog` generator derives the input
 set from the router's own interfaces in inventory (v4-only — every
 current sender targets v4; a net without a router leg emits no input)
-and outputs deploy-relative `etc/rsyslog.d/remote-logs.conf` +
+and outputs deploy-relative `etc/rsyslog.d/remote-logs.conf`, its
+sender-name table `etc/rsyslog.d/remote-logs.names.json`, and
 `etc/logrotate.d/remote-logs` (daily, rotate 400 — a 1-year floor —
-compress/delaycompress). Deploy both with `sudo make deploy-syslog`
-(generate + copy + rsyslog restart + path-scoped etckeeper commit).
+compress/delaycompress). Deploy all three with `sudo make deploy-syslog`
+(generate + copy + `rsyslogd -N1` + rsyslog restart + path-scoped
+etckeeper commit).
 
 Where each sender class lands:
 
@@ -772,7 +776,7 @@ schema-upgrade.
 
 The same drop-in also receives **kernel netconsole** (raw printk, no
 syslog header): one leg-bound input per served net on UDP 6666 into
-`/var/log/<net>/<sender>.kernel.log`, each line stamped with wall-clock
+`/var/log/<net>/<name>.kernel.log`, each line stamped with wall-clock
 arrival ahead of the raw payload (the extended-netconsole
 `level,seq,ts,-;` prefix survives, so message drops show as sequence
 gaps).

@@ -77,6 +77,8 @@ CI (`.github/workflows/ci.yml`) runs on every branch push, tag push and pull req
 
 *Sheet contract:* every interface row (Machine + IP) carries a MAC or the literal `none` (deliberately DNS-only). Anything else is `missing_mac` at ERROR: `fetch` refuses to cache the sheet set (previous CSVs stay; cron mails root), `generate` exits 1, the daemon refuses to publish.
 
+*Validation lives at fetch:* `fetch` runs the full `validate_all` over the same sheet-only model `generate` builds (`cli.main._build_sheet_model`), so any ERROR, whether a per-row field check or a check between hosts such as `ip_multiple_hosts`, keeps the data out of the cache. Later stages should only assert what validation guarantees, never re-validate or skip bad data (audit: issue #84).
+
 ## Architecture
 
 `gdoc2netcfg` reads network device data from a Google Spreadsheet and generates configuration files for network infrastructure services (dnsmasq, Nagios, nginx).

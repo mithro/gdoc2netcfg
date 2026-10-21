@@ -212,6 +212,26 @@ def _parse_device_records(csv_data: list[tuple[str, str]]):
     return records
 
 
+def _build_sheet_model(config, csv_data: list[tuple[str, str]]):
+    """Build the sheet-only model: (records, hosts, inventory).
+
+    Everything derived from the sheets alone — site VLANs/all_sites, device
+    records, hosts, the inventory and WiFi identity — and nothing from the
+    supplement DBs.  ``_build_pipeline`` enriches the result with
+    supplements; ``cmd_fetch`` validates it before caching.  Sharing one
+    builder means fetch refuses exactly the data generate would refuse.
+    """
+    from gdoc2netcfg.derivations.host_builder import build_hosts, build_inventory
+    from gdoc2netcfg.derivations.wifi_data import enrich_hosts_with_wifi_data
+
+    _enrich_site_from_sheets(config, csv_data)
+    records = _parse_device_records(csv_data)
+    hosts = build_hosts(records, config.site)
+    inventory = build_inventory(hosts, config.site)
+    enrich_hosts_with_wifi_data(hosts)
+    return records, hosts, inventory
+
+
 def _load_stored_credentials(config) -> dict[str, dict[str, str]]:
     """Open the root-only credential store read-only and return its latest
     ``{hostname: {field: value}}`` mapping.
@@ -417,8 +437,6 @@ def _build_pipeline(config):
     fresh site) contributes no enrichment.
     """
     from gdoc2netcfg.constraints.validators import validate_all
-    from gdoc2netcfg.derivations.host_builder import build_hosts, build_inventory
-    from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.bmc_firmware import (
         enrich_hosts_with_bmc_firmware,
         refine_bmc_hardware_type,
@@ -433,26 +451,11 @@ def _build_pipeline(config):
         # Fetch or load CSVs
         csv_data = _fetch_or_load_csvs(config, use_cache=True)
 
-        # Enrich site config from VLAN Allocations sheet
-        _enrich_site_from_sheets(config, csv_data)
-
-        # Parse device records (skip non-device sheets — VLAN Allocations, Sites)
-        all_records = []
-        for name, csv_text in csv_data:
-            if name in _NON_DEVICE_SHEETS:
-                continue
-            records = parse_csv(csv_text, name)
-            all_records.extend(records)
+        all_records, hosts, inventory = _build_sheet_model(config, csv_data)
 
         if not all_records:
             print("Error: no device records found in any sheet.", file=sys.stderr)
             sys.exit(1)
-
-        # Build hosts (applies all derivations)
-        hosts = build_hosts(all_records, config.site)
-
-        # Build inventory (aggregate derivations)
-        inventory = build_inventory(hosts, config.site)
 
         # Load supplement data from the DB — the sole source.  Each
         # load_latest_* returns None if no completed scan exists; the
@@ -491,10 +494,6 @@ def _build_pipeline(config):
         enrich_hosts_with_tasmota(
             hosts, db.discovery.load_latest_tasmota() if db else None,
         )
-
-        from gdoc2netcfg.derivations.wifi_data import enrich_hosts_with_wifi_data
-
-        enrich_hosts_with_wifi_data(hosts)
 
         # Validate
         result = validate_all(all_records, hosts, inventory)
@@ -576,28 +575,33 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     #     the sheets just fetched plus the CACHED copy of any sheet that
     #     failed to fetch.  Invalid data is never cached — the previous
     #     good CSVs stay and the cron mail says why (fail loud, early).
-    from gdoc2netcfg.constraints.validators import validate_field_constraints
+    #     This is the FULL validate_all over the same sheet model generate
+    #     builds, so checks between hosts (shared IPs, ...) gate the cache
+    #     too, not only the per-row field checks.  It checks the
+    #     credential-free text that step 4 caches, not the raw text:
+    #     stripping can change which rows parse.
+    from gdoc2netcfg.constraints.validators import validate_all
 
     cache = CSVCache(config.cache.directory)
     fetched_names = {name for name, _ in raw_csvs}
-    to_validate = list(raw_csvs)
+    to_validate = [(name, clean) for name, clean, _present in stripped]
     for sheet in config.sheets:
         if sheet.name not in fetched_names and cache.has(sheet.name):
             to_validate.append((sheet.name, cache.read(sheet.name)))
-    field_result = validate_field_constraints(_parse_device_records(to_validate))
-    if field_result.has_errors:
+    sheet_result = validate_all(*_build_sheet_model(config, to_validate))
+    if sheet_result.has_errors:
         print(
             "Error: the fetched sheets fail validation; refusing to cache "
             "or store them (the previous cached copies stay in place):",
             file=sys.stderr,
         )
-        # Errors only, once each — not field_result.report() (which also
+        # Errors only, once each — not sheet_result.report() (which also
         # lists every WARNING; on today's sheets that's ~366 extra lines
         # mailed to root every 15 minutes until the sheet is fixed).
         # ValidationResult.__str__ omits the machine-readable `code`
         # (test_constraints/test_errors.py pins that format), so prefix
         # it ourselves.
-        for violation in field_result.errors:
+        for violation in sheet_result.errors:
             print(f"  [{violation.code}] {violation}", file=sys.stderr)
         print("Fix the spreadsheet rows above, then re-run fetch. Nothing was stored.",
               file=sys.stderr)

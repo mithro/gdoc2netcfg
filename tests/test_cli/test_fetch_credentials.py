@@ -205,3 +205,30 @@ def test_partial_fetch_does_not_tombstone_failed_sheets_credentials(
     # The good sheet is still cached.
     assert (cache_dir / "iot.csv").exists()
 
+
+def test_partial_fetch_with_failed_sites_sheet_still_caches_good_sheets(
+    fetch_config, monkeypatch,
+):
+    """#87 related: a configured Sites sheet that fails to fetch (but has a
+    cached copy, which the validation gate used) must not crash step 3 —
+    the good sheets are still cached."""
+    config, cache_dir = fetch_config
+    _add_sheets(config, sites="")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "sites.csv").write_text(
+        "Domain,Shortname\ntest.example.com,test\n"
+    )
+
+    def fake_fetch(name, url, timeout=None):
+        if name == "sites":
+            raise RuntimeError("HTTP 503")
+        return SheetData(name=name, csv_text=(
+            "Machine,MAC Address,IP,Interface,Site,Password\n"
+            "switch1,aa:bb:cc:dd:ee:01,10.1.30.1,,test,secret1\n"
+        ))
+
+    monkeypatch.setattr(
+        "gdoc2netcfg.sources.sheets.fetch_sheet", fake_fetch, raising=True,
+    )
+    assert cli.main(["-c", str(config), "fetch"]) == 1
+    assert "switch1" in (cache_dir / "network.csv").read_text()

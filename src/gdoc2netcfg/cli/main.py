@@ -632,7 +632,10 @@ def cmd_fetch(args: argparse.Namespace) -> int:
             find_lost_credential_cells,
         )
 
-        _enrich_site_from_sheets(config, raw_csvs)
+        # config.site was enriched by the validation gate above from the
+        # same sheet set (fetched + cached), so it is not re-derived here:
+        # raw_csvs lacks any sheet that failed to fetch, and re-enriching
+        # from it crashed on a failed Sites sheet after validation passed.
         records = _parse_device_records(raw_csvs)
         hosts = build_hosts(records, config.site)
         lost = find_lost_credential_cells(records, hosts, config.site)

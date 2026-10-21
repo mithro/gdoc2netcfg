@@ -182,9 +182,11 @@ pre-existing `ten64`/`wisp`/`tenwrt` Network-sheet hosts — identical MAC+IP un
 hostnames. This is a deliberate, additive carve-out in `ip_multiple_macs`
 (`constraints/validators.py::_is_cross_sheet_mirror`): the collision is accepted only when
 every colliding record on that IP shares one MAC, the owning hosts share one `machine_name`,
-and there is exactly one owning host per `sheet_type` — so a genuine same-sheet copy-paste
-error (e.g. a BMC row accidentally cloning its parent's exact MAC+IP) still errors even when
-an unrelated genuine mirror coexists for the same machine_name. `mac_duplicate_ip` needs no
+the owners are exactly one Network-sheet host and one WiFi-sheet host, and no other host
+(DNS-only ones included) sits on that IP — so a genuine same-sheet copy-paste error (e.g. a
+BMC row accidentally cloning its parent's exact MAC+IP), an IoT+WiFi copy, or a third host on
+a mirror's IP still errors even when an unrelated genuine mirror coexists for the same
+machine_name. The same predicate gates `ip_multiple_hosts`. `mac_duplicate_ip` needs no
 carve-out — it only fires when one MAC maps to multiple *distinct* IPs, which an
 identical-pair mirror can never trigger.
 

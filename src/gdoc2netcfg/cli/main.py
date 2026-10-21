@@ -577,12 +577,14 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     #     good CSVs stay and the cron mail says why (fail loud, early).
     #     This is the FULL validate_all over the same sheet model generate
     #     builds, so checks between hosts (shared IPs, ...) gate the cache
-    #     too, not only the per-row field checks.
+    #     too, not only the per-row field checks.  It checks the
+    #     credential-free text that step 4 caches, not the raw text:
+    #     stripping can change which rows parse.
     from gdoc2netcfg.constraints.validators import validate_all
 
     cache = CSVCache(config.cache.directory)
     fetched_names = {name for name, _ in raw_csvs}
-    to_validate = list(raw_csvs)
+    to_validate = [(name, clean) for name, clean, _present in stripped]
     for sheet in config.sheets:
         if sheet.name not in fetched_names and cache.has(sheet.name):
             to_validate.append((sheet.name, cache.read(sheet.name)))

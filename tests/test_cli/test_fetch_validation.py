@@ -270,3 +270,24 @@ def test_build_sheet_model_attaches_wifi_identity(fetch_config):  # noqa: F811
     assert by_name["puck01.wifi"].wifi_data == WifiData(number=1, serial="S1")
     assert by_name["switch1"].wifi_data is None
 
+
+def test_fetch_validates_the_credential_free_text_it_caches(fetch_config, monkeypatch, capsys):  # noqa: F811
+    """A row one cell short of a trailing credential column is skipped by
+    the parser in the raw CSV, but parses once the column is stripped —
+    so the gate must check the text that is cached, not the raw text."""
+    config, cache_dir = fetch_config
+    good_csv = "Machine,MAC Address,IP,Interface\nsw-old,aa:bb:cc:dd:ee:01,10.1.30.1,\n"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "network.csv").write_text(good_csv)
+
+    def fake_fetch(name, url, timeout=None):
+        return SheetData(name=name, csv_text=(
+            "Machine,MAC Address,IP,Interface,Password\n"
+            "sw-old,aa:bb:cc:dd:ee:01,10.1.30.1,,secret1\n"
+            "sw-new,aa:bb:cc:dd:ee:02,10.1.30.1,\n"   # short: no Password cell
+        ))
+
+    monkeypatch.setattr("gdoc2netcfg.sources.sheets.fetch_sheet", fake_fetch, raising=True)
+    assert cli.main(["-c", str(config), "fetch"]) == 1
+    assert "ip_multiple_hosts" in capsys.readouterr().err
+    assert (cache_dir / "network.csv").read_text() == good_csv

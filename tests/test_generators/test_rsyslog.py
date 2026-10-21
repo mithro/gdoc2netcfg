@@ -218,3 +218,99 @@ class TestRegistry:
         from gdoc2netcfg.cli import main as cli_main
         func = cli_main._get_generator("rsyslog")
         assert func is generate_rsyslog
+
+
+def _sender(hostname, *v4s, machine_name=None, sheet_type="Network", mac_suffix="10"):
+    return Host(
+        machine_name=machine_name or hostname.split(".")[-1],
+        hostname=hostname,
+        sheet_type=sheet_type,
+        interfaces=[
+            NetworkInterface(
+                name=None if len(v4s) == 1 else f"eth{i}",
+                mac=MACAddress.parse(f"02:00:0a:01:{mac_suffix}:{i:02x}"),
+                ip_addresses=(IPv4Address(v4),),
+                dhcp_name=hostname,
+            )
+            for i, v4 in enumerate(v4s)
+        ],
+    )
+
+
+def _with_senders(*senders):
+    inv = _default_inventory()
+    return NetworkInventory(site=SITE, hosts=inv.hosts + list(senders))
+
+
+def _names(inv):
+    import json
+
+    table = json.loads(generate_rsyslog(inv)["rsyslog.d/remote-logs.names.json"])
+    return {row["index"]: row["value"] for row in table["table"]}, table
+
+
+class TestSenderNames:
+    """Every log file is named by the sheet's hostname for the sending IP —
+    never by what the device claims in its header, nor by its PTR."""
+
+    def test_every_ipv4_maps_to_its_hosts_sheet_hostname(self):
+        inv = _with_senders(
+            _sender("bmc.big-storage", "10.1.5.40", machine_name="big-storage"),
+            _sender("au-plug-1.iot", "10.1.90.11", sheet_type="IoT", mac_suffix="11"),
+            _sender("sw-core", "10.1.5.2", "10.1.90.2", mac_suffix="12"),
+        )
+        names, _ = _names(inv)
+        assert names["10.1.5.40"] == "bmc.big-storage"
+        assert names["10.1.90.11"] == "au-plug-1.iot"
+        # a multi-interface host is one device: one file whichever leg sent it
+        assert names["10.1.5.2"] == names["10.1.90.2"] == "sw-core"
+        # the router's own legs too, so nothing it sends lands in unknown-*
+        assert names["10.1.4.1"] == "ten64"
+
+    def test_table_is_complete_and_ipv4_only(self):
+        inv = _with_senders(_sender("bmc.big-storage", "10.1.5.40", machine_name="big-storage"))
+        names, _ = _names(inv)
+        expected = {
+            str(iface.ipv4) for host in inv.hosts for iface in host.interfaces
+        }
+        assert set(names) == expected
+        # the inputs are v4-only, so a v6 key could never match
+        assert not [ip for ip in names if ":" in ip]
+
+    def test_table_is_an_rsyslog_string_table_with_empty_nomatch(self):
+        _, table = _names(_default_inventory())
+        assert table["version"] == 1
+        assert table["type"] == "string"
+        # empty, so the ruleset can substitute unknown-<ip> (see TestRulesetNaming)
+        assert table["nomatch"] == ""
+
+    def test_rows_sorted_numerically_for_stable_diffs(self):
+        inv = _with_senders(
+            _sender("b", "10.1.90.100", mac_suffix="20"),
+            _sender("a", "10.1.90.9", mac_suffix="21"),
+        )
+        _, table = _names(inv)
+        import ipaddress
+        keys = [ipaddress.IPv4Address(row["index"]) for row in table["table"]]
+        assert keys == sorted(keys)
+
+    def test_cross_sheet_mirror_resolves_to_the_network_sheet_host(self):
+        """wisp / wisp.wifi are one device recorded on two sheets (CLAUDE.md
+        'VLAN-4 infra mirror rows'); the validator accepts the shared IP."""
+        inv = _with_senders(
+            _sender("wisp", "10.1.4.2", machine_name="wisp", mac_suffix="30"),
+            _sender("wisp.wifi", "10.1.4.2", machine_name="wisp",
+                    sheet_type="WiFi", mac_suffix="30"),
+        )
+        names, _ = _names(inv)
+        assert names["10.1.4.2"] == "wisp"
+
+    def test_any_other_shared_ip_is_an_assertion_failure(self):
+        """Validation rejects two hosts on one IP before data is cached, so
+        reaching the generator with one is a bug, not data to name around."""
+        inv = _with_senders(
+            _sender("sw-old", "10.1.5.31", mac_suffix="40"),
+            _sender("sw-new", "10.1.5.31", mac_suffix="41"),
+        )
+        with pytest.raises(AssertionError, match="10.1.5.31.*sw-new.*sw-old"):
+            generate_rsyslog(inv)

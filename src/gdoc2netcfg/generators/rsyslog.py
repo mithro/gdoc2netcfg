@@ -29,8 +29,11 @@ follow-up.
 
 from __future__ import annotations
 
+import ipaddress
+import json
+
 from gdoc2netcfg.generators.recursor_forward import _leaf_gateways
-from gdoc2netcfg.models.host import NetworkInventory
+from gdoc2netcfg.models.host import Host, NetworkInventory
 
 # Untrusted nets never get a syslog input.
 EXCLUDED_NETS = frozenset({"tmp", "guest"})
@@ -67,6 +70,55 @@ def _served_legs(inventory: NetworkInventory) -> dict[str, str]:
             )
         legs[net] = v4[0]
     return legs
+
+
+def _sender_names(inventory: NetworkInventory) -> dict[str, str]:
+    """Every host IPv4 -> the sheet hostname its log files are named by.
+
+    v4 only, like the inputs: a v6 key could never match $fromhost-ip.
+    An IP owned by several hosts is acceptable only as a cross-sheet
+    mirror (one machine recorded on the Network sheet and again on another
+    sheet, see constraints.validators._is_cross_sheet_mirror), and names
+    the Network-sheet host. Anything else would have failed validation
+    before the data was cached, so it is asserted, not handled.
+    """
+    owners: dict[str, list[Host]] = {}
+    for host in inventory.hosts:
+        for iface in host.interfaces:
+            ip = str(iface.ipv4)
+            if not any(h is host for h in owners.get(ip, [])):
+                owners.setdefault(ip, []).append(host)
+
+    names: dict[str, str] = {}
+    for ip, hosts in owners.items():
+        if len(hosts) == 1:
+            names[ip] = hosts[0].hostname
+            continue
+        network = [h for h in hosts if h.sheet_type == "Network"]
+        is_mirror = (
+            len({h.machine_name for h in hosts}) == 1
+            and len({h.sheet_type for h in hosts}) == len(hosts)
+            and len(network) == 1
+        )
+        assert is_mirror, (
+            f"rsyslog generator: {ip} is owned by "
+            f"{', '.join(sorted(h.hostname for h in hosts))}; validation "
+            "should have rejected this before the data was cached"
+        )
+        names[ip] = network[0].hostname
+    return names
+
+
+def _names_table(names: dict[str, str]) -> str:
+    """The rsyslog lookup_table JSON, rows in numeric IP order."""
+    rows = [
+        {"index": ip, "value": names[ip]}
+        for ip in sorted(names, key=ipaddress.IPv4Address)
+    ]
+    return json.dumps(
+        {"version": 1, "nomatch": "", "type": "string", "table": rows},
+        indent=1,
+    ) + "\n"
 
 
 def _net_block(net: str, addr: str) -> str:
@@ -171,5 +223,6 @@ def generate_rsyslog(inventory: NetworkInventory) -> dict[str, str]:
         parts.append(_kernel_block(net, legs[net]))
     return {
         "rsyslog.d/remote-logs.conf": "\n".join(parts),
+        "rsyslog.d/remote-logs.names.json": _names_table(_sender_names(inventory)),
         "logrotate.d/remote-logs": _logrotate(sorted(legs)),
     }

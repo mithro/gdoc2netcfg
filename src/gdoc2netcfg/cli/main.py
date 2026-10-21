@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import json
 import re
 import sqlite3
 import subprocess
@@ -405,6 +406,23 @@ def _open_databases(config):
     ):
         return open_databases(config.cache.directory, read_only=True)
     return None
+
+
+def _sheet_records(config):
+    """Every device record in the cached sheets — all sites, no derivations.
+
+    The cache-only, pipeline-free view used by read-only queries that must
+    answer for every site from one sheet (``interfaces``): no fetch, no
+    site filtering, no database.
+    """
+    from gdoc2netcfg.sources.parser import parse_csv
+
+    records = []
+    for name, csv_text in _fetch_or_load_csvs(config, use_cache=True):
+        if name in _NON_DEVICE_SHEETS:
+            continue
+        records.extend(parse_csv(csv_text, name))
+    return records
 
 
 def _build_pipeline(config):
@@ -3412,6 +3430,74 @@ def cmd_power_upstream(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# interfaces (read-only: what interfaces/MACs does the sheet know per machine)
+# ---------------------------------------------------------------------------
+
+def _interfaces_document(records, machines, site):
+    """{machine: {"site", "interfaces": [...]}} from raw sheet records.
+
+    Sheet order within a machine; MACs normalised to lower-case colon form
+    (an unparseable cell is passed through lower-cased so the consumer sees
+    the sheet's value); ``ip`` is the raw cell — the consumer does not own
+    addressing. Returns (document, unknown_machines).
+    """
+    from gdoc2netcfg.models.addressing import MACAddress
+
+    wanted = set(machines)
+    doc: dict[str, dict] = {}
+    for r in records:
+        if not r.machine:
+            continue
+        if site and r.site != site:
+            continue
+        if wanted and r.machine not in wanted:
+            continue
+        raw = (r.mac_address or "").strip()
+        try:
+            mac = str(MACAddress.parse(raw)) if raw else ""
+        except ValueError:
+            mac = raw.lower()
+        entry = doc.setdefault(r.machine, {"site": r.site, "interfaces": []})
+        entry["interfaces"].append({
+            "name": r.interface or "",
+            "mac": mac,
+            "ip": r.ip or "",
+            "dns_only": bool(r.dns_only),
+            "sheet": r.sheet_name,
+            "row": r.row_number,
+        })
+    # Same rule as build_hosts' macced_ips: a row with neither MAC nor
+    # interface name whose IP a MAC'd row of the same machine claims is the
+    # IoT sheet cross-referencing a Network-sheet machine — a pointer to that
+    # interface, not another one. Rows no MAC'd row claims (wg, tailscale,
+    # DNS-only) stay.
+    for entry in doc.values():
+        claimed = {i["ip"] for i in entry["interfaces"] if i["mac"] and i["ip"]}
+        entry["interfaces"] = [
+            i for i in entry["interfaces"]
+            if not (i["mac"] == "" and i["name"] == "" and i["ip"] in claimed)
+        ]
+    unknown = sorted(wanted - set(doc))
+    return doc, unknown
+
+
+def cmd_interfaces(args: argparse.Namespace) -> int:
+    config = _load_config(args)
+    doc, unknown = _interfaces_document(_sheet_records(config), args.machines,
+                                        args.site)
+    for m in unknown:
+        print(f"error: {m!r}: no interface rows in any sheet"
+              + (f" for site {args.site!r}" if args.site else ""), file=sys.stderr)
+    if args.json:
+        print(json.dumps(doc, indent=2, sort_keys=False))
+    else:
+        for machine, entry in doc.items():
+            for i in entry["interfaces"]:
+                print(f"{entry['site']} {machine} {i['name']} {i['mac']} {i['ip']}")
+    return 1 if unknown else 0
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -3827,6 +3913,22 @@ def main(argv: list[str] | None = None) -> int:
             help="Render despite stale-switch/data violations (default: refuse)",
         )
 
+    # interfaces (read-only, cache-only: for cross-checking an independent
+    # copy of the same facts, e.g. ansible's network_interfaces — issue #82)
+    interfaces_parser = subparsers.add_parser(
+        "interfaces",
+        help="List every interface/MAC the sheet knows per machine (all sites, cache only)",
+    )
+    interfaces_parser.add_argument(
+        "machines", nargs="*", metavar="MACHINE",
+        help="Machine names to show (default: all); an unknown name is an error",
+    )
+    interfaces_parser.add_argument("--site", help="Only machines at this site")
+    interfaces_parser.add_argument(
+        "--json", action="store_true",
+        help='Emit {machine: {"site", "interfaces": [{name, mac, ip, dns_only, sheet, row}]}}',
+    )
+
     args = parser.parse_args(argv)
 
     if args.command is None:
@@ -3858,6 +3960,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             power_parser.print_help()
             return 0
+
+    if args.command == "interfaces":
+        return cmd_interfaces(args)
 
     # Handle bridge subcommands
     if args.command == "bridge":

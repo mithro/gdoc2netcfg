@@ -1,5 +1,7 @@
 """Tests for the host builder derivation."""
 
+import pytest
+
 from gdoc2netcfg.derivations.host_builder import (
     build_hosts,
     build_inventory,
@@ -452,3 +454,26 @@ class TestExplicitIPv6Column:
         hosts = build_hosts(records, SITE)
         v6 = [str(a) for a in hosts[0].interfaces[0].ipv6_addresses]
         assert v6 == ["2404:e80:a137:110::100"]  # derived only
+
+
+class TestBadCellsNameTheirRow:
+    """#84 I: a cell build_hosts cannot turn into an address aborts the
+    build (nothing is cached or generated); the error must say which
+    sheet row to fix."""
+
+    @staticmethod
+    def _build(row):
+        from gdoc2netcfg.sources.parser import parse_csv
+
+        records = parse_csv(
+            "Machine,MAC Address,IP,Interface\n"
+            "ok,aa:bb:cc:dd:ee:01,10.1.10.1,\n" + row, "network")
+        return build_hosts(records, SITE)
+
+    def test_unparseable_ip(self):
+        with pytest.raises(ValueError, match=r"network:3 .*'switch9'.*TBD"):
+            self._build("switch9,aa:bb:cc:dd:ee:02,TBD,\n")
+
+    def test_unparseable_mac(self):
+        with pytest.raises(ValueError, match=r"network:3 .*'switch9'.*aa:bb:cc"):
+            self._build("switch9,aa:bb:cc,10.1.10.9,\n")

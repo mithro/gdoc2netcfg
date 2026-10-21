@@ -189,7 +189,16 @@ def build_hosts(records: list[DeviceRecord], site: Site) -> list[Host]:
         is_bmc_host = hostname in bmc_hostnames
         interfaces = []
         for r in group:
-            iface = _build_interface(r, site)
+            try:
+                iface = _build_interface(r, site)
+            except ValueError as e:
+                # Name the row to fix (#84 I): a bare "Expected 4 octets
+                # in 'TBD'" traceback in the cron mail says nothing about
+                # where the cell is.
+                raise ValueError(
+                    f"{r.sheet_name}:{r.row_number} (machine {r.machine!r}, "
+                    f"interface {r.interface!r}): {e}"
+                ) from e
             if is_bmc_host:
                 # BMC host: strip the interface name so it becomes
                 # the bare/default interface (None)

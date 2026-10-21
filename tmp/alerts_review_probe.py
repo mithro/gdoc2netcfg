@@ -6,6 +6,10 @@ leaves the host), with both intervals at 10 s so the window is wide open.
   (a) Warning from 10.1.5.1, then 0.5 s later a Critical from 10.1.5.1, then a
       Critical from 127.0.0.1: before the fix one shared action mailed only the
       Warning. Expect 3 BMC mails, plus 1 unknown-sender mail for 127.0.0.1.
+  (c) a forged Critical from 127.0.0.2, a non-BMC sender: must NOT mail as a
+      BMC event (the BMC rules match only sheet-marked BMC addresses). The
+      harness adds the two test senders 10.1.5.1 and 127.0.0.1 to the BMC
+      address list, since no local address can be a real BMC's.
   (b) SMTP down: a Critical arrives, rsyslogd is stopped and restarted, then
       SMTP comes up. Before the fix the in-memory queue lost it. Expect the
       Critical to be delivered after the restart.
@@ -98,7 +102,11 @@ conf = (out["rsyslog.d/remote-logs.conf"]
         .replace("/etc/rsyslog.d/remote-logs.names.json", str(table))
         .replace('server="127.0.0.1" port="25"', 'server="127.0.0.1" port="15025"')
         .replace('fileOwner="root" fileGroup="adm"\n', "")
-        .replace('action.resumeInterval="30"', 'action.resumeInterval="2"'))
+        .replace('action.resumeInterval="30"', 'action.resumeInterval="2"')
+        .replace('$fromhost-ip == "10.1.5.150"',
+                 '$fromhost-ip == "10.1.5.150" or $fromhost-ip == "10.1.5.1" '
+                 'or $fromhost-ip == "127.0.0.1"'))
+assert conf.count('$fromhost-ip == "127.0.0.1"') > 0, "BMC condition not found"
 (ROOT / "rsyslog.conf").write_text(f'global(workDirectory="{ROOT}")\n' + conf)
 check = subprocess.run(["rsyslogd", "-N1", "-f", str(ROOT / "rsyslog.conf")],
                        capture_output=True, text=True)
@@ -139,9 +147,11 @@ with Sink():
     send("10.1.5.1", bmc_line("Critical", "IERR - Assertion"))
     time.sleep(0.5)
     send("127.0.0.1", bmc_line("Critical", "PSU failure - Assertion"))
+    time.sleep(0.5)
+    send("127.0.0.2", bmc_line("Critical", "Forged - Assertion"))
     time.sleep(4)
     stop_daemon(d)
-print("(a)", subjects())
+print("(a)+(c)", subjects())
 
 mails.clear()
 d = start_daemon()            # SMTP down

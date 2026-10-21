@@ -7,6 +7,7 @@ Cross-Record Constraints — run on NetworkInventory after Aggregate Derivations
 
 from __future__ import annotations
 
+import ipaddress
 import re
 
 from gdoc2netcfg.constraints.errors import (
@@ -437,6 +438,41 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
                 record_id=ip_str,
                 field="ip",
             ))
+
+    # Cross-host IPv6 sharing: explicit 'IPv6 A' cells are unioned with the
+    # derived address, so an explicit ::181 on one host can collide with
+    # another host's derived ::181 while every IPv4 stays unique. Keyed on
+    # the exploded form — the cells are free text (::0181 == ::181).
+    # Colliding interfaces that all share ONE IPv4 are left to the IPv4
+    # check above, which already errors or applies the roaming/mirror
+    # carve-outs; only collisions across distinct IPv4s are reported here.
+    v6_owners: dict[str, list[tuple[str, str]]] = {}  # exploded → [(host, ipv4)]
+    v6_display: dict[str, str] = {}
+    for host in inventory.hosts:
+        for iface in host.interfaces:
+            for addr in iface.ipv6_addresses:
+                key = addr.exploded
+                v6_display.setdefault(
+                    key, str(ipaddress.IPv6Address(addr.address)))
+                v6_owners.setdefault(key, []).append(
+                    (host.hostname, str(iface.ipv4)))
+    for key, owners in sorted(v6_owners.items()):
+        if len({hostname for hostname, _ in owners}) <= 1:
+            continue
+        if len({ipv4 for _, ipv4 in owners}) == 1:
+            continue
+        owner_list = ", ".join(
+            f"{hostname} ({ipv4})" for hostname, ipv4 in sorted(set(owners)))
+        result.add(ConstraintViolation(
+            severity=Severity.ERROR,
+            code="ipv6_multiple_hosts",
+            message=(
+                f"IPv6 {v6_display[key]} assigned to multiple hosts: "
+                f"{owner_list}"
+            ),
+            record_id=v6_display[key],
+            field="ipv6",
+        ))
 
     return result
 

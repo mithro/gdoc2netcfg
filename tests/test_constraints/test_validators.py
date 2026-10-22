@@ -1192,3 +1192,63 @@ class TestMissingMacExemptionMatchesBuildHosts:
         either site's fetch refuses a sheet that breaks the contract."""
         result, _ = self._run("desk,,10.X.10.5,,monarto\n", "")
         assert [e.code for e in result.errors] == ["missing_mac"]
+
+
+class TestCrossSheetMirrorCarveOutIsExact:
+    """The wisp / wisp.wifi carve-out must exempt exactly the documented
+    mirror -- one Network-sheet host and its WiFi-sheet copy -- and
+    nothing that merely contains one, through real pipeline shapes."""
+
+    @staticmethod
+    def _errors(**sheets):
+        from gdoc2netcfg.derivations.host_builder import build_hosts, build_inventory
+        from gdoc2netcfg.sources.parser import parse_csv
+
+        header = "Machine,MAC Address,IP,Interface\n"
+        records = []
+        for sheet, rows in sheets.items():
+            records += parse_csv(header + rows, sheet)
+        inv = build_inventory(build_hosts(records, SITE), SITE)
+        return sorted(
+            (v.code, v.record_id)
+            for v in validate_cross_record_constraints(inv).errors)
+
+    def test_the_documented_mirror_is_exempt(self):
+        assert self._errors(
+            network="wisp,aa:bb:cc:dd:ee:01,10.1.4.2,\n",
+            wifi="wisp,aa:bb:cc:dd:ee:01,10.1.4.2,\n",
+        ) == []
+
+    def test_a_dns_only_third_host_on_the_mirror_ip_errors(self):
+        """ip_to_macs omits MAC-less interfaces, so the predicate saw only
+        the wisp pair and waved a DNS-only third host through.
+
+        Hand-built: build_hosts today drops a MAC-less row on a MAC'd IP
+        as a cross-reference (even one marked 'none'), so the sheet rows
+        cannot produce this inventory yet; the predicate must not rely on
+        that."""
+        mac = "aa:bb:cc:dd:ee:01"
+        hosts = [
+            _host("wisp", [_iface(mac=mac, ip="10.1.4.2", dhcp_name="wisp")],
+                  machine_name="wisp", sheet_type="Network"),
+            _host("wisp.wifi", [_iface(mac=mac, ip="10.1.4.2",
+                                       dhcp_name="wisp.wifi")],
+                  machine_name="wisp", sheet_type="WiFi"),
+            _host("wisp-alias", [NetworkInterface(
+                name=None, mac=None, ip_addresses=(IPv4Address("10.1.4.2"),),
+                dhcp_name="wisp-alias")], sheet_type="Network"),
+        ]
+        from gdoc2netcfg.derivations.host_builder import build_inventory
+
+        result = validate_cross_record_constraints(build_inventory(hosts, SITE))
+        assert [(v.code, v.record_id) for v in result.errors] == [
+            ("ip_multiple_hosts", "10.1.4.2")]
+
+    def test_a_pair_without_a_network_side_is_not_a_mirror(self):
+        """An IoT + WiFi copy of one MAC+IP is a copy-paste error, not the
+        Network-sheet mirror CLAUDE.md defines (and rsyslog relies on)."""
+        assert self._errors(
+            iot="plug,aa:bb:cc:dd:ee:01,10.1.4.9,\n",
+            wifi="plug,aa:bb:cc:dd:ee:01,10.1.4.9,\n",
+        ) == [("ip_multiple_hosts", "10.1.4.9"),
+              ("ip_multiple_macs", "10.1.4.9")]

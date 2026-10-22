@@ -11,7 +11,7 @@ import csv
 import io
 from typing import TYPE_CHECKING
 
-from gdoc2netcfg.sources.parser import find_header_row
+from gdoc2netcfg.sources.parser import SheetFormatError, find_header_row
 from gdoc2netcfg.utils.lookup import CREDENTIAL_TYPES
 
 if TYPE_CHECKING:
@@ -40,7 +40,13 @@ def strip_credential_columns(csv_text: str) -> tuple[str, list[str]]:
     if not rows:
         return csv_text, []
 
-    header_idx = find_header_row(rows)
+    try:
+        header_idx = find_header_row(rows)
+    except SheetFormatError:
+        # Not a device sheet (Sites, VLAN Allocations): no credential
+        # columns to find.  A device sheet in this shape is refused by
+        # parse_csv in the validation gate, before anything is cached.
+        return csv_text, []
     header = rows[header_idx]
     credential_names = set(credential_field_names())
     drop = [i for i, h in enumerate(header) if h.strip() in credential_names]

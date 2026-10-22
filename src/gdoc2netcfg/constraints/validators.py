@@ -29,7 +29,9 @@ _DHCP_NAME_RE = re.compile(r'^[a-z0-9.\-_]+$')
 # Field Constraints (on raw DeviceRecords)
 # ---------------------------------------------------------------------------
 
-def validate_field_constraints(records: list[DeviceRecord]) -> ValidationResult:
+def validate_field_constraints(
+    records: list[DeviceRecord], site: Site,
+) -> ValidationResult:
     """Validate field-level constraints on raw device records.
 
     Checks:
@@ -39,19 +41,39 @@ def validate_field_constraints(records: list[DeviceRecord]) -> ValidationResult:
       on the same IP.  ERROR — fetch refuses to cache the sheet set.
     - Machine name must be present (WARNING)
     - IP address must be present (WARNING)
+
+    Every site's rows are checked, so either site's fetch refuses a
+    contract-breaking sheet.  For this site's rows the cross-reference
+    exemption is judged exactly as build_hosts judges it: over this site's
+    records with 'X' resolved (#84 C).  Unresolved, an owner at another
+    site exempted a row this site then built as a MAC-less host, and an
+    owner spelled 10.1.* failed to exempt a 10.X.* cross-reference.
+    Another site's rows keep the unresolved, all-records view; that
+    site's own run applies its exact rule.
     """
     from gdoc2netcfg.derivations.host_builder import macced_ips
+    from gdoc2netcfg.derivations.ip_remap import (
+        filter_and_resolve_records,
+        is_record_for_site,
+        resolve_site_ip,
+    )
     from gdoc2netcfg.sources.parser import DNS_ONLY_MARKER
 
     result = ValidationResult()
-    claimed = macced_ips(records)
+    claimed_anywhere = macced_ips(records)
+    claimed_here = macced_ips(filter_and_resolve_records(records, site))
+
+    def is_cross_reference(record: DeviceRecord) -> bool:
+        if is_record_for_site(record, site):
+            return resolve_site_ip(record.ip, site.site_octet) in claimed_here
+        return record.ip in claimed_anywhere
 
     for record in records:
         record_id = f"{record.sheet_name}:{record.row_number}"
 
         if not record.mac_address and not record.dns_only:
             is_interface_row = bool(record.machine and record.ip)
-            if is_interface_row and record.ip in claimed:
+            if is_interface_row and is_cross_reference(record):
                 pass  # cross-reference row; host_builder skips it
             elif is_interface_row:
                 result.add(ConstraintViolation(
@@ -100,6 +122,35 @@ def validate_field_constraints(records: list[DeviceRecord]) -> ValidationResult:
 # IPv6 Consistency Constraints (spreadsheet vs algorithmic derivation)
 # ---------------------------------------------------------------------------
 
+def _site_ipv4_records(
+    records: list[DeviceRecord], site: Site,
+) -> list[tuple[DeviceRecord, IPv4Address]]:
+    """This site's records with an IP, 'X' resolved, paired with the IPv4.
+
+    The same filter_and_resolve_records view build_hosts uses.  A record
+    whose resolved IP does not parse is left out.
+    """
+    from gdoc2netcfg.derivations.ip_remap import filter_and_resolve_records
+
+    pairs: list[tuple[DeviceRecord, IPv4Address]] = []
+    for record in filter_and_resolve_records(records, site):
+        if not record.ip:
+            continue
+        try:
+            pairs.append((record, IPv4Address(record.ip)))
+        except ValueError:
+            continue
+    return pairs
+
+
+def _same_ipv6(a: str, b: str) -> bool:
+    """Equal as IPv6 addresses (the cells are free text: ::0181 == ::181)."""
+    try:
+        return ipaddress.IPv6Address(a) == ipaddress.IPv6Address(b)
+    except ValueError:
+        return a == b
+
+
 def validate_ipv6_consistency(
     records: list[DeviceRecord], site: Site
 ) -> ValidationResult:
@@ -108,19 +159,17 @@ def validate_ipv6_consistency(
 
     For each record with 'IPv6 A', 'IPv6 B', etc. columns, computes the
     expected IPv6 from the IPv4 address and checks for mismatches.
+
+    Runs on this site's records with 'X' resolved (in the IPv4 and in the
+    IPv6 cells), exactly what build_hosts builds from: before, every
+    10.X.* row failed IPv4Address() and was skipped, so no multi-site
+    device was ever checked (#84 B).  Other sites' rows are judged by
+    their own site's run.
     """
     result = ValidationResult()
 
-    for record in records:
-        if not record.ip:
-            continue
-
+    for record, ipv4 in _site_ipv4_records(records, site):
         record_id = f"{record.sheet_name}:{record.row_number}"
-
-        try:
-            ipv4 = IPv4Address(record.ip)
-        except ValueError:
-            continue
 
         # Compute expected IPv6 addresses from algorithm
         expected = ipv4_to_ipv6_list(ipv4, site.active_ipv6_prefixes)
@@ -129,7 +178,7 @@ def validate_ipv6_consistency(
         for key, value in record.extra.items():
             if not key.startswith("IPv6 "):
                 continue
-            value = value.strip()
+            value = value.strip().replace("X", str(site.site_octet))
             if not value:
                 continue
 
@@ -174,7 +223,7 @@ def validate_ipv6_consistency(
                     record_id=record_id,
                     field=key,
                 ))
-            elif algo_addr != value:
+            elif not _same_ipv6(algo_addr, value):
                 result.add(ConstraintViolation(
                     severity=Severity.ERROR,
                     code="ipv6_mismatch",
@@ -224,8 +273,10 @@ def validate_record_constraints(hosts: list[Host], site: Site) -> ValidationResu
                     field="dhcp_name",
                 ))
 
-            # BMC placement validation
-            if iface.name and "bmc" in iface.name.lower():
+            # BMC placement validation.  Keyed on host.is_bmc: build_hosts
+            # splits each BMC row into its own host and strips the
+            # interface name, so iface.name never says "bmc" (#84 A).
+            if host.is_bmc:
                 ip_str = str(iface.ipv4)
                 a, b, c, d = iface.ipv4.octets
 
@@ -268,10 +319,16 @@ def validate_record_constraints(hosts: list[Host], site: Site) -> ValidationResu
 # Cross-Record Constraints (on NetworkInventory)
 # ---------------------------------------------------------------------------
 
+#: The sheet_types of a cross-sheet mirror: an IP Allocation (Network)
+#: row and its wifi-tab formula copy.
+_MIRROR_SHEET_TYPES = frozenset({"Network", "WiFi"})
+
+
 def _is_cross_sheet_mirror(
     macs: list[tuple[MACAddress, str]],
     ip_str: str,
     mac_to_hosts: dict[str, list[Host]],
+    ip_hostnames: set[str],
 ) -> bool:
     """Is this IP's MAC collision a deliberate cross-sheet mirror?
 
@@ -296,6 +353,17 @@ def _is_cross_sheet_mirror(
     two failure modes: a genuine same-IP duplicate getting masked by an
     unrelated host that merely reuses the MAC elsewhere, and a genuine
     same-IP mirror getting wrongly rejected by such an unrelated host.
+
+    Two further requirements keep the carve-out to exactly that pair:
+
+    - *ip_hostnames* (the hosts on ip_str the caller judges: every host
+      for the DNS-level check, the MAC'd ones for the DHCP-level one) must
+      be the mirror's hosts and nothing else.  *macs* comes from
+      ip_to_macs, which omits DNS-only interfaces, so without this a
+      MAC-less third host on a mirror's IP was waved through.
+    - The pair is one Network-sheet host and one WiFi-sheet host, as
+      CLAUDE.md defines the mirrors (and the rsyslog generator assumes):
+      an IoT + WiFi copy of one MAC+IP is a copy-paste error.
     """
     unique_macs = {str(mac) for mac, _ in macs}
     if len(unique_macs) != 1:
@@ -317,8 +385,9 @@ def _is_cross_sheet_mirror(
     sheet_types = {h.sheet_type for h in owning_hosts.values()}
     return (
         len(machine_names) == 1
-        and len(sheet_types) > 1
+        and sheet_types == _MIRROR_SHEET_TYPES
         and len(hostnames) == len(sheet_types)
+        and hostnames == ip_hostnames
     )
 
 
@@ -372,6 +441,19 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
         for iface in host.interfaces:
             mac_to_hosts.setdefault(str(iface.mac), []).append(host)
 
+    # ip → every host with an interface on it (ip_to_hosts), and the hosts
+    # with a MAC'd interface on it (ip_to_macced_hosts).  The mirror
+    # carve-out must see exactly the pair on the IP: the DHCP-level check
+    # below judges the MAC'd owners, the DNS-level one every owner.
+    ip_to_hosts: dict[str, set[str]] = {}
+    ip_to_macced_hosts: dict[str, set[str]] = {}
+    for host in inventory.hosts:
+        for iface in host.interfaces:
+            ip_to_hosts.setdefault(str(iface.ipv4), set()).add(host.hostname)
+            if iface.mac is not None:
+                ip_to_macced_hosts.setdefault(
+                    str(iface.ipv4), set()).add(host.hostname)
+
     # Multiple MACs per IP: allowed in the roaming range, or when all MACs
     # belong to one host (e.g. a multi-port endpoint like a puck's wan+lan
     # interfaces sharing one fixed IP — this owner check stays MAC-global,
@@ -392,7 +474,10 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
                 owning_hostnames.update(h.hostname for h in hosts)
         if not has_unowned_mac and len(owning_hostnames) == 1:
             continue
-        if _is_cross_sheet_mirror(macs, ip_str, mac_to_hosts):
+        if _is_cross_sheet_mirror(
+            macs, ip_str, mac_to_hosts,
+            ip_to_macced_hosts.get(ip_str, set()),
+        ):
             continue
         mac_list = ", ".join(f"{mac} ({name})" for mac, name in macs)
         result.add(ConstraintViolation(
@@ -413,18 +498,16 @@ def validate_cross_record_constraints(inventory: NetworkInventory) -> Validation
     # device's wired+wifi MACs share its address, but two different hosts
     # on one roam IP is an error too (decision 2026-10-22; the rsyslog
     # generator relies on no cross-host shared IP but the mirrors).
-    ip_to_hosts: dict[str, set[str]] = {}
-    for host in inventory.hosts:
-        for iface in host.interfaces:
-            ip_to_hosts.setdefault(str(iface.ipv4), set()).add(host.hostname)
     for ip_str, hostnames in sorted(ip_to_hosts.items()):
         # Same cross-sheet-mirror carve-out as ip_multiple_macs: an IP
         # Allocation row and its wifi-tab formula row share one MAC+IP by
-        # design. A MAC-less duplicate never qualifies (the predicate
-        # requires the identical MAC on every colliding record), so the
-        # stale-row cases this check exists for still error.
+        # design. A MAC-less duplicate never qualifies: the predicate
+        # requires the IP's hosts to be exactly the MAC'd mirror pair, so
+        # a DNS-only host on the IP (alone or beside a genuine mirror) and
+        # the stale-row cases this check exists for still error.
         if _is_cross_sheet_mirror(
-            inventory.ip_to_macs.get(ip_str, []), ip_str, mac_to_hosts
+            inventory.ip_to_macs.get(ip_str, []), ip_str, mac_to_hosts,
+            hostnames,
         ):
             continue
         if len(hostnames) > 1:
@@ -485,13 +568,13 @@ def validate_vlan_consistency(
     For each record with a 'VLAN' extra column, derives the expected VLAN
     from the IP address and checks for mismatches. Skips non-numeric VLAN
     values (e.g. 'N/A', 'Q', empty).
+
+    Runs on this site's records with 'X' resolved, like
+    validate_ipv6_consistency (#84 B).
     """
     result = ValidationResult()
 
-    for record in records:
-        if not record.ip:
-            continue
-
+    for record, ipv4 in _site_ipv4_records(records, site):
         vlan_str = record.extra.get("VLAN", "").strip()
         if not vlan_str:
             continue
@@ -503,11 +586,6 @@ def validate_vlan_consistency(
             continue
 
         record_id = f"{record.sheet_name}:{record.row_number}"
-
-        try:
-            ipv4 = IPv4Address(record.ip)
-        except ValueError:
-            continue
 
         derived_vlan = ip_to_vlan_id(ipv4, site)
         if derived_vlan is not None and derived_vlan != sheet_vlan:
@@ -671,7 +749,7 @@ def validate_all(
     combined = ValidationResult()
 
     for result in [
-        validate_field_constraints(records),
+        validate_field_constraints(records, inventory.site),
         validate_ipv6_consistency(records, inventory.site),
         validate_vlan_consistency(records, inventory.site),
         validate_record_constraints(hosts, inventory.site),

@@ -88,3 +88,41 @@ def test_verify_plug_entities_all_present(mod):
         {"entity_id": "sensor.au_plug_10_energy_power"},
     ]
     assert mod._verify_plug_entities(plugs, states) == []
+
+
+def test_load_pipeline_skips_the_zigbee_sheet(mod, tmp_path):
+    """The example toml configures a zigbee sheet; it has no Machine/MAC
+    columns, so it must be skipped like the other non-device sheets (the
+    strict parser refuses it), via the CLI's shared record parser."""
+    import textwrap
+
+    from gdoc2netcfg.config import load_config
+
+    cache = tmp_path / ".cache"
+    cache.mkdir()
+    (cache / "network.csv").write_text(
+        "Machine,MAC Address,IP,Interface\nplug,aa:bb:cc:dd:ee:01,10.1.90.10,\n"
+    )
+    (cache / "zigbee.csv").write_text("IEEE Address,Friendly Name\n0x00,lamp\n")
+    toml = tmp_path / "gdoc2netcfg.toml"
+    toml.write_text(textwrap.dedent(f"""\
+        [site]
+        name = "test"
+        domain = "test.example.com"
+        site_octet = 1
+
+        [sheets]
+        network = "https://example.com/network"
+        zigbee = "https://example.com/zigbee"
+
+        [cache]
+        directory = "{cache}"
+
+        [ipv6]
+        prefixes = ["2001:db8:1:"]
+
+        [generators]
+        enabled = []
+    """))
+    hosts = mod._load_pipeline(load_config(toml))
+    assert [h.machine_name for h in hosts] == ["plug"]

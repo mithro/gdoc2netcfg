@@ -66,3 +66,11 @@ def test_extract_credentials_keyed_by_hostname():
         "switch1": {"Password": "p1"},
         "bmc.server1": {"Password": "admin:secret"},
     }
+
+
+def test_strip_leaves_a_sheet_without_a_device_header_unchanged():
+    """fetch strips every fetched sheet, Sites and VLAN Allocations
+    included; those have no Machine/MAC header, hence no credential
+    columns to strip (and must not raise)."""
+    sites = "Domain,Shortname\nwelland.mithis.com,welland\n"
+    assert strip_credential_columns(sites) == (sites, [])

@@ -16,6 +16,15 @@ from dataclasses import dataclass, field
 DNS_ONLY_MARKER = "none"
 
 
+class SheetFormatError(ValueError):
+    """A device sheet's CSV does not have the shape the parser needs.
+
+    Raised instead of silently dropping data (#84 D): no header row (an
+    HTML error page, an empty export), a required column renamed away, or
+    a row whose cell count differs from the header's.
+    """
+
+
 @dataclass
 class DeviceRecord:
     """A raw device record from a spreadsheet sheet.
@@ -50,12 +59,19 @@ def find_header_row(rows: list[list[str]], max_rows: int = 5) -> int:
 
     Returns:
         Index of the header row (0-based).
+
+    Raises:
+        SheetFormatError: no such row in the first *max_rows*.  This used
+            to return 0, so an HTML error page parsed as junk rows.
     """
     for i, row in enumerate(rows[:max_rows]):
         row_str = ",".join(row).lower()
         if "machine" in row_str and "mac" in row_str:
             return i
-    return 0
+    raise SheetFormatError(
+        f"no header row (with 'Machine' and 'MAC' columns) in the first "
+        f"{max_rows} rows"
+    )
 
 
 def _normalize_header(header: str) -> str:
@@ -82,7 +98,9 @@ def parse_csv(csv_text: str, sheet_name: str) -> list[DeviceRecord]:
     - Header row detection (scans first 5 rows for 'Machine' + 'MAC')
     - Field name normalization (stripped whitespace)
     - Key field extraction (machine, mac, ip, interface)
-    - Row length validation (skips rows not matching header count)
+    - Shape validation: no header row, a missing Machine / MAC / IP
+      column, or a row whose cell count differs from the header's raise
+      SheetFormatError (never silently dropped)
     - Empty row filtering
     - WiFi-sheet-only Site carry-forward within a contiguous machine block
       (see the inline comment above the row loop for the rationale)
@@ -99,10 +117,10 @@ def parse_csv(csv_text: str, sheet_name: str) -> list[DeviceRecord]:
     reader = csv.reader(io.StringIO(csv_text))
     rows = list(reader)
 
-    if not rows:
-        return []
-
-    header_idx = find_header_row(rows)
+    try:
+        header_idx = find_header_row(rows)
+    except SheetFormatError as e:
+        raise SheetFormatError(f"sheet {sheet_name!r}: {e}") from None
     raw_headers = rows[header_idx]
     headers = [_normalize_header(h) for h in raw_headers]
 
@@ -120,6 +138,14 @@ def parse_csv(csv_text: str, sheet_name: str) -> list[DeviceRecord]:
     ip_col = _find_col(_IP_COLUMNS)
     interface_col = _find_col(_INTERFACE_COLUMNS)
     site_col = _find_col(_SITE_COLUMNS)
+
+    for col, label in ((machine_col, "Machine"), (mac_col, "MAC Address"),
+                       (ip_col, "IP")):
+        if col is None:
+            raise SheetFormatError(
+                f"sheet {sheet_name!r} row {header_idx + 1}: header has no "
+                f"{label} column (found: {', '.join(h for h in headers if h)})"
+            )
 
     records: list[DeviceRecord] = []
 
@@ -140,9 +166,11 @@ def parse_csv(csv_text: str, sheet_name: str) -> list[DeviceRecord]:
     prev_site = ""
 
     for row_idx, row in enumerate(rows[header_idx + 1 :], start=header_idx + 1):
-        # Skip rows that don't match header column count
         if len(row) != len(headers):
-            continue
+            raise SheetFormatError(
+                f"sheet {sheet_name!r} row {row_idx + 1}: "
+                f"{len(row)} cells, header has {len(headers)}"
+            )
 
         # Build key→value dict for non-empty fields
         values: dict[str, str] = {}

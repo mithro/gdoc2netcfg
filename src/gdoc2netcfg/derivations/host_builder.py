@@ -68,10 +68,12 @@ def _build_interface(record: DeviceRecord, site: Site) -> NetworkInterface:
     mac = MACAddress.parse(record.mac_address) if record.mac_address else None
     ipv4 = IPv4Address(record.ip)
     ipv6_addrs = list(ipv4_to_ipv6_list(ipv4, site.active_ipv6_prefixes))
-    seen_v6 = {str(a) for a in ipv6_addrs}
+    # Dedupe on the exploded form: the cells are free text, and ::0181 is
+    # the derived ::181 (str() kept both -> a duplicate AAAA, #84 J).
+    seen_v6 = {a.exploded for a in ipv6_addrs}
     for addr in _parse_explicit_ipv6(record, site):
-        if str(addr) not in seen_v6:
-            seen_v6.add(str(addr))
+        if addr.exploded not in seen_v6:
+            seen_v6.add(addr.exploded)
             ipv6_addrs.append(addr)
     vlan_id = ip_to_vlan_id(ipv4, site)
     interface_name = record.interface if record.interface else None
@@ -189,7 +191,16 @@ def build_hosts(records: list[DeviceRecord], site: Site) -> list[Host]:
         is_bmc_host = hostname in bmc_hostnames
         interfaces = []
         for r in group:
-            iface = _build_interface(r, site)
+            try:
+                iface = _build_interface(r, site)
+            except ValueError as e:
+                # Name the row to fix (#84 I): a bare "Expected 4 octets
+                # in 'TBD'" traceback in the cron mail says nothing about
+                # where the cell is.
+                raise ValueError(
+                    f"{r.sheet_name}:{r.row_number} (machine {r.machine!r}, "
+                    f"interface {r.interface!r}): {e}"
+                ) from e
             if is_bmc_host:
                 # BMC host: strip the interface name so it becomes
                 # the bare/default interface (None)

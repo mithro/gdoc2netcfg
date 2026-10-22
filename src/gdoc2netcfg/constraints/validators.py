@@ -29,7 +29,9 @@ _DHCP_NAME_RE = re.compile(r'^[a-z0-9.\-_]+$')
 # Field Constraints (on raw DeviceRecords)
 # ---------------------------------------------------------------------------
 
-def validate_field_constraints(records: list[DeviceRecord]) -> ValidationResult:
+def validate_field_constraints(
+    records: list[DeviceRecord], site: Site,
+) -> ValidationResult:
     """Validate field-level constraints on raw device records.
 
     Checks:
@@ -39,19 +41,39 @@ def validate_field_constraints(records: list[DeviceRecord]) -> ValidationResult:
       on the same IP.  ERROR — fetch refuses to cache the sheet set.
     - Machine name must be present (WARNING)
     - IP address must be present (WARNING)
+
+    Every site's rows are checked, so either site's fetch refuses a
+    contract-breaking sheet.  For this site's rows the cross-reference
+    exemption is judged exactly as build_hosts judges it: over this site's
+    records with 'X' resolved (#84 C).  Unresolved, an owner at another
+    site exempted a row this site then built as a MAC-less host, and an
+    owner spelled 10.1.* failed to exempt a 10.X.* cross-reference.
+    Another site's rows keep the unresolved, all-records view; that
+    site's own run applies its exact rule.
     """
     from gdoc2netcfg.derivations.host_builder import macced_ips
+    from gdoc2netcfg.derivations.ip_remap import (
+        filter_and_resolve_records,
+        is_record_for_site,
+        resolve_site_ip,
+    )
     from gdoc2netcfg.sources.parser import DNS_ONLY_MARKER
 
     result = ValidationResult()
-    claimed = macced_ips(records)
+    claimed_anywhere = macced_ips(records)
+    claimed_here = macced_ips(filter_and_resolve_records(records, site))
+
+    def is_cross_reference(record: DeviceRecord) -> bool:
+        if is_record_for_site(record, site):
+            return resolve_site_ip(record.ip, site.site_octet) in claimed_here
+        return record.ip in claimed_anywhere
 
     for record in records:
         record_id = f"{record.sheet_name}:{record.row_number}"
 
         if not record.mac_address and not record.dns_only:
             is_interface_row = bool(record.machine and record.ip)
-            if is_interface_row and record.ip in claimed:
+            if is_interface_row and is_cross_reference(record):
                 pass  # cross-reference row; host_builder skips it
             elif is_interface_row:
                 result.add(ConstraintViolation(
@@ -100,6 +122,35 @@ def validate_field_constraints(records: list[DeviceRecord]) -> ValidationResult:
 # IPv6 Consistency Constraints (spreadsheet vs algorithmic derivation)
 # ---------------------------------------------------------------------------
 
+def _site_ipv4_records(
+    records: list[DeviceRecord], site: Site,
+) -> list[tuple[DeviceRecord, IPv4Address]]:
+    """This site's records with an IP, 'X' resolved, paired with the IPv4.
+
+    The same filter_and_resolve_records view build_hosts uses.  A record
+    whose resolved IP does not parse is left out.
+    """
+    from gdoc2netcfg.derivations.ip_remap import filter_and_resolve_records
+
+    pairs: list[tuple[DeviceRecord, IPv4Address]] = []
+    for record in filter_and_resolve_records(records, site):
+        if not record.ip:
+            continue
+        try:
+            pairs.append((record, IPv4Address(record.ip)))
+        except ValueError:
+            continue
+    return pairs
+
+
+def _same_ipv6(a: str, b: str) -> bool:
+    """Equal as IPv6 addresses (the cells are free text: ::0181 == ::181)."""
+    try:
+        return ipaddress.IPv6Address(a) == ipaddress.IPv6Address(b)
+    except ValueError:
+        return a == b
+
+
 def validate_ipv6_consistency(
     records: list[DeviceRecord], site: Site
 ) -> ValidationResult:
@@ -108,19 +159,17 @@ def validate_ipv6_consistency(
 
     For each record with 'IPv6 A', 'IPv6 B', etc. columns, computes the
     expected IPv6 from the IPv4 address and checks for mismatches.
+
+    Runs on this site's records with 'X' resolved (in the IPv4 and in the
+    IPv6 cells), exactly what build_hosts builds from: before, every
+    10.X.* row failed IPv4Address() and was skipped, so no multi-site
+    device was ever checked (#84 B).  Other sites' rows are judged by
+    their own site's run.
     """
     result = ValidationResult()
 
-    for record in records:
-        if not record.ip:
-            continue
-
+    for record, ipv4 in _site_ipv4_records(records, site):
         record_id = f"{record.sheet_name}:{record.row_number}"
-
-        try:
-            ipv4 = IPv4Address(record.ip)
-        except ValueError:
-            continue
 
         # Compute expected IPv6 addresses from algorithm
         expected = ipv4_to_ipv6_list(ipv4, site.active_ipv6_prefixes)
@@ -129,7 +178,7 @@ def validate_ipv6_consistency(
         for key, value in record.extra.items():
             if not key.startswith("IPv6 "):
                 continue
-            value = value.strip()
+            value = value.strip().replace("X", str(site.site_octet))
             if not value:
                 continue
 
@@ -174,7 +223,7 @@ def validate_ipv6_consistency(
                     record_id=record_id,
                     field=key,
                 ))
-            elif algo_addr != value:
+            elif not _same_ipv6(algo_addr, value):
                 result.add(ConstraintViolation(
                     severity=Severity.ERROR,
                     code="ipv6_mismatch",
@@ -224,8 +273,10 @@ def validate_record_constraints(hosts: list[Host], site: Site) -> ValidationResu
                     field="dhcp_name",
                 ))
 
-            # BMC placement validation
-            if iface.name and "bmc" in iface.name.lower():
+            # BMC placement validation.  Keyed on host.is_bmc: build_hosts
+            # splits each BMC row into its own host and strips the
+            # interface name, so iface.name never says "bmc" (#84 A).
+            if host.is_bmc:
                 ip_str = str(iface.ipv4)
                 a, b, c, d = iface.ipv4.octets
 
@@ -517,13 +568,13 @@ def validate_vlan_consistency(
     For each record with a 'VLAN' extra column, derives the expected VLAN
     from the IP address and checks for mismatches. Skips non-numeric VLAN
     values (e.g. 'N/A', 'Q', empty).
+
+    Runs on this site's records with 'X' resolved, like
+    validate_ipv6_consistency (#84 B).
     """
     result = ValidationResult()
 
-    for record in records:
-        if not record.ip:
-            continue
-
+    for record, ipv4 in _site_ipv4_records(records, site):
         vlan_str = record.extra.get("VLAN", "").strip()
         if not vlan_str:
             continue
@@ -535,11 +586,6 @@ def validate_vlan_consistency(
             continue
 
         record_id = f"{record.sheet_name}:{record.row_number}"
-
-        try:
-            ipv4 = IPv4Address(record.ip)
-        except ValueError:
-            continue
 
         derived_vlan = ip_to_vlan_id(ipv4, site)
         if derived_vlan is not None and derived_vlan != sheet_vlan:
@@ -703,7 +749,7 @@ def validate_all(
     combined = ValidationResult()
 
     for result in [
-        validate_field_constraints(records),
+        validate_field_constraints(records, inventory.site),
         validate_ipv6_consistency(records, inventory.site),
         validate_vlan_consistency(records, inventory.site),
         validate_record_constraints(hosts, inventory.site),

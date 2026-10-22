@@ -67,33 +67,26 @@ def _load_config(args: argparse.Namespace):
 FETCH_JOB_DEADLINE_SECONDS = 300.0
 
 
-def _fetch_or_load_csvs(config, use_cache: bool = False):
-    """Fetch CSVs from sheets or read from cache.
+def _load_cached_csvs(config):
+    """Read every configured sheet from the cache `fetch` maintains.
 
-    Returns list of (name, csv_text) tuples.
+    Returns list of (name, csv_text) tuples, one per configured sheet.
+    Nothing here fetches: `fetch` is the only path that validates a sheet
+    set and strips its credential columns before caching it, so reading
+    anything else would bypass both (#84 H). A configured sheet with no
+    cached copy raises RuntimeError rather than being dropped, which would
+    build an inventory missing every host on it.
     """
     from gdoc2netcfg.sources.cache import CSVCache
-    from gdoc2netcfg.sources.sheets import fetch_sheet
 
     cache = CSVCache(config.cache.directory)
     results = []
-
     for sheet in config.sheets:
-        if use_cache and cache.has(sheet.name):
-            csv_text = cache.read(sheet.name)
-            results.append((sheet.name, csv_text))
-        else:
-            try:
-                data = fetch_sheet(sheet.name, sheet.url)
-                cache.write(sheet.name, data.csv_text)
-                results.append((sheet.name, data.csv_text))
-            except Exception as e:
-                print(f"Warning: failed to fetch sheet {sheet.name!r}: {e}", file=sys.stderr)
-                if cache.has(sheet.name):
-                    print(f"  Using cached version of {sheet.name!r}", file=sys.stderr)
-                    csv_text = cache.read(sheet.name)
-                    results.append((sheet.name, csv_text))
-
+        if not cache.has(sheet.name):
+            raise RuntimeError(
+                f"sheet {sheet.name!r}: no cached copy; run 'gdoc2netcfg fetch'"
+            )
+        results.append((sheet.name, cache.read(sheet.name)))
     return results
 
 
@@ -113,6 +106,12 @@ def _enrich_vlans_from_sheet(config, csv_data: list[tuple[str, str]]) -> None:
 
     Finds the 'vlan_allocations' CSV in csv_data, parses it, builds
     VLAN objects and network_subdomains, and updates config.site in place.
+
+    Like the Sites sheet: if one is configured under [sheets] but is
+    unavailable or has no VLAN rows, that is a hard error — without VLANs
+    the vlan_mismatch check and the roaming and BMC net-prefix logic go
+    quiet (#84 E).  If none is configured at all, VLANs stay unset (the
+    historical optional behaviour, with a warning).
     """
     from gdoc2netcfg.derivations.vlan import build_network_subdomains, build_vlans_from_definitions
     from gdoc2netcfg.sources.vlan_parser import parse_vlan_allocations
@@ -124,13 +123,21 @@ def _enrich_vlans_from_sheet(config, csv_data: list[tuple[str, str]]) -> None:
             break
 
     if vlan_csv is None:
-        print("Warning: no vlan_allocations sheet found, VLANs not configured", file=sys.stderr)
+        if any(s.name == "vlan_allocations" for s in config.sheets):
+            raise ValueError(
+                "VLAN Allocations sheet is configured under [sheets] but "
+                "unavailable (fetch failed and no cache); VLAN validation "
+                "and naming depend on it."
+            )
+        print("Warning: no vlan_allocations sheet configured, VLANs not configured",
+              file=sys.stderr)
         return
 
     definitions = parse_vlan_allocations(vlan_csv)
     if not definitions:
-        print("Warning: vlan_allocations sheet is empty", file=sys.stderr)
-        return
+        raise ValueError(
+            "VLAN Allocations sheet has no VLAN rows (VLANs would be empty)."
+        )
 
     vlans = build_vlans_from_definitions(definitions, config.site.site_octet)
     subdomains = build_network_subdomains(vlans)
@@ -201,15 +208,45 @@ def _build_hosts_from_csvs(config, csv_data: list[tuple[str, str]]):
 
 
 def _parse_device_records(csv_data: list[tuple[str, str]]):
-    """Parse device-sheet CSVs into DeviceRecords, skipping _NON_DEVICE_SHEETS."""
-    from gdoc2netcfg.sources.parser import parse_csv
+    """Parse device-sheet CSVs into DeviceRecords, skipping _NON_DEVICE_SHEETS.
+
+    A device sheet with no data rows (a header-only export) raises
+    SheetFormatError: every host on it would otherwise vanish from DNS
+    with fetch and generate both green (#84 D).
+    """
+    from gdoc2netcfg.sources.parser import SheetFormatError, parse_csv
 
     records = []
     for name, csv_text in csv_data:
         if name in _NON_DEVICE_SHEETS:
             continue
-        records.extend(parse_csv(csv_text, name))
+        sheet_records = parse_csv(csv_text, name)
+        if not sheet_records:
+            raise SheetFormatError(f"sheet {name!r}: no device rows")
+        records.extend(sheet_records)
     return records
+
+
+def _require_site_rows(records, csv_data, site) -> None:
+    """Every device sheet must give this site at least one interface row.
+
+    Raises SheetFormatError naming the first sheet whose rows are all for
+    other sites or lack a Machine or IP: such a sheet builds no host here,
+    which is the same silent loss as an empty one (#84 D).
+    """
+    from gdoc2netcfg.derivations.ip_remap import filter_and_resolve_records
+    from gdoc2netcfg.sources.parser import SheetFormatError
+
+    with_rows = {
+        r.sheet_name for r in filter_and_resolve_records(records, site)
+        if r.machine and r.ip
+    }
+    for name, _text in csv_data:
+        if name not in _NON_DEVICE_SHEETS and name not in with_rows:
+            raise SheetFormatError(
+                f"sheet {name!r}: no rows for site {site.name!r} with a "
+                "Machine and an IP"
+            )
 
 
 def _build_sheet_model(config, csv_data: list[tuple[str, str]]):
@@ -226,6 +263,7 @@ def _build_sheet_model(config, csv_data: list[tuple[str, str]]):
 
     _enrich_site_from_sheets(config, csv_data)
     records = _parse_device_records(csv_data)
+    _require_site_rows(records, csv_data, config.site)
     hosts = build_hosts(records, config.site)
     inventory = build_inventory(hosts, config.site)
     enrich_hosts_with_wifi_data(hosts)
@@ -449,7 +487,7 @@ def _build_pipeline(config):
 
     try:
         # Fetch or load CSVs
-        csv_data = _fetch_or_load_csvs(config, use_cache=True)
+        csv_data = _load_cached_csvs(config)
 
         all_records, hosts, inventory = _build_sheet_model(config, csv_data)
 
@@ -588,7 +626,20 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     for sheet in config.sheets:
         if sheet.name not in fetched_names and cache.has(sheet.name):
             to_validate.append((sheet.name, cache.read(sheet.name)))
-    sheet_result = validate_all(*_build_sheet_model(config, to_validate))
+    from gdoc2netcfg.sources.parser import SheetFormatError
+
+    try:
+        sheet_model = _build_sheet_model(config, to_validate)
+    except SheetFormatError as e:
+        print(
+            "Error: a sheet cannot be read; refusing to cache or store the "
+            f"fetched sheets (the previous cached copies stay in place):\n  {e}\n"
+            "Fix the sheet (or its published URL), then re-run fetch. "
+            "Nothing was stored.",
+            file=sys.stderr,
+        )
+        return 1
+    sheet_result = validate_all(*sheet_model)
     if sheet_result.has_errors:
         print(
             "Error: the fetched sheets fail validation; refusing to cache "
@@ -609,15 +660,33 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
     # 3. If a credential-bearing sheet was fetched, store credentials FIRST
     #    (before touching the cache) so a failure leaves old state intact.
-    #    Skip entirely when no credential columns were seen this run — never
-    #    tombstone credentials on a transient fetch failure of that sheet.
-    if has_credential_columns:
+    #    Skip entirely when no credential columns were seen this run, and
+    #    skip (loudly) when any device sheet failed to fetch: save_credentials
+    #    tombstones every stored (hostname, field) missing from its input, so
+    #    a partial input would wipe the failed sheet's credentials (#87).
+    unfetched_device_sheets = [
+        sheet.name for sheet in config.sheets
+        if sheet.name not in fetched_names
+        and sheet.name not in _NON_DEVICE_SHEETS
+    ]
+    if has_credential_columns and unfetched_device_sheets:
+        print(
+            "Warning: not updating the credential store: device sheet(s) "
+            f"{', '.join(unfetched_device_sheets)} failed to fetch, so their "
+            "credentials are unknown this run. Stored credentials are left "
+            "unchanged.",
+            file=sys.stderr,
+        )
+    elif has_credential_columns:
         from gdoc2netcfg.derivations.host_builder import (
             build_hosts,
             find_lost_credential_cells,
         )
 
-        _enrich_site_from_sheets(config, raw_csvs)
+        # config.site was enriched by the validation gate above from the
+        # same sheet set (fetched + cached), so it is not re-derived here:
+        # raw_csvs lacks any sheet that failed to fetch, and re-enriching
+        # from it crashed on a failed Sites sheet after validation passed.
         records = _parse_device_records(raw_csvs)
         hosts = build_hosts(records, config.site)
         lost = find_lost_credential_cells(records, hosts, config.site)
@@ -1162,7 +1231,7 @@ def cmd_info(args: argparse.Namespace) -> int:
     config = _load_config(args)
 
     # Load VLANs from sheet if available
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
 
     print(f"Site:   {config.site.name} (site_octet={config.site.site_octet})")
@@ -1271,16 +1340,10 @@ def _print_reachability_summary(
 def _reachability_build_hosts(config):
     """Shared helper: build hosts from cached CSVs for reachability commands."""
     from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
 
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
+    all_records = _parse_device_records(csv_data)
 
     return build_hosts(all_records, config.site)
 
@@ -1364,7 +1427,6 @@ def _scan_ssh_host_keys_pipeline(
     Returns (hosts, host_keys_data).
     """
     from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.sshfp import (
         enrich_hosts_with_ssh_host_keys,
         raise_for_ssh_errors,
@@ -1372,14 +1434,9 @@ def _scan_ssh_host_keys_pipeline(
     )
 
     # We need a minimal pipeline to get hosts with IPs
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
+    all_records = _parse_device_records(csv_data)
 
     hosts = build_hosts(all_records, config.site)
 
@@ -1456,21 +1513,15 @@ def cmd_ssl_certs(args: argparse.Namespace) -> int:
     )
     from gdoc2netcfg.derivations.dns_names import derive_all_dns_names
     from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.ssl_certs import (
         enrich_hosts_with_ssl_certs,
         scan_ssl_certs,
     )
 
     # Minimal pipeline to get hosts with IPs
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
+    all_records = _parse_device_records(csv_data)
 
     hosts = build_hosts(all_records, config.site)
 
@@ -1531,7 +1582,7 @@ def cmd_snmp_host(args: argparse.Namespace) -> int:
 
     # Minimal pipeline to get hosts with IPs, then merge stored device
     # credentials (Password for BMC IPMI, SNMP Community for SNMP).
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
     hosts = _build_hosts_from_csvs(config, csv_data)
     _merge_credentials_into_hosts(hosts, config)
@@ -1612,7 +1663,7 @@ def cmd_bmc_firmware(args: argparse.Namespace) -> int:
     # Minimal pipeline to get hosts with IPs, then merge stored device
     # credentials. BMC IPMI creds come from each BMC host's Password column
     # (username:password), stored root-only in credentials.db.
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
     hosts = _build_hosts_from_csvs(config, csv_data)
     _merge_credentials_into_hosts(hosts, config)
@@ -1674,7 +1725,7 @@ def cmd_snmp_switch(args: argparse.Namespace) -> int:
 
     # Minimal pipeline to get hosts with IPs, then merge the stored SNMP
     # community strings the bridge scan authenticates with.
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
     hosts = _build_hosts_from_csvs(config, csv_data)
     _merge_credentials_into_hosts(hosts, config)
@@ -1763,7 +1814,7 @@ def cmd_bridge_scan(args: argparse.Namespace) -> int:
 
     # Build hosts from cached CSVs, then merge stored SNMP community strings
     # for the SNMP bridge scan (NSDP needs no credentials).
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
     hosts = _build_hosts_from_csvs(config, csv_data)
     _merge_credentials_into_hosts(hosts, config)
@@ -1840,19 +1891,13 @@ def cmd_bridge_show(args: argparse.Namespace) -> int:
     config = _load_config(args)
 
     from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.bridge import enrich_hosts_with_bridge_data
     from gdoc2netcfg.supplements.nsdp import enrich_hosts_with_nsdp
 
     # Build hosts from cached CSVs
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
+    all_records = _parse_device_records(csv_data)
 
     hosts = build_hosts(all_records, config.site)
 
@@ -2135,7 +2180,6 @@ def cmd_nsdp_scan(args: argparse.Namespace) -> int:
     config = _load_config(args)
 
     from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.nsdp import (
         NSDP_HARDWARE_TYPES,
         enrich_hosts_with_nsdp,
@@ -2143,14 +2187,9 @@ def cmd_nsdp_scan(args: argparse.Namespace) -> int:
     )
 
     # Minimal pipeline to get hosts with IPs
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
+    all_records = _parse_device_records(csv_data)
 
     hosts = build_hosts(all_records, config.site)
 
@@ -2284,7 +2323,6 @@ def cmd_tasmota_scan(args: argparse.Namespace) -> int:
     config = _load_config(args)
 
     from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.tasmota import (
         _UNKNOWN_PREFIX,
         enrich_hosts_with_tasmota,
@@ -2292,13 +2330,9 @@ def cmd_tasmota_scan(args: argparse.Namespace) -> int:
     )
 
     # Minimal pipeline to get hosts with IPs.
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        all_records.extend(parse_csv(csv_text, name))
+    all_records = _parse_device_records(csv_data)
     hosts = build_hosts(all_records, config.site)
 
     discrepancies: list = []
@@ -2401,7 +2435,7 @@ def _tasmota_hosts(config):
     """Enriched host list with tasmota_data attached (same path as configure)."""
     from gdoc2netcfg.supplements.tasmota import enrich_hosts_with_tasmota
 
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
     hosts = _build_hosts_from_csvs(config, csv_data)
     enrich_hosts_with_tasmota(hosts, _load_latest_from_db(config, "load_latest_tasmota"))
@@ -2607,7 +2641,7 @@ def _sensors2mqtt_hosts(config):
 
     Same fetch/enrich/build path as the ``password`` command (so hostnames
     line up with the rest of the pipeline)."""
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
     return _build_hosts_from_csvs(config, csv_data)
 
@@ -3030,7 +3064,7 @@ def cmd_password(args: argparse.Namespace) -> int:
         suggest_matches,
     )
 
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
     hosts = _build_hosts_from_csvs(config, csv_data)
 

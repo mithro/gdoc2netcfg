@@ -1,5 +1,7 @@
 """Tests for the host builder derivation."""
 
+import pytest
+
 from gdoc2netcfg.derivations.host_builder import (
     build_hosts,
     build_inventory,
@@ -417,6 +419,25 @@ class TestExplicitIPv6Column:
         v6 = [str(a) for a in hosts[0].interfaces[0].ipv6_addresses]
         assert v6 == ["2404:e80:a137:110::100"]
 
+    def test_explicit_spelling_of_the_derived_address_adds_nothing(self):
+        """#84 J: ::0100 is the derived ::100; deduping on str() kept both,
+        and the generators could emit a duplicate AAAA."""
+        records = [
+            _make_record(extra={"IPv6 A": "2404:e80:a137:110::0100"}),
+        ]
+        hosts = build_hosts(records, SITE)
+        v6 = [str(a) for a in hosts[0].interfaces[0].ipv6_addresses]
+        assert v6 == ["2404:e80:a137:110::100"]
+
+    def test_two_spellings_of_one_extra_address_add_it_once(self):
+        records = [
+            _make_record(extra={
+                "IPv6 A": "2404:e80:a137:108::ff\n2404:e80:a137:108:0:0:0:00ff"}),
+        ]
+        hosts = build_hosts(records, SITE)
+        v6 = [a.exploded for a in hosts[0].interfaces[0].ipv6_addresses]
+        assert len(v6) == len(set(v6)) == 2
+
     def test_extra_addresses_unioned(self):
         records = [
             _make_record(
@@ -452,3 +473,26 @@ class TestExplicitIPv6Column:
         hosts = build_hosts(records, SITE)
         v6 = [str(a) for a in hosts[0].interfaces[0].ipv6_addresses]
         assert v6 == ["2404:e80:a137:110::100"]  # derived only
+
+
+class TestBadCellsNameTheirRow:
+    """#84 I: a cell build_hosts cannot turn into an address aborts the
+    build (nothing is cached or generated); the error must say which
+    sheet row to fix."""
+
+    @staticmethod
+    def _build(row):
+        from gdoc2netcfg.sources.parser import parse_csv
+
+        records = parse_csv(
+            "Machine,MAC Address,IP,Interface\n"
+            "ok,aa:bb:cc:dd:ee:01,10.1.10.1,\n" + row, "network")
+        return build_hosts(records, SITE)
+
+    def test_unparseable_ip(self):
+        with pytest.raises(ValueError, match=r"network:3 .*'switch9'.*TBD"):
+            self._build("switch9,aa:bb:cc:dd:ee:02,TBD,\n")
+
+    def test_unparseable_mac(self):
+        with pytest.raises(ValueError, match=r"network:3 .*'switch9'.*aa:bb:cc"):
+            self._build("switch9,aa:bb:cc,10.1.10.9,\n")

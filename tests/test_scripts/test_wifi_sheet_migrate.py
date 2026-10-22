@@ -1075,3 +1075,18 @@ class TestValuesToCsvText:
         records = parse_csv(csv_text, "wifi")
         assert len(records) == 1
         assert records[0].machine == "puck04"
+
+    def test_rows_trimmed_by_the_sheets_api_are_padded(self):
+        """values.get omits a row's trailing empty cells (72 of the 78 live
+        wifi rows end empty); the CSV must still give every row the
+        header's width, or parse_csv refuses it as a ragged row."""
+        from gdoc2netcfg.sources.parser import parse_csv
+
+        values = [
+            list(wsm.NEW_TAB_HEADER),
+            ["4", "puck04", "puck04", "wan", "44:07:0B:01:87:B4", "10.1.4.104",
+             "DHCP:wisp", "welland", "", "gale", "", "wisp", "2831HW00VZA"],
+        ]
+        assert len(values[1]) < len(values[0])
+        records = parse_csv(wsm.values_to_csv_text(values), "wifi")
+        assert [r.machine for r in records] == ["puck04"]

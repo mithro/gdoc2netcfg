@@ -122,14 +122,14 @@ def _load_pipeline(config):
     """Load hosts from pipeline with VLAN and Tasmota enrichment."""
     from gdoc2netcfg.cli.main import (
         _enrich_site_from_sheets,
-        _fetch_or_load_csvs,
+        _load_cached_csvs,
         _load_latest_from_db,
         _parse_device_records,
     )
     from gdoc2netcfg.derivations.host_builder import build_hosts
     from gdoc2netcfg.supplements.tasmota import enrich_hosts_with_tasmota
 
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
 
     all_records = _parse_device_records(csv_data)

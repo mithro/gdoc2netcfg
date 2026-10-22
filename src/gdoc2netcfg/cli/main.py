@@ -67,33 +67,26 @@ def _load_config(args: argparse.Namespace):
 FETCH_JOB_DEADLINE_SECONDS = 300.0
 
 
-def _fetch_or_load_csvs(config, use_cache: bool = False):
-    """Fetch CSVs from sheets or read from cache.
+def _load_cached_csvs(config):
+    """Read every configured sheet from the cache `fetch` maintains.
 
-    Returns list of (name, csv_text) tuples.
+    Returns list of (name, csv_text) tuples, one per configured sheet.
+    Nothing here fetches: `fetch` is the only path that validates a sheet
+    set and strips its credential columns before caching it, so reading
+    anything else would bypass both (#84 H). A configured sheet with no
+    cached copy raises RuntimeError rather than being dropped, which would
+    build an inventory missing every host on it.
     """
     from gdoc2netcfg.sources.cache import CSVCache
-    from gdoc2netcfg.sources.sheets import fetch_sheet
 
     cache = CSVCache(config.cache.directory)
     results = []
-
     for sheet in config.sheets:
-        if use_cache and cache.has(sheet.name):
-            csv_text = cache.read(sheet.name)
-            results.append((sheet.name, csv_text))
-        else:
-            try:
-                data = fetch_sheet(sheet.name, sheet.url)
-                cache.write(sheet.name, data.csv_text)
-                results.append((sheet.name, data.csv_text))
-            except Exception as e:
-                print(f"Warning: failed to fetch sheet {sheet.name!r}: {e}", file=sys.stderr)
-                if cache.has(sheet.name):
-                    print(f"  Using cached version of {sheet.name!r}", file=sys.stderr)
-                    csv_text = cache.read(sheet.name)
-                    results.append((sheet.name, csv_text))
-
+        if not cache.has(sheet.name):
+            raise RuntimeError(
+                f"sheet {sheet.name!r}: no cached copy; run 'gdoc2netcfg fetch'"
+            )
+        results.append((sheet.name, cache.read(sheet.name)))
     return results
 
 
@@ -480,7 +473,7 @@ def _build_pipeline(config):
 
     try:
         # Fetch or load CSVs
-        csv_data = _fetch_or_load_csvs(config, use_cache=True)
+        csv_data = _load_cached_csvs(config)
 
         all_records, hosts, inventory = _build_sheet_model(config, csv_data)
 
@@ -1219,7 +1212,7 @@ def cmd_info(args: argparse.Namespace) -> int:
     config = _load_config(args)
 
     # Load VLANs from sheet if available
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
 
     print(f"Site:   {config.site.name} (site_octet={config.site.site_octet})")
@@ -1329,7 +1322,7 @@ def _reachability_build_hosts(config):
     """Shared helper: build hosts from cached CSVs for reachability commands."""
     from gdoc2netcfg.derivations.host_builder import build_hosts
 
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
     all_records = _parse_device_records(csv_data)
 
@@ -1422,7 +1415,7 @@ def _scan_ssh_host_keys_pipeline(
     )
 
     # We need a minimal pipeline to get hosts with IPs
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
     all_records = _parse_device_records(csv_data)
 
@@ -1507,7 +1500,7 @@ def cmd_ssl_certs(args: argparse.Namespace) -> int:
     )
 
     # Minimal pipeline to get hosts with IPs
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
     all_records = _parse_device_records(csv_data)
 
@@ -1570,7 +1563,7 @@ def cmd_snmp_host(args: argparse.Namespace) -> int:
 
     # Minimal pipeline to get hosts with IPs, then merge stored device
     # credentials (Password for BMC IPMI, SNMP Community for SNMP).
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
     hosts = _build_hosts_from_csvs(config, csv_data)
     _merge_credentials_into_hosts(hosts, config)
@@ -1651,7 +1644,7 @@ def cmd_bmc_firmware(args: argparse.Namespace) -> int:
     # Minimal pipeline to get hosts with IPs, then merge stored device
     # credentials. BMC IPMI creds come from each BMC host's Password column
     # (username:password), stored root-only in credentials.db.
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
     hosts = _build_hosts_from_csvs(config, csv_data)
     _merge_credentials_into_hosts(hosts, config)
@@ -1713,7 +1706,7 @@ def cmd_snmp_switch(args: argparse.Namespace) -> int:
 
     # Minimal pipeline to get hosts with IPs, then merge the stored SNMP
     # community strings the bridge scan authenticates with.
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
     hosts = _build_hosts_from_csvs(config, csv_data)
     _merge_credentials_into_hosts(hosts, config)
@@ -1802,7 +1795,7 @@ def cmd_bridge_scan(args: argparse.Namespace) -> int:
 
     # Build hosts from cached CSVs, then merge stored SNMP community strings
     # for the SNMP bridge scan (NSDP needs no credentials).
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
     hosts = _build_hosts_from_csvs(config, csv_data)
     _merge_credentials_into_hosts(hosts, config)
@@ -1883,7 +1876,7 @@ def cmd_bridge_show(args: argparse.Namespace) -> int:
     from gdoc2netcfg.supplements.nsdp import enrich_hosts_with_nsdp
 
     # Build hosts from cached CSVs
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
     all_records = _parse_device_records(csv_data)
 
@@ -2175,7 +2168,7 @@ def cmd_nsdp_scan(args: argparse.Namespace) -> int:
     )
 
     # Minimal pipeline to get hosts with IPs
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
     all_records = _parse_device_records(csv_data)
 
@@ -2318,7 +2311,7 @@ def cmd_tasmota_scan(args: argparse.Namespace) -> int:
     )
 
     # Minimal pipeline to get hosts with IPs.
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
     all_records = _parse_device_records(csv_data)
     hosts = build_hosts(all_records, config.site)
@@ -2423,7 +2416,7 @@ def _tasmota_hosts(config):
     """Enriched host list with tasmota_data attached (same path as configure)."""
     from gdoc2netcfg.supplements.tasmota import enrich_hosts_with_tasmota
 
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
     hosts = _build_hosts_from_csvs(config, csv_data)
     enrich_hosts_with_tasmota(hosts, _load_latest_from_db(config, "load_latest_tasmota"))
@@ -2629,7 +2622,7 @@ def _sensors2mqtt_hosts(config):
 
     Same fetch/enrich/build path as the ``password`` command (so hostnames
     line up with the rest of the pipeline)."""
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
     return _build_hosts_from_csvs(config, csv_data)
 
@@ -3052,7 +3045,7 @@ def cmd_password(args: argparse.Namespace) -> int:
         suggest_matches,
     )
 
-    csv_data = _fetch_or_load_csvs(config, use_cache=True)
+    csv_data = _load_cached_csvs(config)
     _enrich_site_from_sheets(config, csv_data)
     hosts = _build_hosts_from_csvs(config, csv_data)
 

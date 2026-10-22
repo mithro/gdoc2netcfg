@@ -201,15 +201,45 @@ def _build_hosts_from_csvs(config, csv_data: list[tuple[str, str]]):
 
 
 def _parse_device_records(csv_data: list[tuple[str, str]]):
-    """Parse device-sheet CSVs into DeviceRecords, skipping _NON_DEVICE_SHEETS."""
-    from gdoc2netcfg.sources.parser import parse_csv
+    """Parse device-sheet CSVs into DeviceRecords, skipping _NON_DEVICE_SHEETS.
+
+    A device sheet with no data rows (a header-only export) raises
+    SheetFormatError: every host on it would otherwise vanish from DNS
+    with fetch and generate both green (#84 D).
+    """
+    from gdoc2netcfg.sources.parser import SheetFormatError, parse_csv
 
     records = []
     for name, csv_text in csv_data:
         if name in _NON_DEVICE_SHEETS:
             continue
-        records.extend(parse_csv(csv_text, name))
+        sheet_records = parse_csv(csv_text, name)
+        if not sheet_records:
+            raise SheetFormatError(f"sheet {name!r}: no device rows")
+        records.extend(sheet_records)
     return records
+
+
+def _require_site_rows(records, csv_data, site) -> None:
+    """Every device sheet must give this site at least one interface row.
+
+    Raises SheetFormatError naming the first sheet whose rows are all for
+    other sites or lack a Machine or IP: such a sheet builds no host here,
+    which is the same silent loss as an empty one (#84 D).
+    """
+    from gdoc2netcfg.derivations.ip_remap import filter_and_resolve_records
+    from gdoc2netcfg.sources.parser import SheetFormatError
+
+    with_rows = {
+        r.sheet_name for r in filter_and_resolve_records(records, site)
+        if r.machine and r.ip
+    }
+    for name, _text in csv_data:
+        if name not in _NON_DEVICE_SHEETS and name not in with_rows:
+            raise SheetFormatError(
+                f"sheet {name!r}: no rows for site {site.name!r} with a "
+                "Machine and an IP"
+            )
 
 
 def _build_sheet_model(config, csv_data: list[tuple[str, str]]):
@@ -226,6 +256,7 @@ def _build_sheet_model(config, csv_data: list[tuple[str, str]]):
 
     _enrich_site_from_sheets(config, csv_data)
     records = _parse_device_records(csv_data)
+    _require_site_rows(records, csv_data, config.site)
     hosts = build_hosts(records, config.site)
     inventory = build_inventory(hosts, config.site)
     enrich_hosts_with_wifi_data(hosts)
@@ -588,7 +619,20 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     for sheet in config.sheets:
         if sheet.name not in fetched_names and cache.has(sheet.name):
             to_validate.append((sheet.name, cache.read(sheet.name)))
-    sheet_result = validate_all(*_build_sheet_model(config, to_validate))
+    from gdoc2netcfg.sources.parser import SheetFormatError
+
+    try:
+        sheet_model = _build_sheet_model(config, to_validate)
+    except SheetFormatError as e:
+        print(
+            "Error: a sheet cannot be read; refusing to cache or store the "
+            f"fetched sheets (the previous cached copies stay in place):\n  {e}\n"
+            "Fix the sheet (or its published URL), then re-run fetch. "
+            "Nothing was stored.",
+            file=sys.stderr,
+        )
+        return 1
+    sheet_result = validate_all(*sheet_model)
     if sheet_result.has_errors:
         print(
             "Error: the fetched sheets fail validation; refusing to cache "
@@ -1284,16 +1328,10 @@ def _print_reachability_summary(
 def _reachability_build_hosts(config):
     """Shared helper: build hosts from cached CSVs for reachability commands."""
     from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
 
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
+    all_records = _parse_device_records(csv_data)
 
     return build_hosts(all_records, config.site)
 
@@ -1377,7 +1415,6 @@ def _scan_ssh_host_keys_pipeline(
     Returns (hosts, host_keys_data).
     """
     from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.sshfp import (
         enrich_hosts_with_ssh_host_keys,
         raise_for_ssh_errors,
@@ -1387,12 +1424,7 @@ def _scan_ssh_host_keys_pipeline(
     # We need a minimal pipeline to get hosts with IPs
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
+    all_records = _parse_device_records(csv_data)
 
     hosts = build_hosts(all_records, config.site)
 
@@ -1469,7 +1501,6 @@ def cmd_ssl_certs(args: argparse.Namespace) -> int:
     )
     from gdoc2netcfg.derivations.dns_names import derive_all_dns_names
     from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.ssl_certs import (
         enrich_hosts_with_ssl_certs,
         scan_ssl_certs,
@@ -1478,12 +1509,7 @@ def cmd_ssl_certs(args: argparse.Namespace) -> int:
     # Minimal pipeline to get hosts with IPs
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
+    all_records = _parse_device_records(csv_data)
 
     hosts = build_hosts(all_records, config.site)
 
@@ -1853,19 +1879,13 @@ def cmd_bridge_show(args: argparse.Namespace) -> int:
     config = _load_config(args)
 
     from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.bridge import enrich_hosts_with_bridge_data
     from gdoc2netcfg.supplements.nsdp import enrich_hosts_with_nsdp
 
     # Build hosts from cached CSVs
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
+    all_records = _parse_device_records(csv_data)
 
     hosts = build_hosts(all_records, config.site)
 
@@ -2148,7 +2168,6 @@ def cmd_nsdp_scan(args: argparse.Namespace) -> int:
     config = _load_config(args)
 
     from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.nsdp import (
         NSDP_HARDWARE_TYPES,
         enrich_hosts_with_nsdp,
@@ -2158,12 +2177,7 @@ def cmd_nsdp_scan(args: argparse.Namespace) -> int:
     # Minimal pipeline to get hosts with IPs
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        records = parse_csv(csv_text, name)
-        all_records.extend(records)
+    all_records = _parse_device_records(csv_data)
 
     hosts = build_hosts(all_records, config.site)
 
@@ -2297,7 +2311,6 @@ def cmd_tasmota_scan(args: argparse.Namespace) -> int:
     config = _load_config(args)
 
     from gdoc2netcfg.derivations.host_builder import build_hosts
-    from gdoc2netcfg.sources.parser import parse_csv
     from gdoc2netcfg.supplements.tasmota import (
         _UNKNOWN_PREFIX,
         enrich_hosts_with_tasmota,
@@ -2307,11 +2320,7 @@ def cmd_tasmota_scan(args: argparse.Namespace) -> int:
     # Minimal pipeline to get hosts with IPs.
     csv_data = _fetch_or_load_csvs(config, use_cache=True)
     _enrich_site_from_sheets(config, csv_data)
-    all_records = []
-    for name, csv_text in csv_data:
-        if name == "vlan_allocations":
-            continue
-        all_records.extend(parse_csv(csv_text, name))
+    all_records = _parse_device_records(csv_data)
     hosts = build_hosts(all_records, config.site)
 
     discrepancies: list = []

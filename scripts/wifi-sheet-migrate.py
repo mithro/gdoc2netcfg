@@ -98,7 +98,7 @@ import requests
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 
-from gdoc2netcfg.sources.parser import find_header_row, parse_csv
+from gdoc2netcfg.sources.parser import SheetFormatError, find_header_row, parse_csv
 
 DEFAULT_SPREADSHEET_ID = "1fFm2irzmnLb7RQNmAi4DmAm2_c61wrd5A2j3ZzdqIWE"
 SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets"
@@ -233,6 +233,14 @@ def col_letter(index: int) -> str:
         n, rem = divmod(n - 1, 26)
         letters = chr(65 + rem) + letters
     return letters
+
+
+def labelled_header_row(rows: list[list[str]], *, sheet_label: str) -> int:
+    """find_header_row, with the tab named in the failure."""
+    try:
+        return find_header_row(rows)
+    except SheetFormatError as e:
+        raise ValueError(f"{sheet_label}: {e}") from e
 
 
 def header_index(headers: list[str], name: str, *, sheet_label: str) -> int:
@@ -787,7 +795,7 @@ def _validate_machine_block_shape(
     """
     if not ip_alloc_values:
         raise ValueError(f"{IP_ALLOC_TAB_TITLE}: tab is empty (no header row)")
-    header_idx = find_header_row(ip_alloc_values)
+    header_idx = labelled_header_row(ip_alloc_values, sheet_label=IP_ALLOC_TAB_TITLE)
     machine_col = header_index(
         ip_alloc_values[header_idx], "Machine", sheet_label=IP_ALLOC_TAB_TITLE
     )
@@ -928,11 +936,18 @@ def find_ref_errors(tab_values: dict[str, list[list[str]]]) -> list[str]:
 
 
 def values_to_csv_text(values: list[list[str]]) -> str:
-    """Render a fetched values grid back to CSV text (for feeding parse_csv)."""
+    """Render a fetched values grid back to CSV text (for feeding parse_csv).
+
+    The Sheets API's values.get omits each row's trailing empty cells, but
+    parse_csv refuses a row whose width differs from the header's, so short
+    rows are padded back to the header (values[0]) width. A row LONGER than
+    the header is left alone for parse_csv to refuse.
+    """
+    width = len(values[0]) if values else 0
     buf = io.StringIO()
     writer = csv.writer(buf)
     for row in values:
-        writer.writerow(row)
+        writer.writerow(row + [""] * (width - len(row)))
     return buf.getvalue()
 
 
@@ -1053,7 +1068,7 @@ def cmd_populate(
     # via USER_ENTERED and silently re-evaluate in the new tab (see
     # build_openmesh_rows, which also asserts no copied cell starts with "=").
     all_ip_alloc = client.get_values(IP_ALLOC_TAB_TITLE, render="UNFORMATTED_VALUE")
-    header_idx = find_header_row(all_ip_alloc)
+    header_idx = labelled_header_row(all_ip_alloc, sheet_label=IP_ALLOC_TAB_TITLE)
     ip_alloc_values = all_ip_alloc[header_idx:]
 
     machine_col = header_index(
@@ -1271,7 +1286,7 @@ def cmd_delete_old_rows(client: SheetsClient, *, snapshot_path: Path, dry_run: b
     tabs = [t["title"] for t in client.list_tabs()]
     tab_formulas = {title: client.get_values(title) for title in tabs}
     fresh_ip_alloc = tab_formulas[IP_ALLOC_TAB_TITLE]
-    fresh_header_idx = find_header_row(fresh_ip_alloc)
+    fresh_header_idx = labelled_header_row(fresh_ip_alloc, sheet_label=IP_ALLOC_TAB_TITLE)
     machine_col = header_index(
         fresh_ip_alloc[fresh_header_idx], "Machine", sheet_label=IP_ALLOC_TAB_TITLE
     )
@@ -1380,10 +1395,11 @@ def cmd_verify(client: SheetsClient, *, snapshot_path: Path) -> int:
 
     new_tab_values = client.get_values(NEW_TAB_TITLE, render="FORMATTED_VALUE")
     csv_text = values_to_csv_text(new_tab_values)
-    records = parse_csv(csv_text, "wifi")
-    if not records:
+    try:
+        records = parse_csv(csv_text, "wifi")
+    except SheetFormatError as e:
         ok = False
-        print(f"FAIL: {NEW_TAB_TITLE!r} parsed to 0 records via parse_csv.")
+        print(f"FAIL: {NEW_TAB_TITLE!r} does not parse via parse_csv: {e}")
     else:
         print(f"OK: {NEW_TAB_TITLE!r} parsed to {len(records)} records via parse_csv.")
 

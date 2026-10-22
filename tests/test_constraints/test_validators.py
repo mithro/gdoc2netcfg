@@ -69,23 +69,23 @@ SITE = Site(
 
 class TestFieldConstraints:
     def test_valid_record(self):
-        result = validate_field_constraints([_record()])
+        result = validate_field_constraints([_record()], SITE)
         assert result.is_valid
         assert len(result.violations) == 0
 
     def test_missing_mac_on_interface_row_is_an_error(self):
-        result = validate_field_constraints([_record(mac="")])
+        result = validate_field_constraints([_record(mac="")], SITE)
         assert not result.is_valid
         assert result.errors[0].code == "missing_mac"
         assert "none" in result.errors[0].message   # tells the user how to mark DNS-only
 
     def test_none_marker_is_not_an_error(self):
-        result = validate_field_constraints([_record(mac="", dns_only=True)])
+        result = validate_field_constraints([_record(mac="", dns_only=True)], SITE)
         assert result.is_valid
         assert not [v for v in result.violations if v.code == "missing_mac"]
 
     def test_missing_mac_on_row_without_ip_stays_a_warning(self):
-        result = validate_field_constraints([_record(mac="", ip="")])
+        result = validate_field_constraints([_record(mac="", ip="")], SITE)
         assert result.is_valid
         assert {v.code for v in result.warnings} == {"missing_mac", "missing_ip"}
 
@@ -95,25 +95,25 @@ class TestFieldConstraints:
         owner = _record(machine="plug-1", mac="aa:bb:cc:dd:ee:01", ip="10.1.90.10")
         xref = DeviceRecord(sheet_name="iot", row_number=9, machine="plug-1",
                             mac_address="", ip="10.1.90.10")
-        result = validate_field_constraints([owner, xref])
+        result = validate_field_constraints([owner, xref], SITE)
         assert result.is_valid
 
     def test_missing_machine(self):
-        result = validate_field_constraints([_record(machine="")])
+        result = validate_field_constraints([_record(machine="")], SITE)
         assert len(result.warnings) == 1
         assert result.warnings[0].code == "missing_machine"
 
     def test_missing_ip(self):
-        result = validate_field_constraints([_record(ip="")])
+        result = validate_field_constraints([_record(ip="")], SITE)
         assert len(result.warnings) == 1
         assert result.warnings[0].code == "missing_ip"
 
     def test_multiple_missing_fields(self):
-        result = validate_field_constraints([_record(mac="", machine="", ip="")])
+        result = validate_field_constraints([_record(mac="", machine="", ip="")], SITE)
         assert len(result.warnings) == 3
 
     def test_record_id_format(self):
-        result = validate_field_constraints([_record(machine="")])
+        result = validate_field_constraints([_record(machine="")], SITE)
         assert result.warnings[0].record_id == "Network:2"
 
 
@@ -1106,3 +1106,89 @@ class TestCrossHostIPv6Duplicates:
         assert errors[0].record_id == "2404:e80:a137:190::181"
         assert "samsung-tv" in errors[0].message
         assert "geekmagic-ultra-1" in errors[0].message
+
+
+class TestConsistencyChecksSeeResolvedSiteRecords:
+    """#84 B: the IPv6 and VLAN consistency checks must see every row this
+    site builds, with its 'X' resolved -- not skip each 10.X.* row as an
+    unparseable IP, and not judge another site's rows by this site."""
+
+    @staticmethod
+    def _records(rows, header="Machine,MAC Address,IP,Interface,Site,IPv6 A,VLAN"):
+        from gdoc2netcfg.sources.parser import parse_csv
+
+        return parse_csv(header + "\n" + rows, "network")
+
+    def test_ipv6_mismatch_on_a_multi_site_row_is_caught(self):
+        records = self._records(
+            "bluray,aa:bb:cc:dd:ee:01,10.X.10.193,,,2404:e80:a137:110::183,\n")
+        result = validate_ipv6_consistency(records, IPV6_SITE)
+        assert [e.code for e in result.errors] == ["ipv6_mismatch"]
+        assert result.errors[0].record_id == "network:2"
+
+    def test_x_in_the_ipv6_cell_resolves_like_the_ipv4(self):
+        records = self._records(
+            "desk,aa:bb:cc:dd:ee:01,10.X.10.1,,,2404:e80:a137:X10::1,\n")
+        assert validate_ipv6_consistency(records, IPV6_SITE).violations == []
+
+    def test_another_sites_row_is_not_judged_here(self):
+        records = self._records(
+            "desk,aa:bb:cc:dd:ee:01,10.X.10.1,,monarto,2404:e80:a137:210::1,\n")
+        assert validate_ipv6_consistency(records, IPV6_SITE).violations == []
+
+    def test_vlan_mismatch_on_a_multi_site_row_is_caught(self):
+        records = self._records("desk,aa:bb:cc:dd:ee:01,10.X.10.1,,,,20\n")
+        result = validate_vlan_consistency(records, VLAN_SITE)
+        assert [e.code for e in result.errors] == ["vlan_mismatch"]
+
+    def test_vlan_of_another_sites_row_is_not_judged_here(self):
+        records = self._records("desk,aa:bb:cc:dd:ee:01,10.X.10.1,,monarto,,20\n")
+        assert validate_vlan_consistency(records, VLAN_SITE).violations == []
+
+    def test_ipv6_cell_spelling_does_not_matter(self):
+        records = self._records(
+            "desk,aa:bb:cc:dd:ee:01,10.X.10.1,,,2404:e80:a137:110:0::0001,\n")
+        assert validate_ipv6_consistency(records, IPV6_SITE).violations == []
+
+
+class TestMissingMacExemptionMatchesBuildHosts:
+    """#84 C: a MAC-less row is exempt from missing_mac exactly when
+    build_hosts skips it as a cross-reference -- judged on this site's
+    records with 'X' resolved, as build_hosts judges it."""
+
+    @staticmethod
+    def _run(network_rows, iot_rows):
+        from gdoc2netcfg.derivations.host_builder import build_hosts
+        from gdoc2netcfg.sources.parser import parse_csv
+
+        header = "Machine,MAC Address,IP,Interface,Site\n"
+        records = (parse_csv(header + network_rows, "network")
+                   + parse_csv(header + iot_rows, "iot"))
+        return (validate_field_constraints(records, SITE),
+                build_hosts(records, SITE))
+
+    def test_owner_at_another_site_does_not_exempt(self):
+        result, hosts = self._run(
+            "plug-1,aa:bb:cc:dd:ee:01,10.X.90.10,,monarto\n",
+            "plug-1,,10.X.90.10,,welland\n")
+        # build_hosts makes a MAC-less plug-1.iot here ...
+        assert [h.hostname for h in hosts] == ["plug-1.iot"]
+        assert hosts[0].interfaces[0].mac is None
+        # ... so validation must not let it through.
+        assert [(e.code, e.record_id) for e in result.errors] == [
+            ("missing_mac", "iot:2")]
+
+    def test_owner_spelled_without_x_still_exempts(self):
+        result, hosts = self._run(
+            "plug-1,aa:bb:cc:dd:ee:01,10.1.90.10,,welland\n",
+            "plug-1,,10.X.90.10,,\n")
+        # build_hosts skips the iot row as a cross-reference ...
+        assert [h.hostname for h in hosts] == ["plug-1"]
+        # ... so it is not a missing MAC.
+        assert result.errors == []
+
+    def test_another_sites_unmarked_row_still_errors_here(self):
+        """Rows for other sites keep being checked at every site, so
+        either site's fetch refuses a sheet that breaks the contract."""
+        result, _ = self._run("desk,,10.X.10.5,,monarto\n", "")
+        assert [e.code for e in result.errors] == ["missing_mac"]

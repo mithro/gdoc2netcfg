@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from gdoc2netcfg.sources.parser import find_header_row, parse_csv
+from gdoc2netcfg.sources.parser import SheetFormatError, find_header_row, parse_csv
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
@@ -23,12 +23,15 @@ class TestFindHeaderRow:
         ]
         assert find_header_row(rows) == 1
 
-    def test_fallback_to_zero_if_not_found(self):
-        rows = [["a", "b", "c"]]
-        assert find_header_row(rows) == 0
+    def test_no_header_raises(self):
+        """#84 D: no header must not silently mean row 0 (an HTML error
+        page then parsed as junk)."""
+        with pytest.raises(SheetFormatError, match="no header row"):
+            find_header_row([["a", "b", "c"]])
 
-    def test_empty_rows(self):
-        assert find_header_row([]) == 0
+    def test_empty_rows_raise(self):
+        with pytest.raises(SheetFormatError):
+            find_header_row([])
 
 
 class TestParseCSV:
@@ -69,9 +72,26 @@ class TestParseCSV:
         for r in records:
             assert r.machine != "IPv6 Prefix:"
 
-    def test_empty_csv(self):
-        records = parse_csv("", "Empty")
-        assert records == []
+    def test_empty_csv_raises(self):
+        with pytest.raises(SheetFormatError, match="Empty"):
+            parse_csv("", "Empty")
+
+    def test_html_error_page_raises(self):
+        html = "<!DOCTYPE html>\n<html><head><title>Error 404</title></head></html>\n"
+        with pytest.raises(SheetFormatError, match="no header row"):
+            parse_csv(html, "network")
+
+    @pytest.mark.parametrize("header,missing", [
+        ("Host,MAC Address,IP", "Machine"),      # 'machine' substring absent
+        ("Machine Name,MAC Address,IP", "Machine"),
+        ("Machine,MAC Address,Address", "IP"),
+        ("Machine,MACs,IP", "MAC"),
+    ])
+    def test_renamed_required_column_raises(self, header, missing):
+        """A renamed key column turned every row into a dropped record."""
+        csv_text = header + "\ndesktop,aa:bb:cc:dd:ee:ff,10.1.10.1\n"
+        with pytest.raises(SheetFormatError, match=missing):
+            parse_csv(csv_text, "network")
 
     def test_empty_rows_skipped(self):
         csv_text = "Machine,MAC Address,IP\n,,\ndesktop,aa:bb:cc:dd:ee:ff,10.1.10.1"
@@ -79,10 +99,13 @@ class TestParseCSV:
         assert len(records) == 1
         assert records[0].machine == "desktop"
 
-    def test_row_length_mismatch_skipped(self):
-        csv_text = "Machine,MAC Address,IP\ndesktop,aa:bb:cc:dd:ee:ff"
-        records = parse_csv(csv_text, "Test")
-        assert len(records) == 0
+    def test_row_length_mismatch_raises(self):
+        """A short/long row was dropped without a message."""
+        csv_text = ("Machine,MAC Address,IP\n"
+                    "laptop,aa:bb:cc:dd:ee:01,10.1.10.2\n"
+                    "desktop,aa:bb:cc:dd:ee:ff\n")
+        with pytest.raises(SheetFormatError, match=r"Test' row 3: 2 cells, header has 3"):
+            parse_csv(csv_text, "Test")
 
     def test_row_number_is_1_based(self):
         csv_text = "Machine,MAC Address,IP\ndesktop,aa:bb:cc:dd:ee:ff,10.1.10.1"

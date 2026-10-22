@@ -1958,7 +1958,7 @@ class TestCmdTasmotaScan:
     @patch("gdoc2netcfg.cli.main._fresh_scan_age", return_value=None)
     @patch("gdoc2netcfg.derivations.host_builder.build_hosts", return_value=[])
     @patch("gdoc2netcfg.cli.main._enrich_site_from_sheets")
-    @patch("gdoc2netcfg.cli.main._fetch_or_load_csvs", return_value=[])
+    @patch("gdoc2netcfg.cli.main._load_cached_csvs", return_value=[])
     @patch("gdoc2netcfg.cli.main._load_config")
     def test_scan_exit_nonzero_on_discrepancies(
         self, m_cfg, m_fetch, m_enrich_site, m_build, m_age, m_latest,
@@ -1985,7 +1985,7 @@ class TestCmdTasmotaScan:
     @patch("gdoc2netcfg.cli.main._fresh_scan_age", return_value=None)
     @patch("gdoc2netcfg.derivations.host_builder.build_hosts", return_value=[])
     @patch("gdoc2netcfg.cli.main._enrich_site_from_sheets")
-    @patch("gdoc2netcfg.cli.main._fetch_or_load_csvs", return_value=[])
+    @patch("gdoc2netcfg.cli.main._load_cached_csvs", return_value=[])
     @patch("gdoc2netcfg.cli.main._load_config")
     def test_scan_exit_zero_when_clean(
         self, m_cfg, m_fetch, m_enrich_site, m_build, m_age, m_latest,

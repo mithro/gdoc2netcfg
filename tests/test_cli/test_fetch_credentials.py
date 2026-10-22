@@ -150,3 +150,117 @@ def test_failed_credential_sheet_fetch_does_not_wipe_store(
     with CredentialsDB(cache_dir / "credentials.db", read_only=True) as db:
         after = db.load_latest_credentials()
     assert after == before
+
+
+def _add_sheets(config, **sheets):
+    """Configure extra [sheets] entries alongside network."""
+    lines = "".join(f'\n{name} = "https://example.com/{name}"' for name in sheets)
+    config.write_text(config.read_text().replace(
+        'network = "https://example.com/network"',
+        'network = "https://example.com/network"' + lines,
+    ))
+
+
+def test_partial_fetch_does_not_tombstone_failed_sheets_credentials(
+    fetch_config, monkeypatch, capsys,
+):
+    """#87: network (Password) fails while iot (with its own credential
+    column) fetches fine.  The store must keep network's credentials —
+    the run has no idea what that sheet holds now."""
+    config, cache_dir = fetch_config
+    _add_sheets(config, iot="")
+
+    iot_csv = (
+        "Machine,MAC Address,IP,Interface,SNMP Community\n"
+        "plug-1,aa:bb:cc:dd:ee:09,10.1.90.10,,plugcomm\n"
+    )
+    failing: set[str] = set()
+
+    def fake_fetch(name, url, timeout=None):
+        if name in failing:
+            raise RuntimeError("HTTP 503")
+        return SheetData(
+            name=name,
+            csv_text=_fake_network_csv() if name == "network" else iot_csv,
+        )
+
+    monkeypatch.setattr(
+        "gdoc2netcfg.sources.sheets.fetch_sheet", fake_fetch, raising=True,
+    )
+    assert cli.main(["-c", str(config), "fetch"]) == 0
+    with CredentialsDB(cache_dir / "credentials.db", read_only=True) as db:
+        before = db.load_latest_credentials()
+    assert {"Password": "secret1"} in before.values()
+    assert {"SNMP Community": "plugcomm"} in before.values()
+
+    failing.add("network")
+    capsys.readouterr()
+    assert cli.main(["-c", str(config), "fetch"]) == 1
+    with CredentialsDB(cache_dir / "credentials.db", read_only=True) as db:
+        after = db.load_latest_credentials()
+    assert after == before
+    # Skipping the store is loud: the mail says why it was not updated.
+    err = capsys.readouterr().err
+    assert "credential store" in err and "network" in err
+    # The good sheet is still cached.
+    assert (cache_dir / "iot.csv").exists()
+
+
+def test_partial_fetch_with_failed_sites_sheet_still_caches_good_sheets(
+    fetch_config, monkeypatch,
+):
+    """#87 related: a configured Sites sheet that fails to fetch (but has a
+    cached copy, which the validation gate used) must not crash step 3 —
+    the good sheets are still cached."""
+    config, cache_dir = fetch_config
+    _add_sheets(config, sites="")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "sites.csv").write_text(
+        "Domain,Shortname\ntest.example.com,test\n"
+    )
+
+    def fake_fetch(name, url, timeout=None):
+        if name == "sites":
+            raise RuntimeError("HTTP 503")
+        return SheetData(name=name, csv_text=(
+            "Machine,MAC Address,IP,Interface,Site,Password\n"
+            "switch1,aa:bb:cc:dd:ee:01,10.1.30.1,,test,secret1\n"
+        ))
+
+    monkeypatch.setattr(
+        "gdoc2netcfg.sources.sheets.fetch_sheet", fake_fetch, raising=True,
+    )
+    assert cli.main(["-c", str(config), "fetch"]) == 1
+    assert "switch1" in (cache_dir / "network.csv").read_text()
+    # a failed NON-device sheet must not freeze the credential store: every
+    # device sheet was fetched, so step 3 ran and stored the password
+    with CredentialsDB(cache_dir / "credentials.db", read_only=True) as db:
+        assert {"Password": "secret1"} in db.load_latest_credentials().values()
+
+
+def test_failed_vlan_sheet_with_a_cache_still_caches_and_stores(
+    fetch_config, monkeypatch,
+):
+    """A VLAN Allocations sheet that fails to fetch but has a cached copy:
+    the gate used that copy, so step 3 must not re-derive the site from
+    only the fetched sheets (#94 makes that re-derivation raise)."""
+    config, cache_dir = fetch_config
+    _add_sheets(config, vlan_allocations="")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "vlan_allocations.csv").write_text(
+        "VLAN,Name,IP Range,Netmask,CIDR,,,Color,For\n"
+        "30,net,10.X.30.X,255.255.255.0,/24,,,,Network\n"
+    )
+
+    def fake_fetch(name, url, timeout=None):
+        if name == "vlan_allocations":
+            raise RuntimeError("HTTP 503")
+        return SheetData(name=name, csv_text=_fake_network_csv())
+
+    monkeypatch.setattr(
+        "gdoc2netcfg.sources.sheets.fetch_sheet", fake_fetch, raising=True,
+    )
+    assert cli.main(["-c", str(config), "fetch"]) == 1
+    assert "switch1" in (cache_dir / "network.csv").read_text()
+    with CredentialsDB(cache_dir / "credentials.db", read_only=True) as db:
+        assert {"Password": "secret1"} in db.load_latest_credentials().values()

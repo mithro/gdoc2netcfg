@@ -368,3 +368,235 @@ class TestSenderNameEdges:
         ])
         with pytest.raises(AssertionError, match="10.1.5.77"):
             generate_rsyslog(inv)
+
+
+ALERTS = dict(
+    alert_mail_to="servers+ten64.welland@mithis.com",
+    alert_mail_from="rsyslog@ten64.welland.mithis.com",
+    alert_smtp_server="127.0.0.1",
+    alert_smtp_port="25",
+    alert_interval="60",
+    alert_unknown_interval="3600",
+)
+
+
+def _with_bmc():
+    bmc = _sender("bmc.big-storage", "10.1.5.150", machine_name="big-storage",
+                  mac_suffix="7f")
+    bmc.is_bmc = True
+    return _with_senders(bmc)
+
+
+def _conf(**kwargs):
+    return generate_rsyslog(_with_bmc(), **kwargs)["rsyslog.d/remote-logs.conf"]
+
+
+def _ruleset(conf, name):
+    block = conf[conf.index(f'ruleset(name="{name}")'):]
+    return block[:block.index("\ninput(")]
+
+
+class TestAlerts:
+    def test_no_alert_settings_means_no_alerts(self):
+        conf = _conf()
+        assert "ommail" not in conf
+
+    def test_partial_alert_settings_fail_loud(self):
+        partial = dict(ALERTS)
+        del partial["alert_smtp_port"]
+        with pytest.raises(ValueError, match="alert_smtp_port"):
+            _conf(**partial)
+
+    def test_interval_must_be_a_positive_integer(self):
+        with pytest.raises(ValueError, match="alert_interval"):
+            _conf(**{**ALERTS, "alert_interval": "soon"})
+
+    def test_ommail_loaded_once(self):
+        assert _conf(**ALERTS).count('module(load="ommail")') == 1
+
+    def test_bmc_critical_and_warning_mail_from_every_syslog_ruleset(self):
+        conf = _conf(**ALERTS)
+        for net in ("wifi", "net", "iot"):
+            block = _ruleset(conf, f"remote-{net}")
+            for severity in ("Critical", "Warning"):
+                assert ('if $fromhost-ip == "10.1.5.150" and '
+                        '$msg contains "Health EventLog" and '
+                        f'$msg contains "| {severity} |" then {{') in block
+            assert block.count('subject.template="AlertSubjectBmc"') == 2
+
+    def test_critical_has_its_own_unlimited_action(self):
+        """execOnlyOnceEveryInterval is per action: sharing one with
+        Warning let a Warning swallow a Critical seconds later, from any
+        BMC on the net (review: 1 mail for Warning + 2 Criticals)."""
+        block = _ruleset(_conf(**ALERTS), "remote-net")
+        critical = block[block.index('"| Critical |"'):]
+        critical = critical[:critical.index("\n    }\n")]
+        assert 'type="ommail"' in critical
+        assert "execOnlyOnceEveryInterval" not in critical
+
+    def test_warning_and_unknown_use_their_own_intervals(self):
+        block = _ruleset(_conf(**ALERTS), "remote-net")
+        warning = block[block.index('"| Warning |"'):]
+        warning = warning[:warning.index("\n    }\n")]
+        unknown = block[block.index('startswith "unknown-"'):]
+        unknown = unknown[:unknown.index("\n    }\n")]
+        assert 'action.execOnlyOnceEveryInterval="60"' in warning
+        assert 'action.execOnlyOnceEveryInterval="3600"' in unknown
+
+    def test_unknown_sender_mails_from_every_ruleset(self):
+        conf = _conf(**ALERTS)
+        for name in ("remote-net", "remote-net-kernel", "remote-iot-kernel"):
+            block = _ruleset(conf, name)
+            assert 'if $.name startswith "unknown-" then {' in block
+            assert 'subject.template="AlertSubjectUnknown"' in block
+
+    def test_kernel_rulesets_carry_no_bmc_rule(self):
+        block = _ruleset(_conf(**ALERTS), "remote-net-kernel")
+        assert "Health EventLog" not in block
+
+    def test_mail_actions_use_the_configured_relay_and_rate_limit(self):
+        block = _ruleset(_conf(**ALERTS), "remote-net")
+        assert block.count('server="127.0.0.1" port="25"') == 3
+        assert block.count('mailfrom="rsyslog@ten64.welland.mithis.com"') == 3
+        assert block.count('mailto="servers+ten64.welland@mithis.com"') == 3
+
+    def test_mail_actions_have_their_own_queue(self):
+        """An SMTP outage must never stall the file write (probe: the
+        line is still written with the relay down)."""
+        block = _ruleset(_conf(**ALERTS), "remote-net")
+        assert block.count('queue.type="LinkedList"') == 3
+
+    def test_queued_mail_survives_a_restart(self):
+        """Disk-assisted, saved on shutdown, one spool file per action
+        (review: an in-memory queue lost the alert across a restart
+        during an SMTP outage)."""
+        conf = _conf(**ALERTS)
+        for name in ("alert-critical-net", "alert-warning-net",
+                     "alert-unknown-net", "alert-unknown-net-kernel"):
+            assert conf.count(f'queue.filename="{name}"') == 1
+        assert conf.count('queue.saveOnShutdown="on"') == conf.count('type="ommail"')
+
+    def test_file_is_written_before_any_mail_is_attempted(self):
+        block = _ruleset(_conf(**ALERTS), "remote-net")
+        assert block.index('type="omfile"') < block.index('type="ommail"')
+
+    def test_bmc_subject_names_the_device_severity_and_event(self):
+        conf = _conf(**ALERTS)
+        assert conf.count('template(name="AlertSubjectBmc"') == 1
+        assert "%$.name%" in conf[conf.index('template(name="AlertSubjectBmc"'):]
+
+
+class TestAlertsFromToml:
+    def _config(self, tmp_path, alert_lines):
+        import textwrap
+        cache_dir = tmp_path / ".cache"
+        cache_dir.mkdir()
+        (cache_dir / "network.csv").write_text(
+            "Machine,MAC Address,IP,Interface\n"
+            "ten64,02:00:0a:01:05:01,10.1.5.1,br-net\n"
+            "big-storage,aa:bb:cc:dd:ee:01,10.1.5.150,bmc\n"
+        )
+        (cache_dir / "vlan_allocations.csv").write_text(
+            "VLAN,Name,IP Range,Netmask,CIDR,,,Color,For\n"
+            "5,net,10.X.5.X,255.255.255.0,/24,,,,Network\n"
+        )
+        config = tmp_path / "gdoc2netcfg.toml"
+        config.write_text(textwrap.dedent(f"""\
+            [site]
+            name = "test"
+            domain = "test.example.com"
+            site_octet = 1
+
+            [sheets]
+            network = "https://example.com/not-used"
+            vlan_allocations = "https://example.com/not-used-either"
+
+            [cache]
+            directory = "{cache_dir}"
+
+            [ipv6]
+            prefixes = ["2001:db8:1:"]
+
+            [generators]
+            enabled = []
+
+            [generators.rsyslog]
+            output_dir = "etc"
+        """) + alert_lines)
+        return config
+
+    def test_toml_alert_keys_reach_the_generator(self, tmp_path, capsys):
+        from gdoc2netcfg.cli.main import main
+        config = self._config(tmp_path, (
+            'alert_mail_to = "servers+test@example.com"\n'
+            'alert_mail_from = "rsyslog@test.example.com"\n'
+            'alert_smtp_server = "127.0.0.1"\n'
+            "alert_smtp_port = 25\n"        # toml integers are accepted
+            "alert_interval = 60\n"
+            "alert_unknown_interval = 3600\n"
+        ))
+        assert main(["-c", str(config), "generate", "--stdout", "rsyslog"]) == 0
+        out = capsys.readouterr().out
+        assert 'mailto="servers+test@example.com"' in out
+        assert 'server="127.0.0.1" port="25"' in out
+        assert 'action.execOnlyOnceEveryInterval="60"' in out
+
+    def test_no_alert_keys_no_mail(self, tmp_path, capsys):
+        from gdoc2netcfg.cli.main import main
+        config = self._config(tmp_path, "")
+        assert main(["-c", str(config), "generate", "--stdout", "rsyslog"]) == 0
+        assert "ommail" not in capsys.readouterr().out
+
+
+class TestAlertSettingTypes:
+    @pytest.mark.parametrize("key,value", [
+        ("alert_smtp_port", "0"), ("alert_smtp_port", 70000),
+        ("alert_smtp_port", True), ("alert_interval", 0), ("alert_interval", "-5"),
+        ("alert_unknown_interval", "hourly"),
+    ])
+    def test_bad_numbers_fail_loud(self, key, value):
+        with pytest.raises(ValueError, match=f"{key} must be a whole number"):
+            _conf(**{**ALERTS, key: value})
+
+    def test_integers_accepted(self):
+        conf = _conf(**{**ALERTS, "alert_smtp_port": 25, "alert_interval": 60})
+        assert 'port="25"' in conf
+        assert 'action.execOnlyOnceEveryInterval="60"' in conf
+
+
+class TestBmcRuleSenders:
+    """Only a sheet-marked BMC may trigger the BMC rules: Critical is never
+    rate-limited, so a forged "Health EventLog | Critical |" datagram from
+    any other device must not be able to flood mail."""
+
+    def _inv(self):
+        bmc = _sender("bmc.big-storage", "10.1.5.150", machine_name="big-storage",
+                      mac_suffix="70")
+        bmc.is_bmc = True
+        plug = _sender("au-plug-1.iot", "10.1.90.11", sheet_type="IoT", mac_suffix="71")
+        return _with_senders(bmc, plug)
+
+    def test_bmc_rules_match_only_bmc_sender_ips(self):
+        conf = generate_rsyslog(self._inv(), **ALERTS)["rsyslog.d/remote-logs.conf"]
+        block = _ruleset(conf, "remote-net")
+        for severity in ("Critical", "Warning"):
+            assert ('if $fromhost-ip == "10.1.5.150" and '
+                    '$msg contains "Health EventLog" and '
+                    f'$msg contains "| {severity} |" then {{') in block
+        assert "10.1.90.11" not in conf
+
+    def test_no_bmcs_no_bmc_rules(self):
+        conf = generate_rsyslog(_default_inventory(), **ALERTS)["rsyslog.d/remote-logs.conf"]
+        assert "Health EventLog" not in conf
+        assert 'startswith "unknown-"' in conf
+
+
+def test_toml_bmc_rule_names_the_sheet_bmc(tmp_path, capsys):
+    """Through the real sheet shape (interface "bmc" on its machine row),
+    the BMC rule is keyed on that BMC's address."""
+    from gdoc2netcfg.cli.main import main
+    config = TestAlertsFromToml()._config(tmp_path, "".join(
+        f'{k} = "{v}"\n' for k, v in ALERTS.items()))
+    assert main(["-c", str(config), "generate", "--stdout", "rsyslog"]) == 0
+    assert 'if $fromhost-ip == "10.1.5.150" and $msg contains "Health EventLog"' in (
+        capsys.readouterr().out)

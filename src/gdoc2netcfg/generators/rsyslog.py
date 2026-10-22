@@ -143,7 +143,139 @@ _LOOKUP_NAME = """\
 """
 
 
-def _net_block(net: str, addr: str) -> str:
+# Mail alerts ([generators.rsyslog] alert_* keys; all or none).
+ALERT_KEYS = (
+    "alert_mail_to", "alert_mail_from", "alert_smtp_server",
+    "alert_smtp_port", "alert_interval", "alert_unknown_interval",
+)
+
+# Subjects. A Supermicro BMC line reads
+#   ipmi: Health EventLog | <time> | <ip> | Critical | IERR - Assertion | ...
+# so the subject takes the severity and the event after it. Verified on
+# rsyslog 8.2608 against the 2026-10-20 big-storage IERR (tmp/ommail_probe.py):
+# "[syslog] bmc.big-storage: Critical IERR - Assertion".
+# Device text reaches the subject and body, so header injection relies on
+# rsyslog's default escapeControlCharactersOnReceive="on": CR/LF arrive as
+# #015#012 (verified in review with an SMTP-smuggling payload). Do not
+# turn that global off.
+_SEVERITY = "%msg:R,ERE,1,FIELD:[|] (Critical|Warning) [|]--end%"
+_EVENT = "%msg:R,ERE,2,FIELD:[|] (Critical|Warning) [|] ([^|]*[^| ])--end%"
+_ALERT_TEMPLATES = f"""\
+module(load="ommail")
+template(name="AlertSubjectBmc" type="string"
+         string="[syslog] %$.name%: {_SEVERITY} {_EVENT}")
+template(name="AlertSubjectUnknown" type="string"
+         string="[syslog] unknown sender %fromhost-ip%")
+template(name="AlertBody" type="string"
+         string="%timegenerated:::date-rfc3339% %fromhost-ip% (%$.name%)\\r\\n%rawmsg%\\r\\n")
+"""
+
+
+def _alert_settings(
+    params: dict[str, str | int | None],
+) -> dict[str, str] | None:
+    """The alert_* settings as strings, or None when alerts are off.
+
+    All or none: a half-configured alerter (no recipient, no relay) would
+    fail only when the alert it exists for finally fires. The port and
+    interval may come from the toml as integers.
+    """
+    given = {k: str(v) for k, v in params.items() if v is not None and v != ""}
+    if not given:
+        return None
+    missing = [k for k in ALERT_KEYS if k not in given]
+    if missing:
+        raise ValueError(
+            "rsyslog generator: [generators.rsyslog] sets some alert_* keys "
+            f"but not {', '.join(missing)}; set all of {', '.join(ALERT_KEYS)} "
+            "or none"
+        )
+    for key, low, high in (
+        ("alert_interval", 1, None),
+        ("alert_unknown_interval", 1, None),
+        ("alert_smtp_port", 1, 65535),
+    ):
+        value = given[key]
+        if not value.isdigit() or int(value) < low or (high and int(value) > high):
+            raise ValueError(
+                f"rsyslog generator: {key} must be a whole number "
+                f"{low}-{high or 'up'}, got {params[key]!r}"
+            )
+    return given
+
+
+def _mail_action(alerts: dict[str, str], subject: str, spool: str,
+                 interval: str | None) -> str:
+    """One ommail action.
+
+    Its queue is its own (an SMTP outage never stalls the file write) and
+    disk-assisted under rsyslog's work directory, saved on shutdown, so a
+    mail queued during an outage survives a restart. execOnlyOnceEveryInterval
+    is per ACTION, not per sender or event: every mail it suppresses is
+    another line matching the same rule on the same net, so each rule gets
+    its own action and interval=None means every match is mailed.
+    """
+    limit = (f'\n               action.execOnlyOnceEveryInterval="{interval}"'
+             if interval is not None else "")
+    return f"""\
+        action(type="ommail"
+               server="{alerts['alert_smtp_server']}" port="{alerts['alert_smtp_port']}"
+               mailfrom="{alerts['alert_mail_from']}" mailto="{alerts['alert_mail_to']}"
+               subject.template="{subject}" template="AlertBody"{limit}
+               queue.type="LinkedList" queue.size="1000"
+               queue.filename="{spool}" queue.saveOnShutdown="on"
+               queue.maxDiskSpace="10m"
+               action.resumeRetryCount="-1" action.resumeInterval="30")
+"""
+
+
+def _unknown_alert(alerts: dict[str, str] | None, ruleset: str) -> str:
+    """A sender missing from the name table; it keeps sending, so this one
+    is limited by its own, long alert_unknown_interval."""
+    if alerts is None:
+        return ""
+    return ('    if $.name startswith "unknown-" then {\n'
+            + _mail_action(alerts, "AlertSubjectUnknown",
+                           f"alert-unknown-{ruleset}",
+                           alerts["alert_unknown_interval"])
+            + "    }\n")
+
+
+def _bmc_ips(inventory: NetworkInventory) -> list[str]:
+    """The IPv4s of every host the sheet marks as a BMC, in numeric order."""
+    ips = {str(iface.ipv4) for host in inventory.hosts if host.is_bmc
+           for iface in host.interfaces}
+    return sorted(ips, key=ipaddress.IPv4Address)
+
+
+def _bmc_alert(alerts: dict[str, str] | None, net: str, bmc_ips: list[str]) -> str:
+    """Supermicro BMC Health events, from sheet-marked BMCs only.
+
+    Critical is never rate-limited: the survey of all history found one
+    Critical in 68,760 BMC lines, and a suppressed one is the failure this
+    alert exists to prevent. So only a BMC's own address may trigger it;
+    any other device on a served net could otherwise flood mail with a
+    forged "Health EventLog | Critical |" datagram (forging the BMC's
+    source address on the LAN remains possible, but is far harder).
+    """
+    if alerts is None or not bmc_ips:
+        return ""
+    senders = " or ".join(f'$fromhost-ip == "{ip}"' for ip in bmc_ips)
+    if len(bmc_ips) > 1:
+        senders = f"({senders})"
+    out = []
+    for severity, interval in (("Critical", None), ("Warning", alerts["alert_interval"])):
+        out.append(
+            f'    if {senders} and $msg contains "Health EventLog" and '
+            f'$msg contains "| {severity} |" then {{\n'
+            + _mail_action(alerts, "AlertSubjectBmc",
+                           f"alert-{severity.lower()}-{net}", interval)
+            + "    }\n")
+    return "".join(out)
+
+
+def _net_block(net: str, addr: str, alerts: dict[str, str] | None,
+               bmc_ips: list[str]) -> str:
     """Template + ruleset + leg-bound :514 input for one served net."""
     return f"""\
 template(name="RemoteLog-{net}" type="string"
@@ -152,13 +284,13 @@ ruleset(name="remote-{net}") {{
 {_LOOKUP_NAME}    action(type="omfile" dynaFile="RemoteLog-{net}"
            fileOwner="root" fileGroup="adm"
            fileCreateMode="0640" dirCreateMode="0755")
-    stop
+{_bmc_alert(alerts, net, bmc_ips)}{_unknown_alert(alerts, net)}    stop
 }}
 input(type="imudp" port="514" address="{addr}" ruleset="remote-{net}")
 """
 
 
-def _kernel_block(net: str, addr: str) -> str:
+def _kernel_block(net: str, addr: str, alerts: dict[str, str] | None) -> str:
     """Netconsole template + ruleset + leg-bound :6666 input for one net."""
     return f"""\
 template(name="KernelLog-{net}" type="string"
@@ -167,7 +299,7 @@ ruleset(name="remote-{net}-kernel") {{
 {_LOOKUP_NAME}    action(type="omfile" dynaFile="KernelLog-{net}" template="KernelLine"
            fileOwner="root" fileGroup="adm"
            fileCreateMode="0640" dirCreateMode="0755")
-    stop
+{_unknown_alert(alerts, f"{net}-kernel")}    stop
 }}
 input(type="imudp" port="6666" address="{addr}" ruleset="remote-{net}-kernel")
 """
@@ -203,8 +335,20 @@ def _logrotate(nets: list[str]) -> str:
     return "\n".join(stanzas)
 
 
-def generate_rsyslog(inventory: NetworkInventory) -> dict[str, str]:
+def generate_rsyslog(
+    inventory: NetworkInventory,
+    alert_mail_to: str | None = None,
+    alert_mail_from: str | None = None,
+    alert_smtp_server: str | None = None,
+    alert_smtp_port: str | int | None = None,
+    alert_interval: str | int | None = None,
+    alert_unknown_interval: str | int | None = None,
+) -> dict[str, str]:
     """Generate the rsyslog drop-in + logrotate file.
+
+    With the alert_* settings, each net's syslog ruleset also mails a
+    BMC Health Critical/Warning line, and every ruleset mails a sender
+    missing from the name table (unknown-<ip>).
 
     Returns deploy-relative paths under etc/ ([generators.rsyslog]
     output_dir = "etc"): rsyslog.d/remote-logs.conf, its sender-name
@@ -216,10 +360,21 @@ def generate_rsyslog(inventory: NetworkInventory) -> dict[str, str]:
             "rsyslog generator: router has no served legs — check the "
             "inventory has a 'ten64' host with leaf-net interfaces"
         )
+    alerts = _alert_settings({
+        "alert_mail_to": alert_mail_to,
+        "alert_mail_from": alert_mail_from,
+        "alert_smtp_server": alert_smtp_server,
+        "alert_smtp_port": alert_smtp_port,
+        "alert_interval": alert_interval,
+        "alert_unknown_interval": alert_unknown_interval,
+    })
+    bmc_ips = _bmc_ips(inventory)
     parts = [_HEADER]
+    if alerts is not None:
+        parts.append(_ALERT_TEMPLATES)
     for net in sorted(legs):
-        parts.append(_net_block(net, legs[net]))
-        parts.append(_kernel_block(net, legs[net]))
+        parts.append(_net_block(net, legs[net], alerts, bmc_ips))
+        parts.append(_kernel_block(net, legs[net], alerts))
     return {
         "rsyslog.d/remote-logs.conf": "\n".join(parts),
         "rsyslog.d/remote-logs.names.json":

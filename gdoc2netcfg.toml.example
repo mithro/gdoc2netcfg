@@ -182,3 +182,13 @@ output = "etc/powerdns/forward-zones.yml"
 # mirrors /etc — deployed by `sudo make deploy-syslog`).
 [generators.rsyslog]
 output_dir = "etc"
+# Mail alerts: a BMC "Health EventLog" line at Critical/Warning, and any
+# sender missing from the generated IP -> name table (unknown-<ip>.log).
+# Set all six keys or none (none = no alerts).
+# alert_mail_to = "servers+ten64.welland@mithis.com"
+# alert_mail_from = "rsyslog@ten64.welland.mithis.com"
+# alert_smtp_server = "127.0.0.1"    # the site's postfix relay
+# alert_smtp_port = 25
+# alert_interval = 60                # BMC Warning: at most one mail per net per N s
+# alert_unknown_interval = 3600      # unknown sender: at most one mail per net per N s
+# (BMC Critical is never rate-limited.)

@@ -568,9 +568,11 @@ which uses certbot directly) is skipped the same way a net is.
 `rsyslog` and `letsencrypt`, whose own deploy targets generate them (every
 other entry must be in the Makefile's `DEPLOY_GENERATORS`; a test enforces
 it). The check
-passes those names to `generate` explicitly, which is load-bearing: neither is
-in any site's `[generators] enabled` list, so a run driven by the enabled list
-would emit nothing for them and report every installed file as missing. A
+passes those names to `generate` explicitly, which is load-bearing: a site's
+`[generators] enabled` list need not name them (letsencrypt is in none;
+welland does enable rsyslog, so its 15-minute cron `generate` runs it too),
+and a run driven by the enabled list alone would emit nothing for a missing
+one and report every installed file as missing. A
 generator missing from this tuple is a component whose drift goes unnoticed —
 letsencrypt was, until 2026-09-14, by which point all 128 deployed certbot
 scripts still named the retired `certbot-hook-dnsmasq` and 45 belonged to hosts
@@ -711,15 +713,18 @@ The site routers capture remote syslog from every device class on one
 well-known port — UDP 514 — with the class decided by the network the
 message ARRIVES on: rsyslog gets one `imudp` input per served router leg
 (each bound to its own ruleset), and messages land in
-`/var/log/<net>/<hostname>.log`. Every leaf net the router has a leg on
+`/var/log/<net>/<name>.log`, where `<name>` is the sending IP's sheet
+hostname (see *File names* below). Every leaf net the router has a leg on
 is served except `tmp` and `guest` (untrusted); non-leaf nets (wg,
 transit, delegated) never are. The `rsyslog` generator derives the input
 set from the router's own interfaces in inventory (v4-only — every
 current sender targets v4; a net without a router leg emits no input)
-and outputs deploy-relative `etc/rsyslog.d/remote-logs.conf` +
+and outputs deploy-relative `etc/rsyslog.d/remote-logs.conf`, its
+sender-name table `etc/rsyslog.d/remote-logs.names.json`, and
 `etc/logrotate.d/remote-logs` (daily, rotate 400 — a 1-year floor —
-compress/delaycompress). Deploy both with `sudo make deploy-syslog`
-(generate + copy + rsyslog restart + path-scoped etckeeper commit).
+compress/delaycompress). Deploy all three with `sudo make deploy-syslog`
+(generate + copy + `rsyslogd -N1` + rsyslog restart + path-scoped
+etckeeper commit).
 
 Where each sender class lands:
 
@@ -773,20 +778,29 @@ schema-upgrade.
 
 The same drop-in also receives **kernel netconsole** (raw printk, no
 syslog header): one leg-bound input per served net on UDP 6666 into
-`/var/log/<net>/<sender>.kernel.log`, each line stamped with wall-clock
+`/var/log/<net>/<name>.kernel.log`, each line stamped with wall-clock
 arrival ahead of the raw payload (the extended-netconsole
 `level,seq,ts,-;` prefix survives, so message drops show as sequence
 gaps).
 
-The filename is the **short name extracted from the sender's PTR**
-(`re_extract` on `%fromhost%`, first real label after an optional
-`ipv4.`/`ipv6.`), so `wisp.kernel.log` sits beside `wisp.log`. Do not
-"simplify" this to plain `%fromhost%`: rsyslog does **not** shorten
-(`preserveFQDN=off` notwithstanding) and this estate's PTRs are
-ipv4-prefixed, so you get `ipv4.wisp.wifi.welland.mithis.com.kernel.log`.
-Nor rely on rsyslog's no-match modes — `DFLT` substitutes the literal
-`**NO MATCH**` and collapses every PTR-less sender into one file; the
-generator uses an explicit fallback so such a sender keeps its bare IP.
+**File names** (syslog and kernel alike) come from a generated lookup
+table, `etc/rsyslog.d/remote-logs.names.json` (an rsyslog `lookup_table`
+keyed on `$fromhost-ip`): every host IPv4 in the inventory maps to its
+sheet hostname, e.g. `bmc.big-storage`, `au-plug-1.iot`, `puck07.wifi`.
+A multi-interface host has one name on every leg; a cross-sheet mirror
+(`wisp`/`wisp.wifi`) names its Network-sheet host; any other IP owned by
+two hosts is an `AssertionError`, because validation rejects it at fetch.
+An IP missing from the table writes `unknown-<ip>.log`.
+
+Do not go back to naming by what the sender says. The syslog header's
+hostname is whatever the device claims: BMCs send none, so their files
+were named by bare IP (`10.1.5.150.log`), and some switches add `-1`
+(`sw-netgear-m4300-24x-1.log`). Netconsole has no header at all, and the
+PTR is `ipv4.`-prefixed and FQDN (rsyslog never shortens it). Both drift
+from the sheet name; the table cannot. `rsyslogd -N1` loads the table, so
+it rejects a malformed one. The deploy copies the table before restarting
+rsyslog, which reads it at startup.
+
 The per-net logrotate globs
 (`*.log`) cover these files — no extra stanzas. Receive-only today: the
 gale pucks still stream netconsole to wisp:6666 (`gwifi-netconsole.service`);

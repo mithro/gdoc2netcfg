@@ -83,7 +83,7 @@ class TestRsyslogConf:
 
     def test_ruleset_writes_secpath_dynafile_and_stops(self):
         conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
-        assert ('string="/var/log/wifi/%hostname:::secpath-replace%.log"') in conf
+        assert ('string="/var/log/wifi/%$.name:::secpath-replace%.log"') in conf
         assert 'fileOwner="root" fileGroup="adm"' in conf
         assert 'fileCreateMode="0640" dirCreateMode="0755"' in conf
         assert conf.count("    stop") == 6
@@ -130,40 +130,13 @@ class TestNetconsole:
                 'ruleset="remote-iot-kernel")') in conf
         assert conf.count('port="6666"') == 3
 
-    def test_kernel_dynafile_keys_on_extracted_short_name(self):
+    def test_kernel_dynafile_keys_on_the_looked_up_name(self):
         conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
-        # the short name is extracted into $.short (see below), so the
-        # dynafile keys on that — still secpath-guarded, because the
-        # no-match fallback puts the raw sender name in there.
-        assert ('string="/var/log/wifi/%$.short:::secpath-replace%'
+        # same name as the sender's syslog file, so wisp.kernel.log sits
+        # beside wisp.log; still secpath-guarded (defence in depth).
+        assert ('string="/var/log/wifi/%$.name:::secpath-replace%'
                 '.kernel.log"') in conf
-        assert conf.count("%$.short:::secpath-replace%.kernel.log") == 3
-
-    def test_kernel_extracts_short_name_from_sender_reverse_dns(self):
-        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
-        # netconsole payloads carry no hostname, so the name comes from the
-        # sender's PTR — which in this estate is ipv4-prefixed
-        # (ipv4.wisp.wifi.welland.mithis.com). Take the first real label so
-        # kernel files sit next to their syslog siblings (wisp.kernel.log
-        # beside wisp.log). Literal dots as [.] keep the conf backslash-free.
-        assert conf.count(
-            'set $.short = re_extract($fromhost, '
-            '"^(ipv4[.]|ipv6[.])?([a-zA-Z][a-zA-Z0-9-]*)[.]", 0, 2, "");'
-        ) == 3
-
-    def test_kernel_falls_back_to_full_sender_when_regex_misses(self):
-        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
-        # rsyslog's own no-match modes are useless here: DFLT yields the
-        # literal "**NO MATCH**", collapsing every PTR-less sender into one
-        # file. An explicit fallback keeps e.g. 10.1.4.99.log distinct.
-        assert conf.count('if $.short == "" then') == 3
-        assert conf.count("set $.short = $fromhost;") == 3
-
-    def test_kernel_name_extraction_precedes_the_write(self):
-        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
-        block = conf[conf.index('ruleset(name="remote-wifi-kernel")'):]
-        block = block[:block.index("input(")]
-        assert block.index("re_extract") < block.index("action(")
+        assert conf.count("%$.name:::secpath-replace%.kernel.log") == 3
 
     def test_kernel_line_template_defined_once_stamps_arrival_and_rawmsg(self):
         conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
@@ -218,3 +191,180 @@ class TestRegistry:
         from gdoc2netcfg.cli import main as cli_main
         func = cli_main._get_generator("rsyslog")
         assert func is generate_rsyslog
+
+
+def _sender(hostname, *v4s, machine_name=None, sheet_type="Network", mac_suffix="10"):
+    return Host(
+        machine_name=machine_name or hostname.split(".")[-1],
+        hostname=hostname,
+        sheet_type=sheet_type,
+        interfaces=[
+            NetworkInterface(
+                name=None if len(v4s) == 1 else f"eth{i}",
+                mac=MACAddress.parse(f"02:00:0a:01:{mac_suffix}:{i:02x}"),
+                ip_addresses=(IPv4Address(v4),),
+                dhcp_name=hostname,
+            )
+            for i, v4 in enumerate(v4s)
+        ],
+    )
+
+
+def _with_senders(*senders):
+    inv = _default_inventory()
+    return NetworkInventory(site=SITE, hosts=inv.hosts + list(senders))
+
+
+def _names(inv):
+    import json
+
+    table = json.loads(generate_rsyslog(inv)["rsyslog.d/remote-logs.names.json"])
+    return {row["index"]: row["value"] for row in table["table"]}, table
+
+
+class TestSenderNames:
+    """Every log file is named by the sheet's hostname for the sending IP —
+    never by what the device claims in its header, nor by its PTR."""
+
+    def test_every_ipv4_maps_to_its_hosts_sheet_hostname(self):
+        inv = _with_senders(
+            _sender("bmc.big-storage", "10.1.5.40", machine_name="big-storage"),
+            _sender("au-plug-1.iot", "10.1.90.11", sheet_type="IoT", mac_suffix="11"),
+            _sender("sw-core", "10.1.5.2", "10.1.90.2", mac_suffix="12"),
+        )
+        names, _ = _names(inv)
+        assert names["10.1.5.40"] == "bmc.big-storage"
+        assert names["10.1.90.11"] == "au-plug-1.iot"
+        # a multi-interface host is one device: one file whichever leg sent it
+        assert names["10.1.5.2"] == names["10.1.90.2"] == "sw-core"
+        # the router's own legs too, so nothing it sends lands in unknown-*
+        assert names["10.1.4.1"] == "ten64"
+
+    def test_table_is_complete_and_ipv4_only(self):
+        inv = _with_senders(_sender("bmc.big-storage", "10.1.5.40", machine_name="big-storage"))
+        names, _ = _names(inv)
+        expected = {
+            str(iface.ipv4) for host in inv.hosts for iface in host.interfaces
+        }
+        assert set(names) == expected
+        # the inputs are v4-only, so a v6 key could never match
+        assert not [ip for ip in names if ":" in ip]
+
+    def test_table_is_an_rsyslog_string_table_with_empty_nomatch(self):
+        _, table = _names(_default_inventory())
+        assert table["version"] == 1
+        assert table["type"] == "string"
+        # empty, so the ruleset can substitute unknown-<ip> (see TestRulesetNaming)
+        assert table["nomatch"] == ""
+
+    def test_rows_sorted_numerically_for_stable_diffs(self):
+        inv = _with_senders(
+            _sender("b", "10.1.90.100", mac_suffix="20"),
+            _sender("a", "10.1.90.9", mac_suffix="21"),
+        )
+        _, table = _names(inv)
+        import ipaddress
+        keys = [ipaddress.IPv4Address(row["index"]) for row in table["table"]]
+        assert keys == sorted(keys)
+
+    def test_cross_sheet_mirror_resolves_to_the_network_sheet_host(self):
+        """wisp / wisp.wifi are one device recorded on two sheets (CLAUDE.md
+        'VLAN-4 infra mirror rows'); the validator accepts the shared IP."""
+        inv = _with_senders(
+            _sender("wisp", "10.1.4.2", machine_name="wisp", mac_suffix="30"),
+            _sender("wisp.wifi", "10.1.4.2", machine_name="wisp",
+                    sheet_type="WiFi", mac_suffix="30"),
+        )
+        names, _ = _names(inv)
+        assert names["10.1.4.2"] == "wisp"
+
+    def test_any_other_shared_ip_is_an_assertion_failure(self):
+        """Validation rejects two hosts on one IP before data is cached, so
+        reaching the generator with one is a bug, not data to name around."""
+        inv = _with_senders(
+            _sender("sw-old", "10.1.5.31", mac_suffix="40"),
+            _sender("sw-new", "10.1.5.31", mac_suffix="41"),
+        )
+        with pytest.raises(AssertionError, match="10.1.5.31.*sw-new.*sw-old"):
+            generate_rsyslog(inv)
+
+
+class TestRulesetNaming:
+    """Both rulesets per net name the file from the generated table."""
+
+    def test_lookup_table_loaded_once_from_the_deployed_path(self):
+        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
+        assert conf.count(
+            'lookup_table(name="remote-names"\n'
+            '             file="/etc/rsyslog.d/remote-logs.names.json" '
+            'reloadOnHUP="on")'
+        ) == 1
+        assert conf.index("lookup_table(") < conf.index("ruleset(")
+
+    def test_every_ruleset_looks_up_the_sending_ip(self):
+        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
+        # 3 served nets x (syslog + kernel)
+        assert conf.count(
+            'set $.name = lookup("remote-names", $fromhost-ip);'
+        ) == 6
+
+    def test_unknown_sender_gets_its_own_unknown_ip_file(self):
+        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
+        assert conf.count('if $.name == "" then {') == 6
+        assert conf.count('set $.name = "unknown-" & $fromhost-ip;') == 6
+
+    def test_lookup_precedes_the_write_in_each_ruleset(self):
+        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
+        for name in ("remote-wifi", "remote-wifi-kernel"):
+            block = conf[conf.index(f'ruleset(name="{name}")'):]
+            block = block[:block.index("input(")]
+            assert block.index("lookup(") < block.index("unknown-") < block.index("action(")
+
+    def test_claimed_hostname_and_ptr_no_longer_name_files(self):
+        conf = generate_rsyslog(_default_inventory())["rsyslog.d/remote-logs.conf"]
+        assert "%hostname" not in conf
+        assert "$fromhost," not in conf      # the PTR, as opposed to $fromhost-ip
+        assert "re_extract" not in conf
+
+
+class TestSenderNameEdges:
+    def test_one_host_with_two_interfaces_on_one_ip_is_one_owner(self):
+        """Puck wan+lan (and 14 other live hosts) share one IPv4 inside one
+        host; that is one owner, not a collision."""
+        inv = _with_senders(
+            _sender("puck07.wifi", "10.1.4.107", "10.1.4.107",
+                    machine_name="puck07", sheet_type="WiFi", mac_suffix="50"),
+        )
+        names, table = _names(inv)
+        assert names["10.1.4.107"] == "puck07.wifi"
+        assert [r["index"] for r in table["table"]].count("10.1.4.107") == 1
+
+    def test_mirror_on_the_routers_own_leg(self):
+        """ten64.wifi mirrors the router's br-wifi leg (10.1.4.1)."""
+        inv = _with_senders(
+            _sender("ten64.wifi", "10.1.4.1", machine_name="ten64",
+                    sheet_type="WiFi", mac_suffix="51"),
+        )
+        names, _ = _names(inv)
+        assert names["10.1.4.1"] == "ten64"
+
+    @pytest.mark.parametrize("owners", [
+        # different machines on two sheets: a stale row, not a mirror
+        [("sw-old", "sw-old", "Network"), ("puck03.wifi", "puck03", "WiFi")],
+        # one machine on two sheets but neither is the Network sheet
+        [("plug.iot", "plug", "IoT"), ("plug.wifi", "plug", "WiFi")],
+        # a mirror plus a second host of the same machine on the same sheet
+        [("wisp", "wisp", "Network"), ("wisp.wifi", "wisp", "WiFi"),
+         ("bmc.wisp.wifi", "wisp", "WiFi")],
+        # a BMC row cloning its parent's IP (same machine, same sheet)
+        [("big-storage", "big-storage", "Network"),
+         ("bmc.big-storage", "big-storage", "Network")],
+    ], ids=["different-machines", "no-network-host", "two-on-one-sheet", "bmc-clone"])
+    def test_each_mirror_condition_is_required(self, owners):
+        inv = _with_senders(*[
+            _sender(hostname, "10.1.5.77", machine_name=machine,
+                    sheet_type=sheet, mac_suffix=f"{60 + i}")
+            for i, (hostname, machine, sheet) in enumerate(owners)
+        ])
+        with pytest.raises(AssertionError, match="10.1.5.77"):
+            generate_rsyslog(inv)

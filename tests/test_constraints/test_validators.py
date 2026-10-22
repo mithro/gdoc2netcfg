@@ -784,33 +784,32 @@ class TestMacLessAndCrossHostDuplicates:
         assert len(errors) == 1
         assert "sw-old" in errors[0].message and "sw-new" in errors[0].message
 
-    def test_cross_host_shared_roaming_ip_is_exempt(self):
-        """Same roaming-range exemption as ip_multiple_macs: pool
-        addresses legitimately move between devices."""
-        from gdoc2netcfg.constraints.validators import (
-            validate_cross_record_constraints,
-        )
-        from gdoc2netcfg.models.addressing import IPv4Address
-        from gdoc2netcfg.models.host import Host, NetworkInterface, NetworkInventory
+    @staticmethod
+    def _pipeline_errors(rows):
+        from gdoc2netcfg.derivations.host_builder import build_hosts, build_inventory
+        from gdoc2netcfg.sources.parser import parse_csv
 
-        hosts = [
-            Host(
-                machine_name=name,
-                hostname=name,
-                interfaces=[
-                    NetworkInterface(
-                        name="wlan0",
-                        mac=None,
-                        ip_addresses=(IPv4Address("10.1.20.7"),),
-                        dhcp_name=name,
-                    )
-                ],
-            )
-            for name in ("laptop", "phone")
-        ]
-        inv = NetworkInventory(site=SITE, hosts=hosts)
-        result = validate_cross_record_constraints(inv)
-        assert not [v for v in result.errors if v.code == "ip_multiple_hosts"]
+        records = parse_csv("Machine,MAC Address,IP,Interface\n" + rows, "network")
+        inv = build_inventory(build_hosts(records, SITE), SITE)
+        return sorted((v.code, v.record_id)
+                      for v in validate_cross_record_constraints(inv).errors)
+
+    def test_cross_host_shared_roaming_ip_errors(self):
+        """Two different hosts on one roaming-range IPv4 is an error too
+        (decision 2026-10-22): a roam row is a per-device reservation, and
+        the rsyslog generator (#90) relies on no cross-host shared IP."""
+        assert self._pipeline_errors(
+            "laptop,aa:bb:cc:dd:ee:01,10.1.20.7,wlan0\n"
+            "phone,aa:bb:cc:dd:ee:02,10.1.20.7,wlan0\n"
+        ) == [("ip_multiple_hosts", "10.1.20.7")]
+
+    def test_one_host_wired_and_wifi_on_one_roaming_ip_is_fine(self):
+        """tim-x1e / roku / printer: one device's wired+wifi MACs share
+        its roam address."""
+        assert self._pipeline_errors(
+            "roku,aa:bb:cc:dd:ee:01,10.1.20.201,eth\n"
+            "roku,aa:bb:cc:dd:ee:02,10.1.20.201,wifi\n"
+        ) == []
 
     def test_same_host_shared_ip_is_fine(self):
         """eth0+wlan0 sharing one IP on ONE host is the roaming pattern

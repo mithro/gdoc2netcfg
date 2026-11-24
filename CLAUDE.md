@@ -306,6 +306,8 @@ The nginx generator (`nginx.py`) produces per-host config directories under `sit
 
 HTTPS is handled via stream SNI passthrough rather than http-module HTTPS blocks, ensuring consistent TLS behaviour for both IPv4 (proxied) and IPv6 (direct) paths. HTTP blocks include inline ACME challenge locations with `try_files` fallback to the backend for hosts handling their own ACME challenges.
 
+`https-map.conf` writes wildcard alt-names verbatim as `*.domain` keys, which only match when the admin's hand-written `map $ssl_preread_server_name` (the `00-https` template in `docs/nginx-deployment.md`) declares `hostnames;`. Without it they silently never match (#101). Keep the keys as `*.` rather than converting them to regexes: regex keys match in include-file order, whereas `*.` keys pick the longest matching wildcard.
+
 Multi-interface hosts get a combined HTTP config file containing an `upstream` block listing all interface IPs for round-robin failover with `proxy_next_upstream`, a root server block using the upstream, and per-interface server blocks with direct `proxy_pass`. Their HTTPS upstream uses `balancer_by_lua_file` for health-aware peer selection via a custom Lua HTTPS health checker (`scripts/checker.lua`). Single-interface hosts produce simple direct `proxy_pass` configs and direct stream server entries.
 
 All generated files live under a single deployment root (`gdoc2netcfg_dir`, default `/etc/nginx/gdoc2netcfg/`). Enabling a host is a single symlink: `ln -s /etc/nginx/gdoc2netcfg/sites-available/{fqdn} /etc/nginx/sites-enabled/{fqdn}`. Removing all generated configs is `rm -rf /etc/nginx/gdoc2netcfg`.

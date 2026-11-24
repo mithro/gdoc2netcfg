@@ -134,6 +134,12 @@ def _https_map_entries(
     Each line maps a DNS name to the host's HTTPS upstream. These are
     included by the admin's hand-crafted map block via:
         include /etc/nginx/sites-enabled/*/https-map.conf;
+
+    Wildcard alt-names (``*.example.com``) are emitted verbatim as ``*.``
+    keys. They only match if that hand-crafted map declares ``hostnames;``;
+    without it nginx compares them as literal strings and the name falls
+    through to ``default`` without any error. See the ``00-https`` template
+    in docs/nginx-deployment.md and issue #101.
     """
     lines = []
     for name in dns_names:

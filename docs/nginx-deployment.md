@@ -221,6 +221,10 @@ map_hash_bucket_size 128;
 map_hash_max_size 2048;
 
 map $ssl_preread_server_name $tls_upstream {
+    # REQUIRED: makes the generated `*.domain` keys wildcard matches.
+    # Without it they are literal strings and never match (see below).
+    hostnames;
+
     # Per-host SNI map entries (from enabled site directories)
     include /etc/nginx/sites-enabled/*/https-map.conf;
 
@@ -242,6 +246,30 @@ server {
 
 Unknown SNI names (or no SNI) fall through to `local_https` →
 `127.0.0.1:8443`, where the default HTTP server block handles them.
+
+**Why `hostnames;` is required.** A wildcard alt-name in the sheet (e.g.
+`*.welland.fpgas.online`) is written to `https-map.conf` unchanged, as a
+`*.welland.fpgas.online` key. nginx only treats `*.domain` / `.domain` keys
+as wildcards when the map declares `hostnames`. Without it the key is
+compared as a literal string and never matches. **Nothing logs an error**:
+the subdomain just falls through to `default`, so IPv4 clients get the
+gateway's own certificate instead of the backend's. It is easy to miss
+because the other paths keep working: IPv6 connects straight to the backend,
+port 80 uses `server_name` (which handles `*.` itself), and regex keys
+(`~\.monarto\.mithis\.com$`) match either way. Welland ran like this from
+2026-02-09 until 2026-11-24 (issue #101).
+
+With `hostnames`, the precedence is: exact name, then the longest `*.` prefix
+wildcard, then the longest `.*` suffix wildcard, then the first matching regex,
+then `default`.
+
+To check, connect with a subdomain that only a wildcard entry covers and look
+at the certificate that comes back:
+
+```bash
+echo | openssl s_client -connect <gateway-public-ipv4>:443 \
+    -servername <sub>.<wildcard-domain> 2>&1 | openssl x509 -noout -subject
+```
 
 #### `00-http-default.conf` — catch-all server
 

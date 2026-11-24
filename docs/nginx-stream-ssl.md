@@ -185,10 +185,17 @@ upstream newsite_https {
 
 Then add a corresponding HTTP proxy server block in `sites-available/` for the new site's HTTP traffic.
 
+The regex keys above (`~\.newsite\.mithis\.com$`) match as they are. If you
+use the shorter `*.newsite.mithis.com` form instead (which is what the nginx
+generator writes for wildcard alt-names in `https-map.conf`), the map **must**
+declare `hostnames;`, or the key is compared as a literal string and never
+matches. See "Why `hostnames;` is required" in
+[nginx-deployment.md](nginx-deployment.md).
+
 ## Troubleshooting
 
 **Port 443 bind conflict during restart**: If `nginx -t` passes but `systemctl restart nginx` fails with "Address already in use" for port 443, old worker processes may still hold the port. Use `sudo systemctl stop nginx`, wait for workers to exit, then `sudo systemctl start nginx`.
 
 **Monarto HTTPS not working**: Verify the WireGuard tunnel is up (`ping 10.2.0.1`) and that monarto's nginx is listening on port 443. The stream module forwards raw TCP, so any TLS errors are between the client and monarto's nginx, not welland's.
 
-**Welland HTTPS returning wrong cert**: The stream module matches SNI literally. If a client sends no SNI (e.g. connecting by IP), traffic goes to `default` → `local_https` → `127.0.0.1:8443`, where the `00-default` server block returns 444 using the snakeoil cert.
+**Welland HTTPS returning wrong cert**: If a client sends no SNI (e.g. connecting by IP), traffic goes to `default` → `local_https` → `127.0.0.1:8443`, where the `00-default` server block returns 444 using the snakeoil cert. If a *subdomain* of a `*.domain` map entry gets the gateway's cert while the bare domain works, the map is missing `hostnames;`: without it, map keys are matched as exact strings (or as regexes with `~`), and `*.` keys are literal text that never matches.

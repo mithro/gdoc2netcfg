@@ -420,6 +420,23 @@ class TestAltNames:
         block = files["sites-available/desktop.welland.mithis.com/http-proxy.conf"]
         assert "*.example.com" in block
 
+    def test_wildcard_alt_names_kept_verbatim_in_https_map(self):
+        """A `*.` alt-name becomes a `*.` SNI map key, not a regex.
+
+        The key only matches when the hand-written map that includes
+        https-map.conf declares `hostnames;` (docs/nginx-deployment.md,
+        issue #101). Without it nginx compares the key as a literal string
+        and the name silently falls through to `default`.
+        """
+        host = _make_host()
+        host.alt_names = ["*.example.com"]
+        derive_all_dns_names(host, SITE)
+        files = generate_nginx(_make_inventory(host))
+
+        fqdn = "desktop.welland.mithis.com"
+        https_map = files[f"sites-available/{fqdn}/https-map.conf"]
+        assert f"*.example.com {fqdn}-https-backend;" in https_map.splitlines()
+
     def test_multiple_alt_names(self):
         host = _make_host()
         host.alt_names = ["a.example.com", "b.example.com"]
